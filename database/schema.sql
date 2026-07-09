@@ -1,0 +1,720 @@
+-- WaterERP — MySQL 8
+-- 使用方式：先 CREATE DATABASE，再執行本檔
+--   CREATE DATABASE water_erp CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+--   USE water_erp;
+--   SOURCE schema.sql;
+
+SET NAMES utf8mb4;
+SET FOREIGN_KEY_CHECKS = 0;
+
+-- ---------------------------------------------------------------------------
+-- 使用者（後台／司機登入）
+-- ---------------------------------------------------------------------------
+DROP TABLE IF EXISTS `barrel_pickup_events`;
+DROP TABLE IF EXISTS `barrel_pickups`;
+DROP TABLE IF EXISTS `delivery_events`;
+DROP TABLE IF EXISTS `delivery_assignments`;
+DROP TABLE IF EXISTS `credit_note_allocations`;
+DROP TABLE IF EXISTS `credit_notes`;
+DROP TABLE IF EXISTS `prepayment_txns`;
+DROP TABLE IF EXISTS `customer_prepayment_wallets`;
+DROP TABLE IF EXISTS `tax_invoices`;
+DROP TABLE IF EXISTS `billing_statement_orders`;
+DROP TABLE IF EXISTS `ar_allocation_maps`;
+DROP TABLE IF EXISTS `receipt_vouchers`;
+DROP TABLE IF EXISTS `ar_open_items`;
+DROP TABLE IF EXISTS `ar_documents`;
+DROP TABLE IF EXISTS `billing_statements`;
+DROP TABLE IF EXISTS `customer_prepaid_product_balances`;
+DROP TABLE IF EXISTS `customer_ledger_entries`;
+DROP TABLE IF EXISTS `payments`;
+DROP TABLE IF EXISTS `purchase_order_lines`;
+DROP TABLE IF EXISTS `purchase_orders`;
+DROP TABLE IF EXISTS `suppliers`;
+DROP TABLE IF EXISTS `stock_movements`;
+DROP TABLE IF EXISTS `inventory_balances`;
+DROP TABLE IF EXISTS `production_order_lines`;
+DROP TABLE IF EXISTS `production_orders`;
+DROP TABLE IF EXISTS `sales_order_lines`;
+DROP TABLE IF EXISTS `sales_orders`;
+DROP TABLE IF EXISTS `products`;
+DROP TABLE IF EXISTS `delivery_addresses`;
+DROP TABLE IF EXISTS `customers`;
+DROP TABLE IF EXISTS `drivers`;
+DROP TABLE IF EXISTS `vehicles`;
+DROP TABLE IF EXISTS `users`;
+
+SET FOREIGN_KEY_CHECKS = 1;
+
+CREATE TABLE `users` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `employee_code` VARCHAR(50) NOT NULL COMMENT '登入帳號（員編）',
+  `phone` VARCHAR(32) NULL DEFAULT NULL COMMENT '聯絡手機',
+  `password_hash` VARCHAR(255) NOT NULL,
+  `name` VARCHAR(100) NOT NULL,
+  `role` VARCHAR(32) NOT NULL DEFAULT 'dispatcher' COMMENT 'admin, dispatcher, warehouse, driver',
+  `is_active` TINYINT(1) NOT NULL DEFAULT 1,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_users_employee_code` (`employee_code`),
+  KEY `idx_users_role` (`role`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='系統使用者';
+
+CREATE TABLE `vehicles` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `plate_no` VARCHAR(20) NOT NULL COMMENT '車牌',
+  `description` VARCHAR(200) NULL DEFAULT NULL,
+  `is_active` TINYINT(1) NOT NULL DEFAULT 1,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_vehicles_plate` (`plate_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `drivers` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `user_id` BIGINT UNSIGNED NOT NULL COMMENT '對應 users（role=driver）',
+  `vehicle_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `employee_code` VARCHAR(50) NULL DEFAULT NULL,
+  `max_order_count` INT UNSIGNED NOT NULL DEFAULT 20 COMMENT '可負荷最高訂單數',
+  `max_barrel_qty` INT UNSIGNED NOT NULL DEFAULT 150 COMMENT '可運送最大桶數',
+  `is_active` TINYINT(1) NOT NULL DEFAULT 1,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_drivers_user` (`user_id`),
+  KEY `fk_drivers_vehicle` (`vehicle_id`),
+  CONSTRAINT `fk_drivers_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_drivers_vehicle` FOREIGN KEY (`vehicle_id`) REFERENCES `vehicles` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `address_zones` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `name` VARCHAR(50) NOT NULL,
+  `sort_order` INT NOT NULL DEFAULT 0,
+  `is_active` TINYINT(1) NOT NULL DEFAULT 1,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_address_zones_name` (`name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `affiliated_companies` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `name` VARCHAR(200) NOT NULL,
+  `sort_order` INT NOT NULL DEFAULT 0,
+  `is_active` TINYINT(1) NOT NULL DEFAULT 1,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_affiliated_companies_name` (`name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `print_slogans` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `title` VARCHAR(80) NOT NULL COMMENT '後台顯示名稱（選取按鈕）',
+  `body` TEXT NOT NULL COMMENT '寫入訂單備註的完整文字',
+  `sort_order` INT NOT NULL DEFAULT 0,
+  `is_active` TINYINT(1) NOT NULL DEFAULT 1,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_print_slogans_title` (`title`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `order_announcements` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `title` VARCHAR(80) NOT NULL COMMENT '後台識別名稱',
+  `body` TEXT NOT NULL COMMENT '套印在訂單上的公告全文',
+  `kind` VARCHAR(16) NOT NULL DEFAULT 'standing' COMMENT 'standing=全站, period=特定期間',
+  `starts_on` DATE NULL DEFAULT NULL COMMENT '特定期間起日（含）',
+  `ends_on` DATE NULL DEFAULT NULL COMMENT '特定期間迄日（含）',
+  `sort_order` INT NOT NULL DEFAULT 0,
+  `is_active` TINYINT(1) NOT NULL DEFAULT 1,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  KEY `idx_order_announcements_kind_active` (`kind`, `is_active`),
+  KEY `idx_order_announcements_period` (`starts_on`, `ends_on`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='訂單套印公告';
+
+CREATE TABLE `barrel_pickups` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `pickup_no` VARCHAR(24) NOT NULL COMMENT 'BP+YYYYMMDD+序號',
+  `customer_id` BIGINT UNSIGNED NOT NULL,
+  `delivery_address_id` BIGINT UNSIGNED NOT NULL,
+  `driver_id` BIGINT UNSIGNED NOT NULL,
+  `vehicle_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `assigned_by_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `pickup_date` DATE NOT NULL COMMENT '預定收桶日',
+  `status` VARCHAR(32) NOT NULL DEFAULT 'assigned' COMMENT 'assigned|pending_settlement|completed|cancelled',
+  `barrels_expected` INT UNSIGNED NULL DEFAULT NULL COMMENT '預估收桶數（可選）',
+  `barrels_returned` INT UNSIGNED NULL DEFAULT NULL COMMENT '司機回報實收',
+  `driver_note` VARCHAR(500) NULL DEFAULT NULL,
+  `driver_reported_at` DATETIME(3) NULL DEFAULT NULL,
+  `office_settled_by_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `office_settled_at` DATETIME(3) NULL DEFAULT NULL,
+  `remark` TEXT NULL,
+  `created_by_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_barrel_pickups_pickup_no` (`pickup_no`),
+  KEY `idx_barrel_pickups_status_date` (`status`, `pickup_date`),
+  KEY `fk_barrel_pickups_customer` (`customer_id`),
+  KEY `fk_barrel_pickups_address` (`delivery_address_id`),
+  KEY `fk_barrel_pickups_driver` (`driver_id`),
+  KEY `fk_barrel_pickups_vehicle` (`vehicle_id`),
+  CONSTRAINT `fk_barrel_pickups_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`),
+  CONSTRAINT `fk_barrel_pickups_address` FOREIGN KEY (`delivery_address_id`) REFERENCES `delivery_addresses` (`id`),
+  CONSTRAINT `fk_barrel_pickups_driver` FOREIGN KEY (`driver_id`) REFERENCES `drivers` (`id`),
+  CONSTRAINT `fk_barrel_pickups_vehicle` FOREIGN KEY (`vehicle_id`) REFERENCES `vehicles` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_barrel_pickups_assigned_by` FOREIGN KEY (`assigned_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_barrel_pickups_created_by` FOREIGN KEY (`created_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_barrel_pickups_settled_by` FOREIGN KEY (`office_settled_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='收空桶任務';
+
+CREATE TABLE `barrel_pickup_events` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `barrel_pickup_id` BIGINT UNSIGNED NOT NULL,
+  `event_type` VARCHAR(40) NOT NULL,
+  `payload_json` JSON NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  KEY `idx_barrel_pickup_events_pickup` (`barrel_pickup_id`),
+  CONSTRAINT `fk_barrel_pickup_events_pickup` FOREIGN KEY (`barrel_pickup_id`) REFERENCES `barrel_pickups` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='收空桶事件紀錄';
+
+CREATE TABLE `customers` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `customer_code` CHAR(6) NULL DEFAULT NULL COMMENT '客戶編號（6碼數字，可自訂）',
+  `name` VARCHAR(200) NOT NULL,
+  `contact_name` VARCHAR(100) NULL DEFAULT NULL COMMENT '聯絡人',
+  `phone` VARCHAR(32) NULL DEFAULT NULL COMMENT '電話',
+  `mobile` VARCHAR(32) NULL DEFAULT NULL COMMENT '手機',
+  `tax_id` VARCHAR(8) NULL DEFAULT NULL COMMENT '統一編號',
+  `billing_type` VARCHAR(32) NOT NULL DEFAULT 'cash' COMMENT 'cash, monthly, prepaid',
+  `default_cash_invoice_mode` VARCHAR(32) NULL DEFAULT 'none' COMMENT 'none | tax_inclusive | tax_exclusive',
+  `address_zone_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `affiliated_company_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `credit_limit` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  `notes` TEXT NULL,
+  `standing_remark` TEXT NULL COMMENT '客戶常態備註（列印、開單參考）',
+  `barrels_on_site` INT NOT NULL DEFAULT 0 COMMENT '已廢止寫入；API 回傳為各送貨地址加總（相容）',
+  `monthly_settlement_day` INT NULL DEFAULT NULL COMMENT '月結：每月幾號對帳參考 1-31',
+  `prepaid_barrel_balance` INT NOT NULL DEFAULT 0 COMMENT '預付：可用桶數',
+  `allow_prepaid_overdraft` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '預付不足時是否仍允許核銷',
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_customers_customer_code` (`customer_code`),
+  KEY `idx_customers_name` (`name`),
+  KEY `fk_customers_address_zone` (`address_zone_id`),
+  KEY `fk_customers_affiliated_company` (`affiliated_company_id`),
+  CONSTRAINT `fk_customers_address_zone` FOREIGN KEY (`address_zone_id`) REFERENCES `address_zones` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_customers_affiliated_company` FOREIGN KEY (`affiliated_company_id`) REFERENCES `affiliated_companies` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `delivery_addresses` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `customer_id` BIGINT UNSIGNED NOT NULL,
+  `label` VARCHAR(100) NULL DEFAULT NULL COMMENT '例如：總公司、倉庫',
+  `address_line` VARCHAR(500) NOT NULL,
+  `contact_name` VARCHAR(100) NULL DEFAULT NULL,
+  `contact_phone` VARCHAR(32) NULL DEFAULT NULL,
+  `contact_mobile` VARCHAR(32) NULL DEFAULT NULL COMMENT '現場手機',
+  `notes` TEXT NULL,
+  `is_default` TINYINT(1) NOT NULL DEFAULT 0,
+  `barrels_on_site` INT NOT NULL DEFAULT 0 COMMENT '此送貨點未收回空桶數：核銷送達時依押桶商品與回桶數自動增減，亦可手動調整',
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  KEY `fk_addr_customer` (`customer_id`),
+  CONSTRAINT `fk_addr_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `products` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `product_code` CHAR(3) NULL DEFAULT NULL COMMENT '商品編號（3碼數字，可自訂）',
+  `sku` VARCHAR(50) NULL DEFAULT NULL,
+  `name` VARCHAR(200) NOT NULL,
+  `unit` VARCHAR(20) NOT NULL DEFAULT '桶',
+  `counts_deposit_barrel` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '核銷送達時是否計入客戶未收回空桶（與單位無關）',
+  `consumes_prepaid_barrel` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '預付結帳列出貨時是否自預付桶餘額扣桶（與計入押桶無關）',
+  `sale_price` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  `cost_price` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '參考成本／加權用',
+  `is_active` TINYINT(1) NOT NULL DEFAULT 1,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_products_product_code` (`product_code`),
+  UNIQUE KEY `uk_products_sku` (`sku`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `sales_orders` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `order_no` VARCHAR(40) NOT NULL COMMENT '對外單號',
+  `customer_id` BIGINT UNSIGNED NOT NULL,
+  `delivery_address_id` BIGINT UNSIGNED NOT NULL,
+  `status` VARCHAR(32) NOT NULL DEFAULT 'draft' COMMENT 'draft,confirmed,in_production,ready_to_ship,assigned,delivering,completed,cancelled,exception',
+  `scheduled_delivery_date` DATE NULL DEFAULT NULL,
+  `subtotal` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  `total_amount` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  `lock_version` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT '樂觀鎖：分派／改狀態時＋1',
+  `remark` TEXT NULL,
+  `billing_type_at_order` VARCHAR(32) NULL DEFAULT NULL COMMENT '下單時結帳方式快照或 mixed',
+  `cash_subtotal` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '明細現金列合計',
+  `monthly_subtotal` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '明細月結列合計',
+  `order_cash_adjustment` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '已廢止保留欄位；現金應收改 FIFO，見 BILLING.md',
+  `billing_period_key` VARCHAR(7) NULL DEFAULT NULL COMMENT '月結曆月 YYYY-MM（報表／相容）',
+  `office_settled_at` DATETIME(3) NULL DEFAULT NULL COMMENT '辦公室核銷送達完成時間（月結截止日篩選）',
+  `monthly_received_amount` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '月結已沖銷入帳累計',
+  `monthly_period_paid` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '月結該筆訂單是否已全額沖完',
+  `pending_prepaid_topup_barrels` INT NOT NULL DEFAULT 0 COMMENT '預付桶儲值待入帳桶數（本單現金AR全沖清後入餘額）',
+  `cash_invoice_mode` VARCHAR(32) NULL DEFAULT NULL COMMENT 'none | tax_inclusive | tax_exclusive',
+  `created_by_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_sales_order_no` (`order_no`),
+  KEY `fk_so_customer` (`customer_id`),
+  KEY `fk_so_addr` (`delivery_address_id`),
+  KEY `fk_so_creator` (`created_by_user_id`),
+  KEY `idx_so_status_date` (`status`, `scheduled_delivery_date`),
+  KEY `idx_so_billing_period` (`billing_period_key`, `customer_id`),
+  KEY `idx_so_customer_office_settled` (`customer_id`, `office_settled_at`),
+  CONSTRAINT `fk_so_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_so_addr` FOREIGN KEY (`delivery_address_id`) REFERENCES `delivery_addresses` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_so_creator` FOREIGN KEY (`created_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `sales_order_lines` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `sales_order_id` BIGINT UNSIGNED NOT NULL,
+  `product_id` BIGINT UNSIGNED NOT NULL,
+  `qty_ordered` INT NOT NULL COMMENT '訂購數量',
+  `qty_delivered` INT NOT NULL DEFAULT 0 COMMENT '實際配送／銷單結案時寫入',
+  `unit_price` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  `line_amount` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  `billing_type_at_line` VARCHAR(32) NULL DEFAULT NULL COMMENT 'cash|monthly|prepaid',
+  `line_purpose` VARCHAR(32) NOT NULL DEFAULT 'delivery' COMMENT 'delivery|prepaid_barrel_topup',
+  `invoice_mode` VARCHAR(32) NULL DEFAULT NULL COMMENT 'none | tax_inclusive | tax_exclusive（現金/儲值列）',
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  KEY `fk_sol_order` (`sales_order_id`),
+  KEY `fk_sol_product` (`product_id`),
+  CONSTRAINT `fk_sol_order` FOREIGN KEY (`sales_order_id`) REFERENCES `sales_orders` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_sol_product` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `production_orders` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `production_no` VARCHAR(40) NOT NULL,
+  `status` VARCHAR(32) NOT NULL DEFAULT 'draft' COMMENT 'draft,in_progress,completed,cancelled',
+  `scheduled_date` DATE NULL DEFAULT NULL,
+  `remark` TEXT NULL,
+  `created_by_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_production_no` (`production_no`),
+  KEY `fk_po_creator` (`created_by_user_id`),
+  CONSTRAINT `fk_po_creator` FOREIGN KEY (`created_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `production_order_lines` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `production_order_id` BIGINT UNSIGNED NOT NULL,
+  `product_id` BIGINT UNSIGNED NOT NULL,
+  `qty_planned` INT NOT NULL,
+  `qty_completed` INT NOT NULL DEFAULT 0,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  KEY `fk_pol_po` (`production_order_id`),
+  KEY `fk_pol_product` (`product_id`),
+  CONSTRAINT `fk_pol_po` FOREIGN KEY (`production_order_id`) REFERENCES `production_orders` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_pol_product` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `inventory_balances` (
+  `product_id` BIGINT UNSIGNED NOT NULL,
+  `qty_on_hand` INT NOT NULL DEFAULT 0,
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`product_id`),
+  CONSTRAINT `fk_inv_product` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `stock_movements` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `product_id` BIGINT UNSIGNED NOT NULL,
+  `movement_type` VARCHAR(32) NOT NULL COMMENT 'in_production,out_sale,in_purchase,adjust,in_return,out_other',
+  `qty_delta` INT NOT NULL COMMENT '正數入庫、負數出庫',
+  `ref_type` VARCHAR(32) NULL DEFAULT NULL COMMENT 'sales_order,production_order,purchase_order,manual',
+  `ref_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `note` VARCHAR(500) NULL DEFAULT NULL,
+  `created_by_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  KEY `fk_sm_product` (`product_id`),
+  KEY `fk_sm_creator` (`created_by_user_id`),
+  KEY `idx_sm_ref` (`ref_type`, `ref_id`),
+  KEY `idx_sm_created` (`created_at`),
+  CONSTRAINT `fk_sm_product` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_sm_creator` FOREIGN KEY (`created_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `suppliers` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `name` VARCHAR(200) NOT NULL,
+  `phone` VARCHAR(32) NULL DEFAULT NULL,
+  `notes` TEXT NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `purchase_orders` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `po_no` VARCHAR(40) NOT NULL,
+  `supplier_id` BIGINT UNSIGNED NOT NULL,
+  `status` VARCHAR(32) NOT NULL DEFAULT 'draft' COMMENT 'draft,received,cancelled',
+  `order_date` DATE NOT NULL,
+  `total_amount` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  `remark` TEXT NULL,
+  `created_by_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_po_no` (`po_no`),
+  KEY `fk_purchase_supplier` (`supplier_id`),
+  KEY `fk_purchase_creator` (`created_by_user_id`),
+  CONSTRAINT `fk_purchase_supplier` FOREIGN KEY (`supplier_id`) REFERENCES `suppliers` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_purchase_creator` FOREIGN KEY (`created_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `purchase_order_lines` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `purchase_order_id` BIGINT UNSIGNED NOT NULL,
+  `product_id` BIGINT UNSIGNED NOT NULL COMMENT '成品或包材皆可掛 products',
+  `qty` INT NOT NULL,
+  `unit_cost` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  `line_amount` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  KEY `fk_pol_purchase` (`purchase_order_id`),
+  KEY `fk_pol_product` (`product_id`),
+  CONSTRAINT `fk_pol_purchase` FOREIGN KEY (`purchase_order_id`) REFERENCES `purchase_orders` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_pol_product2` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `delivery_assignments` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `sales_order_id` BIGINT UNSIGNED NOT NULL,
+  `driver_id` BIGINT UNSIGNED NOT NULL,
+  `vehicle_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `assignment_date` DATE NOT NULL COMMENT '配送日',
+  `status` VARCHAR(32) NOT NULL DEFAULT 'assigned' COMMENT 'assigned,delivering,pending_settlement,completed,cancelled,not_delivered',
+  `assigned_by_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `assigned_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `completed_at` DATETIME(3) NULL DEFAULT NULL COMMENT '辦公室核銷後結案時間（司機回報階段為 NULL）',
+  `driver_reported_at` DATETIME(3) NULL DEFAULT NULL COMMENT '司機回報配送結果時間',
+  `empty_barrels_returned` INT NOT NULL DEFAULT 0 COMMENT '回收空桶數',
+  `cash_received` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '現場收款',
+  `settlement_outcome` VARCHAR(40) NULL DEFAULT NULL COMMENT 'not_delivered,delivered_cash_exact,delivered_cash_short,delivered_cash_over,delivered_no_cash',
+  `failure_reason` TEXT NULL COMMENT '未送達原因',
+  `expected_amount` DECIMAL(14,2) NULL DEFAULT NULL COMMENT '結案時訂單應收',
+  `cash_variance` DECIMAL(14,2) NULL DEFAULT NULL COMMENT '實收-應收',
+  `settlement_note` VARCHAR(500) NULL DEFAULT NULL COMMENT '司機備註',
+  `office_settled_at` DATETIME(3) NULL DEFAULT NULL COMMENT '辦公室核銷確認時間',
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  KEY `fk_da_order` (`sales_order_id`),
+  KEY `fk_da_driver` (`driver_id`),
+  KEY `fk_da_vehicle` (`vehicle_id`),
+  KEY `fk_da_assigner` (`assigned_by_user_id`),
+  KEY `idx_da_driver_date` (`driver_id`, `assignment_date`),
+  KEY `idx_da_date_status` (`assignment_date`, `status`),
+  CONSTRAINT `fk_da_order` FOREIGN KEY (`sales_order_id`) REFERENCES `sales_orders` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_da_driver` FOREIGN KEY (`driver_id`) REFERENCES `drivers` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_da_vehicle` FOREIGN KEY (`vehicle_id`) REFERENCES `vehicles` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_da_assigner` FOREIGN KEY (`assigned_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `delivery_events` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `delivery_assignment_id` BIGINT UNSIGNED NOT NULL,
+  `event_type` VARCHAR(32) NOT NULL COMMENT 'depart,arrive,complete,exception',
+  `payload_json` JSON NULL COMMENT '備註、座標等擴充',
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  KEY `fk_de_assignment` (`delivery_assignment_id`),
+  CONSTRAINT `fk_de_assignment` FOREIGN KEY (`delivery_assignment_id`) REFERENCES `delivery_assignments` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `payments` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `customer_id` BIGINT UNSIGNED NOT NULL,
+  `sales_order_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `amount` DECIMAL(14,2) NOT NULL,
+  `payment_method` VARCHAR(32) NOT NULL DEFAULT 'cash' COMMENT 'cash,transfer,monthly_writeoff,other',
+  `paid_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `note` VARCHAR(500) NULL DEFAULT NULL,
+  `recorded_by_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `receipt_voucher_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  KEY `fk_pay_customer` (`customer_id`),
+  KEY `fk_pay_order` (`sales_order_id`),
+  KEY `fk_pay_user` (`recorded_by_user_id`),
+  UNIQUE KEY `uk_pay_receipt_voucher` (`receipt_voucher_id`),
+  KEY `idx_pay_paid_at` (`paid_at`),
+  CONSTRAINT `fk_pay_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_pay_order` FOREIGN KEY (`sales_order_id`) REFERENCES `sales_orders` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_pay_user` FOREIGN KEY (`recorded_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `customer_ledger_entries` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `customer_id` BIGINT UNSIGNED NOT NULL,
+  `entry_type` VARCHAR(40) NOT NULL COMMENT 'cash_ar_accrual, cash_receipt_alloc, monthly_accrual, monthly_payment, monthly_receipt_alloc, prepaid_topup, prepaid_consumption, ...',
+  `amount` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '現金往來：正＝客戶欠公司增加',
+  `barrel_delta` INT NOT NULL DEFAULT 0 COMMENT '預付桶：正＝儲值增加',
+  `sales_order_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `payment_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `receipt_voucher_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `source_type` VARCHAR(40) NULL DEFAULT NULL,
+  `source_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `note` VARCHAR(500) NULL DEFAULT NULL,
+  `created_by_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  KEY `idx_cle_customer_created` (`customer_id`, `created_at`),
+  KEY `fk_cle_order` (`sales_order_id`),
+  KEY `fk_cle_payment` (`payment_id`),
+  KEY `fk_cle_receipt_voucher` (`receipt_voucher_id`),
+  KEY `fk_cle_user` (`created_by_user_id`),
+  CONSTRAINT `fk_cle_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_cle_order` FOREIGN KEY (`sales_order_id`) REFERENCES `sales_orders` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_cle_payment` FOREIGN KEY (`payment_id`) REFERENCES `payments` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_cle_user` FOREIGN KEY (`created_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `customer_prepaid_product_balances` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `customer_id` BIGINT UNSIGNED NOT NULL,
+  `product_id` BIGINT UNSIGNED NOT NULL,
+  `balance_barrels` INT NOT NULL DEFAULT 0,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_cppb_customer_product` (`customer_id`, `product_id`),
+  KEY `idx_cppb_customer` (`customer_id`),
+  KEY `idx_cppb_product` (`product_id`),
+  CONSTRAINT `fk_cppb_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_cppb_product` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `billing_statements` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `statement_no` VARCHAR(40) NOT NULL COMMENT '結帳批次編號',
+  `customer_id` BIGINT UNSIGNED NOT NULL,
+  `status` VARCHAR(24) NOT NULL DEFAULT 'posted' COMMENT 'posted',
+  `cutoff_date` DATE NULL DEFAULT NULL COMMENT '對帳截止日（參考）',
+  `untaxed_total` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '月結應收未稅合計（AR 本金）',
+  `tax_amount` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '營業稅（發票彙總）',
+  `total_with_tax` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '含稅總額（發票參考）',
+  `tax_rate` DECIMAL(8,6) NOT NULL DEFAULT 0.050000,
+  `invoice_mode` VARCHAR(32) NOT NULL DEFAULT 'tax_exclusive' COMMENT 'none | tax_inclusive | tax_exclusive',
+  `posted_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_billing_statements_no` (`statement_no`),
+  KEY `fk_bs_customer` (`customer_id`),
+  KEY `idx_billing_statements_customer_posted` (`customer_id`, `posted_at`),
+  CONSTRAINT `fk_bs_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='月結結帳批次';
+
+CREATE TABLE `billing_statement_orders` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `billing_statement_id` BIGINT UNSIGNED NOT NULL,
+  `sales_order_id` BIGINT UNSIGNED NOT NULL,
+  `monthly_untaxed_amount` DECIMAL(14,2) NOT NULL COMMENT '該訂單納入本期之月結未稅金額快照',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_bso_sales_order` (`sales_order_id`),
+  KEY `fk_bso_statement` (`billing_statement_id`),
+  CONSTRAINT `fk_bso_statement` FOREIGN KEY (`billing_statement_id`) REFERENCES `billing_statements` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_bso_sales_order` FOREIGN KEY (`sales_order_id`) REFERENCES `sales_orders` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `ar_documents` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `ar_no` VARCHAR(40) NOT NULL,
+  `customer_id` BIGINT UNSIGNED NOT NULL,
+  `sales_order_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `billing_statement_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `document_type` VARCHAR(32) NOT NULL DEFAULT 'delivery',
+  `billing_type` VARCHAR(32) NOT NULL,
+  `document_amount` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  `due_date` DATE NULL DEFAULT NULL,
+  `status` VARCHAR(24) NOT NULL DEFAULT 'open',
+  `posted_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `created_by_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_ar_documents_ar_no` (`ar_no`),
+  KEY `idx_ar_documents_customer_status` (`customer_id`, `status`),
+  KEY `idx_ar_documents_sales_order` (`sales_order_id`),
+  KEY `idx_ar_documents_billing_statement` (`billing_statement_id`),
+  CONSTRAINT `fk_ar_documents_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_ar_documents_order` FOREIGN KEY (`sales_order_id`) REFERENCES `sales_orders` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_ar_documents_billing_statement` FOREIGN KEY (`billing_statement_id`) REFERENCES `billing_statements` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `tax_invoices` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `invoice_no` VARCHAR(40) NOT NULL,
+  `customer_id` BIGINT UNSIGNED NOT NULL,
+  `basis_type` VARCHAR(24) NOT NULL COMMENT 'billing_statement | sales_order',
+  `billing_statement_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `sales_order_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `invoice_mode` VARCHAR(32) NOT NULL DEFAULT 'tax_exclusive',
+  `untaxed_amount` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  `tax_amount` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  `total_amount` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  `tax_rate` DECIMAL(8,6) NOT NULL DEFAULT 0.050000,
+  `status` VARCHAR(24) NOT NULL DEFAULT 'issued',
+  `issued_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_tax_invoices_no` (`invoice_no`),
+  KEY `idx_tax_invoices_customer_issued` (`customer_id`, `issued_at`),
+  KEY `idx_tax_invoices_billing_statement` (`billing_statement_id`),
+  KEY `idx_tax_invoices_sales_order` (`sales_order_id`),
+  CONSTRAINT `fk_tax_invoices_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_tax_invoices_billing_statement` FOREIGN KEY (`billing_statement_id`) REFERENCES `billing_statements` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_tax_invoices_sales_order` FOREIGN KEY (`sales_order_id`) REFERENCES `sales_orders` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='發票主檔（憑證資訊；AR 仍為未稅本金）';
+
+CREATE TABLE `ar_open_items` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `ar_document_id` BIGINT UNSIGNED NOT NULL,
+  `customer_id` BIGINT UNSIGNED NOT NULL,
+  `sales_order_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `original_amount` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  `allocated_amount` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  `outstanding_amount` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  `due_date` DATE NULL DEFAULT NULL,
+  `expected_collect_date` DATE NULL DEFAULT NULL,
+  `status` VARCHAR(24) NOT NULL DEFAULT 'unpaid',
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  KEY `idx_ar_open_items_customer_status_due` (`customer_id`, `status`, `due_date`),
+  KEY `idx_ar_open_items_sales_order` (`sales_order_id`),
+  CONSTRAINT `fk_ar_open_items_doc` FOREIGN KEY (`ar_document_id`) REFERENCES `ar_documents` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_ar_open_items_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_ar_open_items_order` FOREIGN KEY (`sales_order_id`) REFERENCES `sales_orders` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `receipt_vouchers` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `voucher_no` VARCHAR(40) NOT NULL,
+  `customer_id` BIGINT UNSIGNED NOT NULL,
+  `voucher_type` VARCHAR(24) NOT NULL DEFAULT 'receipt',
+  `payment_method` VARCHAR(32) NOT NULL DEFAULT 'cash',
+  `total_amount` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  `unapplied_amount` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  `status` VARCHAR(24) NOT NULL DEFAULT 'posted',
+  `paid_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `note` VARCHAR(500) NULL DEFAULT NULL,
+  `created_by_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_receipt_vouchers_voucher_no` (`voucher_no`),
+  KEY `idx_receipt_vouchers_customer_paid` (`customer_id`, `paid_at`),
+  CONSTRAINT `fk_receipt_vouchers_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `ar_allocation_maps` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `receipt_voucher_id` BIGINT UNSIGNED NOT NULL,
+  `ar_open_item_id` BIGINT UNSIGNED NOT NULL,
+  `allocated_amount` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  `allocated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `note` VARCHAR(500) NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_ar_alloc_voucher` (`receipt_voucher_id`),
+  KEY `idx_ar_alloc_open_item` (`ar_open_item_id`),
+  CONSTRAINT `fk_ar_alloc_voucher` FOREIGN KEY (`receipt_voucher_id`) REFERENCES `receipt_vouchers` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_ar_alloc_open_item` FOREIGN KEY (`ar_open_item_id`) REFERENCES `ar_open_items` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `customer_prepayment_wallets` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `customer_id` BIGINT UNSIGNED NOT NULL,
+  `balance_amount` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_customer_wallet_customer` (`customer_id`),
+  CONSTRAINT `fk_customer_wallet_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `prepayment_txns` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `customer_id` BIGINT UNSIGNED NOT NULL,
+  `receipt_voucher_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `txn_type` VARCHAR(24) NOT NULL,
+  `amount` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  `balance_after` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  `note` VARCHAR(500) NULL DEFAULT NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  KEY `idx_prepayment_txns_customer_created` (`customer_id`, `created_at`),
+  KEY `fk_prepayment_txns_voucher` (`receipt_voucher_id`),
+  CONSTRAINT `fk_prepayment_txns_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_prepayment_txns_voucher` FOREIGN KEY (`receipt_voucher_id`) REFERENCES `receipt_vouchers` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `credit_notes` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `credit_no` VARCHAR(40) NOT NULL,
+  `customer_id` BIGINT UNSIGNED NOT NULL,
+  `sales_order_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `amount` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  `reason` VARCHAR(255) NULL DEFAULT NULL,
+  `status` VARCHAR(24) NOT NULL DEFAULT 'approved',
+  `created_by_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_credit_notes_credit_no` (`credit_no`),
+  KEY `idx_credit_notes_customer_created` (`customer_id`, `created_at`),
+  KEY `fk_credit_notes_order` (`sales_order_id`),
+  CONSTRAINT `fk_credit_notes_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_credit_notes_order` FOREIGN KEY (`sales_order_id`) REFERENCES `sales_orders` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `credit_note_allocations` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `credit_note_id` BIGINT UNSIGNED NOT NULL,
+  `ar_open_item_id` BIGINT UNSIGNED NOT NULL,
+  `amount` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  KEY `idx_credit_alloc_note` (`credit_note_id`),
+  KEY `idx_credit_alloc_open_item` (`ar_open_item_id`),
+  CONSTRAINT `fk_credit_alloc_note` FOREIGN KEY (`credit_note_id`) REFERENCES `credit_notes` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_credit_alloc_open_item` FOREIGN KEY (`ar_open_item_id`) REFERENCES `ar_open_items` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+ALTER TABLE `payments`
+  ADD CONSTRAINT `fk_pay_receipt_voucher` FOREIGN KEY (`receipt_voucher_id`) REFERENCES `receipt_vouchers` (`id`) ON DELETE SET NULL ON UPDATE CASCADE;
+
+ALTER TABLE `customer_ledger_entries`
+  ADD CONSTRAINT `fk_cle_receipt_voucher` FOREIGN KEY (`receipt_voucher_id`) REFERENCES `receipt_vouchers` (`id`) ON DELETE SET NULL ON UPDATE CASCADE;

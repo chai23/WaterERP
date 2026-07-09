@@ -1,0 +1,44 @@
+{
+  "name": "@water-erp/api",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "prisma:generate": "prisma generate",
+    "prisma:studio": "prisma studio",
+    "clear-sales-orders": "tsx scripts/clear-sales-orders.ts",
+    "reset-data": "prisma db execute --schema prisma/schema.prisma --file ../../database/migrations/004_reset_data_keep_single_admin.sql",
+    "ar:backfill": "tsx scripts/ar-backfill.ts",
+    "ar:reconcile": "tsx scripts/ar-reconcile.ts",
+    "migrate:customers": "tsx scripts/migrate-customer-data.ts",
+    "migrate:legacy-masters": "tsx scripts/migrate-legacy-masters.ts",
+    "migrate:legacy-zones": "tsx scripts/migrate-legacy-masters.ts --fix-zones",
+    "migrate:legacy-companies": "tsx scripts/migrate-legacy-masters.ts --companies-only --replace",
+    "migrate:legacy-customers": "tsx scripts/migrate-legacy-masters.ts --customers-only --replace",
+    "migrate:legacy-users": "tsx scripts/migrate-legacy-masters.ts --personnel-only",
+    "migrate:legacy-drivers": "tsx scripts/migrate-legacy-masters.ts --drivers-only --replace",
+    "migrate:legacy-products": "tsx scripts/migrate-legacy-masters.ts --products-only --replace",
+    "ensure-admin": "tsx scripts/ensure-admin-user.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.4.1",
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.3"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^22.13.5",
+    "prisma": "^6.4.1",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3"
+  }
+}

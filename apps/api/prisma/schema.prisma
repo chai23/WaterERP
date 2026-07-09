@@ -1,0 +1,786 @@
+// 與 database/schema.sql 保持一致；手動建表後執行: npm run prisma:generate
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  employeeCode String   @unique @map("employee_code") @db.VarChar(50)
+  phone        String?  @db.VarChar(32)
+  passwordHash String   @map("password_hash") @db.VarChar(255)
+  name         String   @db.VarChar(100)
+  role         String   @default("dispatcher") @db.VarChar(32)
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  driver                   Driver?
+  salesOrdersCreated       SalesOrder[]           @relation("SalesOrderCreator")
+  productionOrdersCreated  ProductionOrder[]      @relation("ProductionOrderCreator")
+  purchaseOrdersCreated    PurchaseOrder[]        @relation("PurchaseOrderCreator")
+  stockMovements           StockMovement[]
+  assignmentsAssigned      DeliveryAssignment[]   @relation("AssignmentAssigner")
+  barrelPickupsCreated     BarrelPickup[]         @relation("BarrelPickupCreator")
+  barrelPickupsAssigned    BarrelPickup[]         @relation("BarrelPickupAssigner")
+  barrelPickupsSettled     BarrelPickup[]         @relation("BarrelPickupSettler")
+  paymentsRecorded         Payment[]              @relation("PaymentRecorder")
+  customerLedgerEntries    CustomerLedgerEntry[]
+
+  @@map("users")
+}
+
+model Vehicle {
+  id          BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  plateNo     String   @unique @map("plate_no") @db.VarChar(20)
+  description String?  @db.VarChar(200)
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  drivers             Driver[]
+  deliveryAssignments DeliveryAssignment[]
+  barrelPickups       BarrelPickup[]
+
+  @@map("vehicles")
+}
+
+model Driver {
+  id            BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  userId        BigInt   @unique @map("user_id") @db.UnsignedBigInt
+  vehicleId     BigInt?  @map("vehicle_id") @db.UnsignedBigInt
+  employeeCode  String?  @map("employee_code") @db.VarChar(50)
+  maxOrderCount Int      @default(20) @map("max_order_count") @db.UnsignedInt
+  maxBarrelQty  Int      @default(150) @map("max_barrel_qty") @db.UnsignedInt
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  user        User                 @relation(fields: [userId], references: [id])
+  vehicle     Vehicle?             @relation(fields: [vehicleId], references: [id])
+  assignments DeliveryAssignment[]
+  barrelPickups BarrelPickup[]
+
+  @@map("drivers")
+}
+
+model AddressZone {
+  id        BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  name      String   @unique @db.VarChar(50)
+  sortOrder Int      @default(0) @map("sort_order")
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  customers Customer[]
+
+  @@map("address_zones")
+}
+
+model AffiliatedCompany {
+  id        BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  name      String   @unique @db.VarChar(200)
+  sortOrder Int      @default(0) @map("sort_order")
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  customers Customer[]
+
+  @@map("affiliated_companies")
+}
+
+model PrintSlogan {
+  id        BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  title     String   @unique @db.VarChar(80)
+  body      String   @db.Text
+  sortOrder Int      @default(0) @map("sort_order")
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  @@map("print_slogans")
+}
+
+/// 訂單套印公告（全站常態 + 特定期間）
+model OrderAnnouncement {
+  id        BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  title     String    @db.VarChar(80)
+  body      String    @db.Text
+  /// standing | period
+  kind      String    @default("standing") @db.VarChar(16)
+  startsOn  DateTime? @map("starts_on") @db.Date
+  endsOn    DateTime? @map("ends_on") @db.Date
+  sortOrder Int       @default(0) @map("sort_order")
+  isActive  Boolean   @default(true) @map("is_active")
+  createdAt DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+
+  @@index([kind, isActive])
+  @@index([startsOn, endsOn])
+  @@map("order_announcements")
+}
+
+model Customer {
+  id             BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  /// 客戶編號（6 碼數字，可由人員自行指定）
+  customerCode   String?  @unique @map("customer_code") @db.Char(6)
+  name           String   @db.VarChar(200)
+  contactName    String?  @map("contact_name") @db.VarChar(100)
+  phone          String?  @db.VarChar(32)
+  mobile         String?  @db.VarChar(32)
+  taxId          String?  @map("tax_id") @db.VarChar(8)
+  /// cash | monthly | prepaid
+  billingType    String   @default("cash") @map("billing_type") @db.VarChar(32)
+  /// none | tax_inclusive | tax_exclusive；開單預設現金發票模式
+  defaultCashInvoiceMode String? @default("none") @map("default_cash_invoice_mode") @db.VarChar(32)
+  addressZoneId         BigInt?  @map("address_zone_id") @db.UnsignedBigInt
+  affiliatedCompanyId   BigInt?  @map("affiliated_company_id") @db.UnsignedBigInt
+  creditLimit    Decimal  @default(0) @map("credit_limit") @db.Decimal(14, 2)
+  notes          String?  @db.Text
+  /// 客戶常態備註（列印、開單參考）
+  standingRemark String?  @map("standing_remark") @db.Text
+  /// 已廢止寫入；API 回傳時為各送貨地址 barrels_on_site 加總（相容舊欄位）
+  barrelsOnSite  Int      @default(0) @map("barrels_on_site")
+  /// 月結客戶：每月幾號為結帳／對帳參考日（1–31）
+  monthlySettlementDay Int? @map("monthly_settlement_day")
+  /// 預付客戶：可用桶數餘額（與 ledger 同步維護）
+  prepaidBarrelBalance Int @default(0) @map("prepaid_barrel_balance")
+  /// 預付不足時是否仍允許核銷（透支）
+  allowPrepaidOverdraft Boolean @default(false) @map("allow_prepaid_overdraft")
+  createdAt      DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  addressZone       AddressZone?       @relation(fields: [addressZoneId], references: [id], onDelete: SetNull)
+  affiliatedCompany AffiliatedCompany? @relation(fields: [affiliatedCompanyId], references: [id], onDelete: SetNull)
+  addresses   DeliveryAddress[]
+  salesOrders SalesOrder[]
+  payments    Payment[]
+  ledgerEntries CustomerLedgerEntry[]
+  arDocuments ArDocument[]
+  arOpenItems ArOpenItem[]
+  receiptVouchers ReceiptVoucher[]
+  prepaymentWallet CustomerPrepaymentWallet?
+  prepaymentTxns PrepaymentTxn[]
+  prepaidProductBalances CustomerPrepaidProductBalance[]
+  creditNotes CreditNote[]
+  billingStatements BillingStatement[]
+  taxInvoices       TaxInvoice[]
+  barrelPickups     BarrelPickup[]
+
+  @@map("customers")
+}
+
+/// 客戶預付桶（按商品分帳）：僅可用於同商品之預付出貨
+model CustomerPrepaidProductBalance {
+  id            BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  customerId    BigInt   @map("customer_id") @db.UnsignedBigInt
+  productId     BigInt   @map("product_id") @db.UnsignedBigInt
+  balanceBarrels Int     @default(0) @map("balance_barrels")
+  createdAt     DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  product  Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([customerId, productId])
+  @@index([customerId])
+  @@index([productId])
+  @@map("customer_prepaid_product_balances")
+}
+
+model DeliveryAddress {
+  id            BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  customerId    BigInt   @map("customer_id") @db.UnsignedBigInt
+  label         String?  @db.VarChar(100)
+  addressLine   String   @map("address_line") @db.VarChar(500)
+  contactName   String?  @map("contact_name") @db.VarChar(100)
+  contactPhone  String?  @map("contact_phone") @db.VarChar(32)
+  contactMobile String?  @map("contact_mobile") @db.VarChar(32)
+  notes         String?  @db.Text
+  isDefault     Boolean  @default(false) @map("is_default")
+  /// 此送貨點未收回空桶數：核銷送達時依押桶商品與回桶數自動增減，亦可手動調整
+  barrelsOnSite Int      @default(0) @map("barrels_on_site")
+  createdAt     DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  customer    Customer     @relation(fields: [customerId], references: [id])
+  salesOrders SalesOrder[]
+  barrelPickups BarrelPickup[]
+
+  @@map("delivery_addresses")
+}
+
+model Product {
+  id        BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  /// 商品編號（3 碼數字，可由人員自行指定）
+  productCode String? @unique @map("product_code") @db.Char(3)
+  sku       String?  @unique @db.VarChar(50)
+  name      String   @db.VarChar(200)
+  unit      String   @default("桶") @db.VarChar(20)
+  /// 核銷送達時是否將該品項數量計入客戶「未收回空桶」（與單位無關）
+  countsDepositBarrel Boolean @default(false) @map("counts_deposit_barrel")
+  /// 預付結帳（prepaid）列出貨時是否自預付桶餘額扣桶（與計入押桶無關）
+  consumesPrepaidBarrel Boolean @default(false) @map("consumes_prepaid_barrel")
+  salePrice Decimal  @default(0) @map("sale_price") @db.Decimal(14, 2)
+  costPrice Decimal  @default(0) @map("cost_price") @db.Decimal(14, 2)
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  inventory            InventoryBalance?
+  salesOrderLines      SalesOrderLine[]
+  productionLines      ProductionOrderLine[]
+  stockMovements       StockMovement[]
+  purchaseOrderLines   PurchaseOrderLine[]
+  prepaidCustomerBalances CustomerPrepaidProductBalance[]
+
+  @@map("products")
+}
+
+model SalesOrder {
+  id                     BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  orderNo                String    @unique @map("order_no") @db.VarChar(40)
+  customerId             BigInt    @map("customer_id") @db.UnsignedBigInt
+  deliveryAddressId      BigInt    @map("delivery_address_id") @db.UnsignedBigInt
+  status                 String    @default("draft") @db.VarChar(32)
+  scheduledDeliveryDate  DateTime? @map("scheduled_delivery_date") @db.Date
+  subtotal               Decimal   @default(0) @db.Decimal(14, 2)
+  totalAmount            Decimal   @default(0) @map("total_amount") @db.Decimal(14, 2)
+  lockVersion            Int       @default(0) @map("lock_version") @db.UnsignedInt
+  remark                 String?   @db.Text
+  /// 下單快照：客戶預設或 mixed（明細混用時）
+  billingTypeAtOrder     String?   @map("billing_type_at_order") @db.VarChar(32)
+  /// 明細中「現金」列金額合計（司機應收、現金立帳用）
+  cashSubtotal           Decimal   @default(0) @map("cash_subtotal") @db.Decimal(14, 2)
+  /// 明細中「月結」列金額合計（月結應收／沖銷上限）
+  monthlySubtotal        Decimal   @default(0) @map("monthly_subtotal") @db.Decimal(14, 2)
+  /// 已廢止：現金應收改由前期現金欠款＋本單總額與 FIFO 沖銷；欄位保留相容舊資料
+  orderCashAdjustment    Decimal   @default(0) @map("order_cash_adjustment") @db.Decimal(14, 2)
+  /// 月結：核銷完成日所屬曆月 YYYY-MM（報表／相容）
+  billingPeriodKey       String?   @map("billing_period_key") @db.VarChar(7)
+  /// 辦公室核銷送達完成時間（月結截止日篩選用）
+  officeSettledAt        DateTime? @map("office_settled_at") @db.DateTime(3)
+  /// 月結：已沖銷入帳累計（FIFO）；已清＝>= total_amount
+  monthlyReceivedAmount  Decimal   @default(0) @map("monthly_received_amount") @db.Decimal(14, 2)
+  /// 月結該筆訂單是否已全額沖完
+  monthlyPeriodPaid      Boolean   @default(false) @map("monthly_period_paid")
+  /// 預付桶儲值：核銷後待入帳桶數（本單現金 AR 全沖清後才加進 prepaid_barrel_balance）
+  pendingPrepaidTopupBarrels Int   @default(0) @map("pending_prepaid_topup_barrels")
+  /// 現金區塊發票：none | tax_inclusive | tax_exclusive（未稅金額即 line_amount；稅額見 tax_invoices）
+  cashInvoiceMode        String?   @map("cash_invoice_mode") @db.VarChar(32)
+  createdByUserId        BigInt?   @map("created_by_user_id") @db.UnsignedBigInt
+  createdAt              DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt              DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+
+  customer        Customer          @relation(fields: [customerId], references: [id])
+  deliveryAddress DeliveryAddress   @relation(fields: [deliveryAddressId], references: [id])
+  createdBy       User?             @relation("SalesOrderCreator", fields: [createdByUserId], references: [id])
+  lines           SalesOrderLine[]
+  assignments     DeliveryAssignment[]
+  payments        Payment[]
+  ledgerEntries   CustomerLedgerEntry[]
+  arDocuments     ArDocument[]
+  arOpenItems     ArOpenItem[]
+  creditNotes     CreditNote[]
+  billingStatementOrder BillingStatementOrder?
+  taxInvoices          TaxInvoice[]
+
+  @@index([customerId, officeSettledAt])
+  @@map("sales_orders")
+}
+
+/// 客戶帳務流水：現金往來、月結應收、預付桶等（amount 正＝客戶欠公司增加；barrel_delta 正＝預付桶增加）
+model CustomerLedgerEntry {
+  id               BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  customerId       BigInt    @map("customer_id") @db.UnsignedBigInt
+  entryType        String    @map("entry_type") @db.VarChar(40)
+  amount           Decimal   @default(0) @db.Decimal(14, 2)
+  barrelDelta      Int       @default(0) @map("barrel_delta")
+  salesOrderId     BigInt?   @map("sales_order_id") @db.UnsignedBigInt
+  paymentId        BigInt?   @map("payment_id") @db.UnsignedBigInt
+  receiptVoucherId BigInt?   @map("receipt_voucher_id") @db.UnsignedBigInt
+  sourceType       String?   @map("source_type") @db.VarChar(40)
+  sourceId         BigInt?   @map("source_id") @db.UnsignedBigInt
+  note             String?   @db.VarChar(500)
+  createdByUserId  BigInt?   @map("created_by_user_id") @db.UnsignedBigInt
+  createdAt        DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+
+  customer   Customer    @relation(fields: [customerId], references: [id])
+  salesOrder SalesOrder? @relation(fields: [salesOrderId], references: [id], onDelete: SetNull)
+  payment    Payment?    @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  receiptVoucher ReceiptVoucher? @relation(fields: [receiptVoucherId], references: [id], onDelete: SetNull)
+  createdBy  User?       @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([customerId, createdAt])
+  @@map("customer_ledger_entries")
+}
+
+model SalesOrderLine {
+  id           BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  salesOrderId BigInt   @map("sales_order_id") @db.UnsignedBigInt
+  productId    BigInt   @map("product_id") @db.UnsignedBigInt
+  qtyOrdered   Int      @map("qty_ordered")
+  qtyDelivered Int      @default(0) @map("qty_delivered")
+  unitPrice    Decimal  @map("unit_price") @db.Decimal(14, 2)
+  lineAmount   Decimal  @map("line_amount") @db.Decimal(14, 2)
+  /// 此列結帳方式：cash | monthly | prepaid（開單時選擇；null 則沿用舊單訂單層）
+  billingTypeAtLine      String?   @map("billing_type_at_line") @db.VarChar(32)
+  /// delivery：一般出貨；prepaid_barrel_topup：預付桶儲值（不出庫；現金應收沖清後入桶數）
+  linePurpose            String    @default("delivery") @map("line_purpose") @db.VarChar(32)
+  /// 發票模式（現金/儲值列）；null = 依訂單 cash_invoice_mode 或視為不開票
+  invoiceMode            String?   @map("invoice_mode") @db.VarChar(32)
+  createdAt    DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  salesOrder SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  product    Product    @relation(fields: [productId], references: [id])
+
+  @@map("sales_order_lines")
+}
+
+model ProductionOrder {
+  id               BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  productionNo     String    @unique @map("production_no") @db.VarChar(40)
+  status           String    @default("draft") @db.VarChar(32)
+  scheduledDate    DateTime? @map("scheduled_date") @db.Date
+  remark           String?   @db.Text
+  createdByUserId  BigInt?   @map("created_by_user_id") @db.UnsignedBigInt
+  createdAt        DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+
+  createdBy User?                 @relation("ProductionOrderCreator", fields: [createdByUserId], references: [id])
+  lines     ProductionOrderLine[]
+
+  @@map("production_orders")
+}
+
+model ProductionOrderLine {
+  id                BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  productionOrderId BigInt   @map("production_order_id") @db.UnsignedBigInt
+  productId         BigInt   @map("product_id") @db.UnsignedBigInt
+  qtyPlanned        Int      @map("qty_planned")
+  qtyCompleted      Int      @default(0) @map("qty_completed")
+  createdAt         DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  productionOrder ProductionOrder @relation(fields: [productionOrderId], references: [id], onDelete: Cascade)
+  product         Product         @relation(fields: [productId], references: [id])
+
+  @@map("production_order_lines")
+}
+
+model InventoryBalance {
+  productId BigInt   @id @map("product_id") @db.UnsignedBigInt
+  qtyOnHand Int      @map("qty_on_hand")
+  updatedAt DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@map("inventory_balances")
+}
+
+model StockMovement {
+  id               BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  productId        BigInt   @map("product_id") @db.UnsignedBigInt
+  movementType     String   @map("movement_type") @db.VarChar(32)
+  qtyDelta         Int      @map("qty_delta")
+  refType          String?  @map("ref_type") @db.VarChar(32)
+  refId            BigInt?  @map("ref_id") @db.UnsignedBigInt
+  note             String?  @db.VarChar(500)
+  createdByUserId  BigInt?  @map("created_by_user_id") @db.UnsignedBigInt
+  createdAt        DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  product   Product @relation(fields: [productId], references: [id])
+  createdBy User?   @relation(fields: [createdByUserId], references: [id])
+
+  @@map("stock_movements")
+}
+
+model Supplier {
+  id        BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  name      String   @db.VarChar(200)
+  phone     String?  @db.VarChar(32)
+  notes     String?  @db.Text
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  purchaseOrders PurchaseOrder[]
+
+  @@map("suppliers")
+}
+
+model PurchaseOrder {
+  id              BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  poNo            String   @unique @map("po_no") @db.VarChar(40)
+  supplierId      BigInt   @map("supplier_id") @db.UnsignedBigInt
+  status          String   @default("draft") @db.VarChar(32)
+  orderDate       DateTime @map("order_date") @db.Date
+  totalAmount     Decimal  @default(0) @map("total_amount") @db.Decimal(14, 2)
+  remark          String?  @db.Text
+  createdByUserId BigInt?  @map("created_by_user_id") @db.UnsignedBigInt
+  createdAt       DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  supplier    Supplier            @relation(fields: [supplierId], references: [id])
+  createdBy   User?               @relation("PurchaseOrderCreator", fields: [createdByUserId], references: [id])
+  lines       PurchaseOrderLine[]
+
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderLine {
+  id              BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  purchaseOrderId BigInt   @map("purchase_order_id") @db.UnsignedBigInt
+  productId       BigInt   @map("product_id") @db.UnsignedBigInt
+  qty             Int
+  unitCost        Decimal  @map("unit_cost") @db.Decimal(14, 2)
+  lineAmount      Decimal  @map("line_amount") @db.Decimal(14, 2)
+  createdAt       DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  product       Product       @relation(fields: [productId], references: [id])
+
+  @@map("purchase_order_lines")
+}
+
+model DeliveryAssignment {
+  id                   BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  salesOrderId         BigInt    @map("sales_order_id") @db.UnsignedBigInt
+  driverId             BigInt    @map("driver_id") @db.UnsignedBigInt
+  vehicleId            BigInt?   @map("vehicle_id") @db.UnsignedBigInt
+  assignmentDate       DateTime  @map("assignment_date") @db.Date
+  /// assigned | delivering | pending_settlement（司機已回報、待辦公室核銷）| completed | cancelled | not_delivered
+  status               String    @default("assigned") @db.VarChar(32)
+  assignedByUserId     BigInt?   @map("assigned_by_user_id") @db.UnsignedBigInt
+  assignedAt           DateTime  @default(now()) @map("assigned_at") @db.DateTime(3)
+  /// 辦公室核銷後寫入（與 office_settled_at 一致）；司機回報階段為 null
+  completedAt          DateTime? @map("completed_at") @db.DateTime(3)
+  /// 司機於司機端提交配送結果的時間
+  driverReportedAt     DateTime? @map("driver_reported_at") @db.DateTime(3)
+  emptyBarrelsReturned Int       @default(0) @map("empty_barrels_returned")
+  cashReceived         Decimal   @default(0) @map("cash_received") @db.Decimal(14, 2)
+  /// 核銷結果：not_delivered | delivered_cash_exact | delivered_cash_short | delivered_cash_over | delivered_no_cash（舊資料為 null）
+  settlementOutcome    String?   @map("settlement_outcome") @db.VarChar(40)
+  failureReason        String?   @map("failure_reason") @db.Text
+  expectedAmount       Decimal?  @map("expected_amount") @db.Decimal(14, 2)
+  cashVariance         Decimal?  @map("cash_variance") @db.Decimal(14, 2)
+  settlementNote       String?   @map("settlement_note") @db.VarChar(500)
+  /// 辦公室在後台按下「確認核銷」的時間；null 表示仍待核銷
+  officeSettledAt      DateTime? @map("office_settled_at") @db.DateTime(3)
+  createdAt            DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt            DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+
+  salesOrder   SalesOrder        @relation(fields: [salesOrderId], references: [id])
+  driver       Driver            @relation(fields: [driverId], references: [id])
+  vehicle      Vehicle?          @relation(fields: [vehicleId], references: [id])
+  assignedBy   User?             @relation("AssignmentAssigner", fields: [assignedByUserId], references: [id])
+  events       DeliveryEvent[]
+
+  @@map("delivery_assignments")
+}
+
+model DeliveryEvent {
+  id                     BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  deliveryAssignmentId   BigInt   @map("delivery_assignment_id") @db.UnsignedBigInt
+  eventType              String   @map("event_type") @db.VarChar(32)
+  payloadJson            Json?    @map("payload_json")
+  createdAt              DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  assignment DeliveryAssignment @relation(fields: [deliveryAssignmentId], references: [id], onDelete: Cascade)
+
+  @@map("delivery_events")
+}
+
+model Payment {
+  id                  BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  customerId          BigInt   @map("customer_id") @db.UnsignedBigInt
+  salesOrderId        BigInt?  @map("sales_order_id") @db.UnsignedBigInt
+  amount              Decimal  @db.Decimal(14, 2)
+  paymentMethod       String   @default("cash") @map("payment_method") @db.VarChar(32)
+  paidAt              DateTime @default(now()) @map("paid_at") @db.DateTime(3)
+  note                String?  @db.VarChar(500)
+  recordedByUserId    BigInt?  @map("recorded_by_user_id") @db.UnsignedBigInt
+  receiptVoucherId    BigInt?  @unique @map("receipt_voucher_id") @db.UnsignedBigInt
+  createdAt           DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  customer     Customer  @relation(fields: [customerId], references: [id])
+  salesOrder   SalesOrder? @relation(fields: [salesOrderId], references: [id])
+  recordedBy   User?     @relation("PaymentRecorder", fields: [recordedByUserId], references: [id])
+  receiptVoucher ReceiptVoucher? @relation(fields: [receiptVoucherId], references: [id])
+  ledgerEntries CustomerLedgerEntry[]
+
+  @@map("payments")
+}
+
+model ArDocument {
+  id               BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  arNo             String   @unique @map("ar_no") @db.VarChar(40)
+  customerId       BigInt   @map("customer_id") @db.UnsignedBigInt
+  salesOrderId     BigInt?  @map("sales_order_id") @db.UnsignedBigInt
+  /// 月結批次整包立帳時綁定（單筆應收 OpenItem 通常 sales_order_id 為 null）
+  billingStatementId BigInt? @map("billing_statement_id") @db.UnsignedBigInt
+  documentType     String   @default("delivery") @map("document_type") @db.VarChar(32)
+  billingType      String   @map("billing_type") @db.VarChar(32)
+  documentAmount   Decimal  @map("document_amount") @db.Decimal(14, 2)
+  dueDate          DateTime? @map("due_date") @db.Date
+  status           String   @default("open") @db.VarChar(24)
+  postedAt         DateTime @default(now()) @map("posted_at") @db.DateTime(3)
+  createdByUserId  BigInt?  @map("created_by_user_id") @db.UnsignedBigInt
+  createdAt        DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  customer   Customer   @relation(fields: [customerId], references: [id])
+  salesOrder SalesOrder? @relation(fields: [salesOrderId], references: [id], onDelete: SetNull)
+  billingStatement BillingStatement? @relation(fields: [billingStatementId], references: [id], onDelete: SetNull)
+  openItems  ArOpenItem[]
+
+  @@index([customerId, status])
+  @@index([salesOrderId])
+  @@index([billingStatementId])
+  @@map("ar_documents")
+}
+
+/// 月結結帳批次（R2：於此前不立訂單月結 AR）
+model BillingStatement {
+  id             BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  statementNo    String    @unique @map("statement_no") @db.VarChar(40)
+  customerId     BigInt    @map("customer_id") @db.UnsignedBigInt
+  status         String    @default("posted") @map("status") @db.VarChar(24)
+  cutoffDate     DateTime? @map("cutoff_date") @db.Date
+  untaxedTotal   Decimal   @map("untaxed_total") @db.Decimal(14, 2)
+  taxAmount      Decimal   @map("tax_amount") @db.Decimal(14, 2)
+  totalWithTax   Decimal   @map("total_with_tax") @db.Decimal(14, 2)
+  taxRate        Decimal   @default(0.05) @map("tax_rate") @db.Decimal(8, 6)
+  invoiceMode    String    @default("tax_exclusive") @map("invoice_mode") @db.VarChar(32)
+  postedAt       DateTime  @default(now()) @map("posted_at") @db.DateTime(3)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+
+  customer    Customer                @relation(fields: [customerId], references: [id])
+  orders      BillingStatementOrder[]
+  arDocuments ArDocument[]
+  taxInvoices TaxInvoice[]
+
+  @@index([customerId, postedAt])
+  @@map("billing_statements")
+}
+
+model BillingStatementOrder {
+  id                   BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  billingStatementId   BigInt   @map("billing_statement_id") @db.UnsignedBigInt
+  salesOrderId         BigInt   @unique @map("sales_order_id") @db.UnsignedBigInt
+  monthlyUntaxedAmount Decimal  @map("monthly_untaxed_amount") @db.Decimal(14, 2)
+
+  billingStatement BillingStatement @relation(fields: [billingStatementId], references: [id], onDelete: Cascade)
+  salesOrder       SalesOrder       @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
+
+  @@index([billingStatementId])
+  @@map("billing_statement_orders")
+}
+
+model TaxInvoice {
+  id                   BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  invoiceNo            String    @unique @map("invoice_no") @db.VarChar(40)
+  customerId           BigInt    @map("customer_id") @db.UnsignedBigInt
+  basisType            String    @map("basis_type") @db.VarChar(24)
+  billingStatementId   BigInt?   @map("billing_statement_id") @db.UnsignedBigInt
+  salesOrderId         BigInt?   @map("sales_order_id") @db.UnsignedBigInt
+  invoiceMode          String    @default("tax_exclusive") @map("invoice_mode") @db.VarChar(32)
+  untaxedAmount        Decimal   @default(0) @map("untaxed_amount") @db.Decimal(14, 2)
+  taxAmount            Decimal   @default(0) @map("tax_amount") @db.Decimal(14, 2)
+  totalAmount          Decimal   @default(0) @map("total_amount") @db.Decimal(14, 2)
+  taxRate              Decimal   @default(0.05) @map("tax_rate") @db.Decimal(8, 6)
+  status               String    @default("issued") @map("status") @db.VarChar(24)
+  issuedAt             DateTime  @default(now()) @map("issued_at") @db.DateTime(3)
+  createdAt            DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+
+  customer         Customer          @relation(fields: [customerId], references: [id])
+  billingStatement BillingStatement? @relation(fields: [billingStatementId], references: [id], onDelete: SetNull)
+  salesOrder       SalesOrder?       @relation(fields: [salesOrderId], references: [id], onDelete: SetNull)
+
+  @@index([customerId, issuedAt])
+  @@index([billingStatementId])
+  @@index([salesOrderId])
+  @@map("tax_invoices")
+}
+
+model ArOpenItem {
+  id                BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  arDocumentId      BigInt   @map("ar_document_id") @db.UnsignedBigInt
+  customerId        BigInt   @map("customer_id") @db.UnsignedBigInt
+  salesOrderId      BigInt?  @map("sales_order_id") @db.UnsignedBigInt
+  originalAmount    Decimal  @map("original_amount") @db.Decimal(14, 2)
+  allocatedAmount   Decimal  @default(0) @map("allocated_amount") @db.Decimal(14, 2)
+  outstandingAmount Decimal  @map("outstanding_amount") @db.Decimal(14, 2)
+  dueDate           DateTime? @map("due_date") @db.Date
+  expectedCollectDate DateTime? @map("expected_collect_date") @db.Date
+  status            String   @default("unpaid") @db.VarChar(24)
+  createdAt         DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  arDocument  ArDocument @relation(fields: [arDocumentId], references: [id], onDelete: Cascade)
+  customer    Customer   @relation(fields: [customerId], references: [id])
+  salesOrder  SalesOrder? @relation(fields: [salesOrderId], references: [id], onDelete: SetNull)
+  allocations ArAllocationMap[]
+  creditNoteAllocations CreditNoteAllocation[]
+
+  @@index([customerId, status, dueDate])
+  @@index([salesOrderId])
+  @@map("ar_open_items")
+}
+
+model ReceiptVoucher {
+  id               BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  voucherNo        String   @unique @map("voucher_no") @db.VarChar(40)
+  customerId       BigInt   @map("customer_id") @db.UnsignedBigInt
+  voucherType      String   @default("receipt") @map("voucher_type") @db.VarChar(24)
+  paymentMethod    String   @default("cash") @map("payment_method") @db.VarChar(32)
+  totalAmount      Decimal  @map("total_amount") @db.Decimal(14, 2)
+  unappliedAmount  Decimal  @default(0) @map("unapplied_amount") @db.Decimal(14, 2)
+  status           String   @default("posted") @db.VarChar(24)
+  paidAt           DateTime @default(now()) @map("paid_at") @db.DateTime(3)
+  note             String?  @db.VarChar(500)
+  createdByUserId  BigInt?  @map("created_by_user_id") @db.UnsignedBigInt
+  createdAt        DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  customer    Customer @relation(fields: [customerId], references: [id])
+  allocations ArAllocationMap[]
+  payment     Payment?
+  ledgerEntries CustomerLedgerEntry[]
+  prepaymentTxns PrepaymentTxn[]
+
+  @@index([customerId, paidAt])
+  @@map("receipt_vouchers")
+}
+
+model ArAllocationMap {
+  id               BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  receiptVoucherId BigInt   @map("receipt_voucher_id") @db.UnsignedBigInt
+  arOpenItemId     BigInt   @map("ar_open_item_id") @db.UnsignedBigInt
+  allocatedAmount  Decimal  @map("allocated_amount") @db.Decimal(14, 2)
+  allocatedAt      DateTime @default(now()) @map("allocated_at") @db.DateTime(3)
+  note             String?  @db.VarChar(500)
+
+  receiptVoucher ReceiptVoucher @relation(fields: [receiptVoucherId], references: [id], onDelete: Cascade)
+  arOpenItem     ArOpenItem     @relation(fields: [arOpenItemId], references: [id], onDelete: Cascade)
+
+  @@index([receiptVoucherId])
+  @@index([arOpenItemId])
+  @@map("ar_allocation_maps")
+}
+
+model CustomerPrepaymentWallet {
+  id              BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  customerId      BigInt   @unique @map("customer_id") @db.UnsignedBigInt
+  balanceAmount   Decimal  @default(0) @map("balance_amount") @db.Decimal(14, 2)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+  createdAt       DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  @@map("customer_prepayment_wallets")
+}
+
+model PrepaymentTxn {
+  id               BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  customerId       BigInt   @map("customer_id") @db.UnsignedBigInt
+  receiptVoucherId BigInt?  @map("receipt_voucher_id") @db.UnsignedBigInt
+  txnType          String   @map("txn_type") @db.VarChar(24)
+  amount           Decimal  @map("amount") @db.Decimal(14, 2)
+  balanceAfter     Decimal  @map("balance_after") @db.Decimal(14, 2)
+  note             String?  @db.VarChar(500)
+  createdAt        DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  customer Customer @relation(fields: [customerId], references: [id])
+  receiptVoucher ReceiptVoucher? @relation(fields: [receiptVoucherId], references: [id], onDelete: SetNull)
+
+  @@index([customerId, createdAt])
+  @@map("prepayment_txns")
+}
+
+model CreditNote {
+  id               BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  creditNo         String   @unique @map("credit_no") @db.VarChar(40)
+  customerId       BigInt   @map("customer_id") @db.UnsignedBigInt
+  salesOrderId     BigInt?  @map("sales_order_id") @db.UnsignedBigInt
+  amount           Decimal  @map("amount") @db.Decimal(14, 2)
+  reason           String?  @db.VarChar(255)
+  status           String   @default("approved") @db.VarChar(24)
+  createdByUserId  BigInt?  @map("created_by_user_id") @db.UnsignedBigInt
+  createdAt        DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  customer Customer @relation(fields: [customerId], references: [id])
+  salesOrder SalesOrder? @relation(fields: [salesOrderId], references: [id], onDelete: SetNull)
+  allocations CreditNoteAllocation[]
+
+  @@index([customerId, createdAt])
+  @@map("credit_notes")
+}
+
+model CreditNoteAllocation {
+  id           BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  creditNoteId BigInt   @map("credit_note_id") @db.UnsignedBigInt
+  arOpenItemId BigInt   @map("ar_open_item_id") @db.UnsignedBigInt
+  amount       Decimal  @map("amount") @db.Decimal(14, 2)
+  createdAt    DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  creditNote CreditNote @relation(fields: [creditNoteId], references: [id], onDelete: Cascade)
+  arOpenItem ArOpenItem @relation(fields: [arOpenItemId], references: [id], onDelete: Cascade)
+
+  @@index([creditNoteId])
+  @@index([arOpenItemId])
+  @@map("credit_note_allocations")
+}
+
+model BarrelPickup {
+  id                   BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  pickupNo             String    @unique @map("pickup_no") @db.VarChar(24)
+  customerId           BigInt    @map("customer_id") @db.UnsignedBigInt
+  deliveryAddressId    BigInt    @map("delivery_address_id") @db.UnsignedBigInt
+  driverId             BigInt    @map("driver_id") @db.UnsignedBigInt
+  vehicleId            BigInt?   @map("vehicle_id") @db.UnsignedBigInt
+  assignedByUserId     BigInt?   @map("assigned_by_user_id") @db.UnsignedBigInt
+  pickupDate           DateTime  @map("pickup_date") @db.Date
+  status               String    @default("assigned") @db.VarChar(32)
+  barrelsExpected      Int?      @map("barrels_expected") @db.UnsignedInt
+  barrelsReturned      Int?      @map("barrels_returned") @db.UnsignedInt
+  driverNote           String?   @map("driver_note") @db.VarChar(500)
+  driverReportedAt     DateTime? @map("driver_reported_at") @db.DateTime(3)
+  officeSettledByUserId BigInt?  @map("office_settled_by_user_id") @db.UnsignedBigInt
+  officeSettledAt      DateTime? @map("office_settled_at") @db.DateTime(3)
+  remark               String?   @db.Text
+  createdByUserId      BigInt?   @map("created_by_user_id") @db.UnsignedBigInt
+  createdAt            DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt            DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+
+  customer         Customer        @relation(fields: [customerId], references: [id])
+  deliveryAddress  DeliveryAddress @relation(fields: [deliveryAddressId], references: [id])
+  driver           Driver          @relation(fields: [driverId], references: [id])
+  vehicle          Vehicle?        @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
+  assignedBy       User?           @relation("BarrelPickupAssigner", fields: [assignedByUserId], references: [id], onDelete: SetNull)
+  createdBy        User?           @relation("BarrelPickupCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  officeSettledBy  User?           @relation("BarrelPickupSettler", fields: [officeSettledByUserId], references: [id], onDelete: SetNull)
+  events           BarrelPickupEvent[]
+
+  @@index([status, pickupDate])
+  @@map("barrel_pickups")
+}
+
+model BarrelPickupEvent {
+  id             BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  barrelPickupId BigInt   @map("barrel_pickup_id") @db.UnsignedBigInt
+  eventType      String   @map("event_type") @db.VarChar(40)
+  payloadJson    Json?    @map("payload_json")
+  createdAt      DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  barrelPickup BarrelPickup @relation(fields: [barrelPickupId], references: [id], onDelete: Cascade)
+
+  @@index([barrelPickupId])
+  @@map("barrel_pickup_events")
+}

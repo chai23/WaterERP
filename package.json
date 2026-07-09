@@ -1,0 +1,28 @@
+{
+  "name": "water-erp",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "npm run dev -w apps/api",
+    "dev:admin": "npm run dev -w apps/web-admin",
+    "dev:driver": "npm run dev -w apps/web-driver",
+    "build": "npm run build -w apps/api && npm run build -w apps/web-admin && npm run build -w apps/web-driver",
+    "db:generate": "npm run prisma:generate -w apps/api",
+    "db:reset": "npm run reset-data -w apps/api",
+    "db:migrate-legacy-masters": "npm run migrate:legacy-masters -w apps/api",
+    "db:migrate-zones": "npm run migrate:legacy-zones -w apps/api",
+    "db:migrate-companies": "npm run migrate:legacy-companies -w apps/api",
+    "db:migrate-customers": "npm run migrate:legacy-customers -w apps/api",
+    "db:migrate-users": "npm run migrate:legacy-users -w apps/api",
+    "db:migrate-drivers": "npm run migrate:legacy-drivers -w apps/api",
+    "db:migrate-products": "npm run migrate:legacy-products -w apps/api",
+    "deploy:build": "powershell -ExecutionPolicy Bypass -File deploy/scripts/build-production.ps1",
+    "deploy:nginx": "powershell -ExecutionPolicy Bypass -File deploy/scripts/generate-nginx-config.ps1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

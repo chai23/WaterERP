@@ -1,0 +1,1227 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { newOrderFormLine, useDashboard, type LineBillingType, type LinePurpose } from "../DashboardContext";
+import type { Customer, CustomerBillingSummary, CustomerDetail, CustomerSalesOrder, Product } from "../adminUtils";
+import { billingTypeLabel, fmtLocalYmd, orderStatusBadgeClass, sumCustomerBarrelsOnSite } from "../adminUtils";
+import { breakdownCashTaxInvoicePreview, DEFAULT_VAT_RATE } from "../taxDisplay";
+import { openOrderPrintWindow, slipWithOrderAnnouncement } from "../orderPrint";
+import { RemarkSloganPicker } from "../components/RemarkSloganPicker";
+
+function parseLineBilling(c: string | undefined | null): LineBillingType {
+  if (c === "monthly" || c === "prepaid" || c === "cash") return c;
+  return "cash";
+}
+
+function digitsOnly(value: string): string {
+  return value.replace(/\D/g, "");
+}
+
+/** 字元是否依序出現在字串中（輕量相似：支援略打錯順序時仍有弱命中） */
+function charsInOrder(query: string, haystack: string): boolean {
+  let qi = 0;
+  for (let i = 0; i < haystack.length && qi < query.length; i++) {
+    if (haystack[i] === query[qi]) qi++;
+  }
+  return qi === query.length;
+}
+
+function scoreCustomerMatch(c: Customer, qRaw: string): number {
+  const q = qRaw.trim().toLowerCase();
+  if (!q) return 0;
+
+  const code = (c.customerCode ?? "").trim().toLowerCase();
+  const idStr = String(c.id);
+
+  if (/^\d{1,6}$/.test(q)) {
+    const padded = q.padStart(6, "0");
+    if (code === q || code === padded) return 1_000_000;
+    if (code.startsWith(q)) return 900_000 + q.length * 500;
+    if (code.includes(q)) return 750_000;
+  }
+
+  if (idStr === q || idStr.includes(q)) return 930_000;
+
+  const qDigits = digitsOnly(qRaw);
+  const phoneBuckets = new Set<string>();
+  const pushDigits = (s: string | null | undefined) => {
+    const d = digitsOnly(s ?? "");
+    if (d.length > 0) phoneBuckets.add(d);
+  };
+  pushDigits(c.phone ?? "");
+  for (const a of c.addresses ?? []) {
+    pushDigits(a.contactPhone ?? "");
+  }
+  if (qDigits.length >= 6) {
+    for (const p of phoneBuckets) {
+      if (p === qDigits) return 920_000;
+      if (p.endsWith(qDigits)) return 880_000;
+      if (p.includes(qDigits)) return 760_000;
+    }
+  } else if (qDigits.length >= 4 && qDigits === qRaw.trim()) {
+    for (const p of phoneBuckets) {
+      if (p === qDigits) return 915_000;
+      if (p.endsWith(qDigits)) return 870_000;
+      if (p.includes(qDigits)) return 720_000;
+    }
+  }
+
+  const name = (c.name ?? "").toLowerCase();
+  if (name === q) return 860_000;
+  if (name.startsWith(q)) return 650_000;
+  if (name.includes(q)) return 480_000 + Math.min(q.length * 800, 24_000);
+
+  const addrBlob = (c.addresses ?? [])
+    .map((a) => `${a.label ?? ""} ${a.addressLine ?? ""} ${a.contactPhone ?? ""}`.toLowerCase())
+    .join(" ");
+  if (addrBlob.includes(q)) return 460_000;
+
+  if (q.length >= 2 && charsInOrder(q, name)) return 220_000;
+
+  return 0;
+}
+
+function defaultDeliveryAddressId(c: Customer): string {
+  const list = c.addresses ?? [];
+  if (list.length === 0) return "";
+  const def = list.find((a) => a.isDefault);
+  return String((def ?? list[0]).id);
+}
+
+const MATCH_DEBOUNCE_MS = 320;
+/** 低於此分數不自動帶入（避免過鬆的模糊命中） */
+const MIN_AUTO_SCORE = 240_000;
+const AMBIGUOUS_GAP = 38_000;
+function resolveProductByCode(active: Product[], codeDigits: string): Product | undefined {
+  const raw = codeDigits.trim();
+  if (!/^\d{3}$/.test(raw)) return undefined;
+  return active.find((pp) => pp.isActive !== false && (pp.productCode ?? "").trim() === raw);
+}
+
+function defaultUnitPriceForProduct(
+  product: Product,
+  lastPriceMap: Record<string, { unitPrice: string; orderNo: string }>,
+): string {
+  const last = lastPriceMap[String(product.id)];
+  const lastNum = last ? Number(last.unitPrice) : NaN;
+  if (last && Number.isFinite(lastNum) && lastNum >= 0) return last.unitPrice;
+  return String(product.salePrice);
+}
+
+function orderNewMatchHintClass(msg: string): string {
+  const base = "order-new__match-hint";
+  if (!msg) return base;
+  if (msg.includes("找不到") || msg.includes("不明確")) return `${base} order-new__match-hint--err`;
+  if (msg.includes("相近")) return `${base} order-new__match-hint--warn`;
+  return `${base} order-new__match-hint--ok`;
+}
+
+function orderStatusLabel(status: string | undefined): string {
+  switch (status) {
+    case "draft":
+      return "草稿";
+    case "confirmed":
+      return "已確認";
+    case "assigned":
+      return "已分派";
+    case "delivering":
+      return "配送中";
+    case "completed":
+      return "已完成";
+    case "not_delivered":
+      return "未送達";
+    case "cancelled":
+      return "已取消";
+    default:
+      return status ?? "—";
+  }
+}
+
+/** 與查詢訂單頁相同：由配送指派紀錄推估實際配送日（YYYY-MM-DD） */
+function historyActualDeliveryYmd(o: CustomerSalesOrder): string | null {
+  const assignments = Array.isArray(o.assignments) ? o.assignments : [];
+  if (assignments.length === 0) return null;
+  const picked = assignments
+    .map((a) => a?.driverReportedAt ?? a?.assignmentDate ?? a?.completedAt ?? a?.officeSettledAt ?? null)
+    .find((v) => v != null && String(v).trim() !== "");
+  if (!picked) return null;
+  const ymd = fmtLocalYmd(picked);
+  return ymd === "—" ? null : ymd;
+}
+
+/** 排序用：已完成／未送達優先實際配送日，其餘用預計配送日（對齊查詢頁 deliveryDateLabel 邏輯） */
+function historySortDeliveryYmd(o: CustomerSalesOrder): string | null {
+  const status = String(o.status ?? "");
+  if (status === "completed" || status === "not_delivered") {
+    const a = historyActualDeliveryYmd(o);
+    if (a) return a;
+  }
+  const s = fmtLocalYmd(o.scheduledDeliveryDate);
+  return s === "—" ? null : s;
+}
+
+function historyDeliverySortKeyMs(o: CustomerSalesOrder): number {
+  const ymd = historySortDeliveryYmd(o);
+  if (!ymd) return Number.MIN_SAFE_INTEGER;
+  const parts = ymd.split("-").map(Number);
+  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) return Number.MIN_SAFE_INTEGER;
+  const [y, m, d] = parts;
+  return new Date(y, m - 1, d).getTime();
+}
+
+function historyLineSummary(line: NonNullable<CustomerSalesOrder["lines"]>[number]): string {
+  const name = line.product?.name?.trim() || "（商品）";
+  const unit = line.product?.unit?.trim();
+  const qty = line.qtyOrdered;
+  const suffix = line.linePurpose === "prepaid_barrel_topup" ? " · 預付桶儲值" : "";
+  const u = unit ? `${unit}` : "";
+  return `${name}${u ? `（${u}）` : ""} × ${qty}${suffix}`;
+}
+
+/** 清單列顯示用配送日（實際為主，否則預計） */
+function historyDisplayYmd(o: CustomerSalesOrder): string {
+  const a = historyActualDeliveryYmd(o);
+  if (a) return a;
+  const s = fmtLocalYmd(o.scheduledDeliveryDate);
+  return s === "—" ? "—" : s;
+}
+
+function historyGoodsSummary(o: CustomerSalesOrder, maxLen = 88): string {
+  const parts = (o.lines ?? []).map((ln) => {
+    let t = historyLineSummary(ln);
+    if (t.includes("預付桶儲值")) t = t.replace(" · 預付桶儲值", "（儲值）");
+    return t;
+  });
+  const s = parts.join("；");
+  if (s.length <= maxLen) return s;
+  return `${s.slice(0, Math.max(0, maxLen - 1))}…`;
+}
+
+function historyRowDetailTitle(o: CustomerSalesOrder): string {
+  const lines = (o.lines ?? []).map((ln) => historyLineSummary(ln)).join("\n");
+  return `${o.orderNo}｜${historyDisplayYmd(o)}\n${lines}`;
+}
+
+type OrderLineField = "code" | "billing" | "price" | "qty";
+
+function lineFieldKey(rowId: string, field: OrderLineField): string {
+  return `${rowId}-${field}`;
+}
+
+export default function OrderNewPage() {
+  const { customers, products, saving, formMessage, form, setForm, onSubmitCreateOrder, selectedCustomer, lastOrderSlipForPrint } =
+    useDashboard();
+  const [billingSummary, setBillingSummary] = useState<CustomerBillingSummary | null>(null);
+  const [lastPriceMap, setLastPriceMap] = useState<Record<string, { unitPrice: string; orderNo: string }>>({});
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [historyOrders, setHistoryOrders] = useState<CustomerSalesOrder[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [customerKeyword, setCustomerKeyword] = useState("");
+  const [matchHint, setMatchHint] = useState("");
+  const [lineProductCodes, setLineProductCodes] = useState<Record<string, string>>({});
+  const lineFieldRefs = useRef<Record<string, HTMLElement | null>>({});
+  const pendingLineFocus = useRef<{ rowId: string; field: OrderLineField } | null>(null);
+
+  const focusLineField = useCallback((rowId: string, field: OrderLineField) => {
+    requestAnimationFrame(() => {
+      const el = lineFieldRefs.current[lineFieldKey(rowId, field)];
+      el?.focus();
+      if (el instanceof HTMLInputElement && field !== "billing") {
+        el.select();
+      }
+    });
+  }, []);
+
+  const setLineFieldRef = useCallback((rowId: string, field: OrderLineField) => {
+    return (el: HTMLElement | null) => {
+      lineFieldRefs.current[lineFieldKey(rowId, field)] = el;
+    };
+  }, []);
+
+  useEffect(() => {
+    const pending = pendingLineFocus.current;
+    if (!pending) return;
+    pendingLineFocus.current = null;
+    focusLineField(pending.rowId, pending.field);
+  }, [form.lines, focusLineField]);
+
+  const alternateCandidates = useMemo(() => {
+    const q = customerKeyword.trim();
+    if (!q) return [];
+    return customers
+      .map((c) => ({ c, score: scoreCustomerMatch(c, customerKeyword) }))
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 18);
+  }, [customers, customerKeyword]);
+
+  const pickerOptions = useMemo(() => {
+    const base = alternateCandidates;
+    if (!form.customerId) return base;
+    if (base.some(({ c }) => String(c.id) === form.customerId)) return base;
+    const sel = customers.find((c) => String(c.id) === form.customerId);
+    if (!sel) return base;
+    return [{ c: sel, score: 0 }, ...base];
+  }, [alternateCandidates, customers, form.customerId]);
+
+  useEffect(() => {
+    const q = customerKeyword.trim();
+    const timer = window.setTimeout(() => {
+      if (!q) {
+        setMatchHint("");
+        setForm((f) => ({ ...f, customerId: "", deliveryAddressId: "" }));
+        return;
+      }
+
+      const ranked = customers
+        .map((c) => ({ c, score: scoreCustomerMatch(c, customerKeyword) }))
+        .filter((x) => x.score > 0)
+        .sort((a, b) => b.score - a.score);
+
+      if (ranked.length === 0) {
+        setMatchHint("找不到相符客戶，請換個關鍵字試試。");
+        setForm((f) => ({ ...f, customerId: "", deliveryAddressId: "" }));
+        return;
+      }
+
+      const top = ranked[0];
+      const second = ranked[1];
+      const ambiguous =
+        second != null && top.score >= MIN_AUTO_SCORE && second.score >= MIN_AUTO_SCORE && top.score - second.score < AMBIGUOUS_GAP;
+
+      if (top.score < MIN_AUTO_SCORE) {
+        setMatchHint("結果不明確，請輸入更完整的客戶編號、電話或地址。");
+        setForm((f) => ({ ...f, customerId: "", deliveryAddressId: "" }));
+        return;
+      }
+
+      const addrId = defaultDeliveryAddressId(top.c);
+      setForm((f) => ({
+        ...f,
+        customerId: String(top.c.id),
+        deliveryAddressId: addrId,
+      }));
+
+      if (ambiguous) {
+        setMatchHint(
+          `已自動帶入最相近客戶（${top.c.customerCode ?? "------"}／${top.c.name}）。另有相近結果，若不正確請從下方「改選」或繼續輸入更完整資料。`,
+        );
+      } else {
+        setMatchHint(`已自動選取：${top.c.customerCode ?? "------"}／${top.c.name}`);
+      }
+    }, MATCH_DEBOUNCE_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [customerKeyword, customers, setForm]);
+
+  useEffect(() => {
+    if (!form.customerId) {
+      setBillingSummary(null);
+      setLastPriceMap({});
+      return;
+    }
+    let cancelled = false;
+    setSummaryLoading(true);
+    void fetch(`/api/customers/${form.customerId}/billing-summary`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled) return;
+        if (j?.ok && j.data) setBillingSummary(j.data as CustomerBillingSummary);
+        else setBillingSummary(null);
+      })
+      .catch(() => {
+        if (!cancelled) setBillingSummary(null);
+      })
+      .finally(() => {
+        if (!cancelled) setSummaryLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [form.customerId]);
+
+  useEffect(() => {
+    if (!form.customerId) {
+      setHistoryOrders([]);
+      return;
+    }
+    let cancelled = false;
+    setHistoryLoading(true);
+    void fetch(`/api/customers/${form.customerId}`)
+      .then(async (r) => {
+        const data: unknown = await r.json();
+        if (cancelled) return;
+        if (!r.ok || !data || typeof data !== "object") {
+          setHistoryOrders([]);
+          return;
+        }
+        const raw = (data as CustomerDetail).salesOrders;
+        setHistoryOrders(Array.isArray(raw) ? raw : []);
+      })
+      .catch(() => {
+        if (!cancelled) setHistoryOrders([]);
+      })
+      .finally(() => {
+        if (!cancelled) setHistoryLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [form.customerId]);
+
+  useEffect(() => {
+    if (!form.customerId) {
+      setLastPriceMap({});
+      return;
+    }
+    let cancelled = false;
+    void fetch(`/api/customers/${form.customerId}/last-product-prices`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled) return;
+        if (!j?.ok || !Array.isArray(j.data)) {
+          setLastPriceMap({});
+          return;
+        }
+        const next: Record<string, { unitPrice: string; orderNo: string }> = {};
+        for (const row of j.data as Array<{ productId?: string; unitPrice?: string; orderNo?: string }>) {
+          if (!row?.productId) continue;
+          next[String(row.productId)] = {
+            unitPrice: String(row.unitPrice ?? "0"),
+            orderNo: String(row.orderNo ?? ""),
+          };
+        }
+        setLastPriceMap(next);
+      })
+      .catch(() => {
+        if (!cancelled) setLastPriceMap({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [form.customerId]);
+
+  useEffect(() => {
+    if (!form.customerId || !selectedCustomer) return;
+    const bt = parseLineBilling(selectedCustomer.billingType);
+    const invRaw = selectedCustomer.defaultCashInvoiceMode;
+    const inv =
+      invRaw === "tax_inclusive" || invRaw === "tax_exclusive" || invRaw === "none" ? invRaw : "none";
+    setForm((f) => ({
+      ...f,
+      cashInvoiceMode: inv,
+      lines: f.lines.map((row) => {
+        if (row.linePurpose === "prepaid_barrel_topup") {
+          return { ...row, billingType: "cash" };
+        }
+        return { ...row, billingType: bt };
+      }),
+    }));
+  }, [form.customerId, selectedCustomer?.billingType, selectedCustomer?.defaultCashInvoiceMode]);
+
+  const activeProducts = useMemo(() => products.filter((p) => p.isActive !== false), [products]);
+
+  useEffect(() => {
+    if (!form.customerId || Object.keys(lastPriceMap).length === 0) return;
+    setForm((f) => {
+      let changed = false;
+      const nextLines = f.lines.map((ln) => {
+        if (!ln.productId) return ln;
+        const p = activeProducts.find((x) => String(x.id) === ln.productId);
+        if (!p) return ln;
+        const price = defaultUnitPriceForProduct(p, lastPriceMap);
+        const catalog = String(p.salePrice);
+        const shouldApply = ln.unitPrice.trim() === "" || (ln.unitPrice === catalog && price !== catalog);
+        if (shouldApply && ln.unitPrice !== price) {
+          changed = true;
+          return { ...ln, unitPrice: price };
+        }
+        return ln;
+      });
+      return changed ? { ...f, lines: nextLines } : f;
+    });
+  }, [lastPriceMap, form.customerId, activeProducts, setForm]);
+
+  const lineSubtotals = useMemo(() => {
+    return form.lines.map((l) => {
+      if (!l.productId || l.qty <= 0) return 0;
+      const p = activeProducts.find((x) => String(x.id) === l.productId);
+      if (!p) return 0;
+      const up = l.unitPrice.trim() === "" ? Number(p.salePrice) : Number(l.unitPrice);
+      if (!Number.isFinite(up) || up < 0) return 0;
+      return up * l.qty;
+    });
+  }, [form.lines, activeProducts]);
+
+  const estimatedTotal = useMemo(() => lineSubtotals.reduce((a, b) => a + b, 0), [lineSubtotals]);
+
+  const estimatedByBilling = useMemo(() => {
+    let cash = 0;
+    let monthly = 0;
+    let prepaid = 0;
+    form.lines.forEach((l, i) => {
+      const sub = lineSubtotals[i] ?? 0;
+      if (sub <= 0) return;
+      if (l.billingType === "cash") cash += sub;
+      else if (l.billingType === "monthly") monthly += sub;
+      else prepaid += sub;
+    });
+    return { cash, monthly, prepaid };
+  }, [form.lines, lineSubtotals]);
+
+  const cashInvoicePreview = useMemo(
+    () => breakdownCashTaxInvoicePreview(estimatedByBilling.cash, form.cashInvoiceMode ?? "none"),
+    [estimatedByBilling.cash, form.cashInvoiceMode],
+  );
+
+  const lineBillingMix = useMemo(() => {
+    const set = new Set(form.lines.map((l) => l.billingType));
+    return set.size > 1;
+  }, [form.lines]);
+
+  const lineIdsSig = useMemo(() => form.lines.map((r) => r.id).join("|"), [form.lines]);
+
+  const sortedHistoryOrders = useMemo(() => {
+    const list = [...historyOrders];
+    list.sort((a, b) => {
+      const kb = historyDeliverySortKeyMs(b);
+      const ka = historyDeliverySortKeyMs(a);
+      if (kb !== ka) return kb - ka;
+      return String(b.id).localeCompare(String(a.id), undefined, { numeric: true });
+    });
+    return list;
+  }, [historyOrders]);
+
+  useEffect(() => {
+    setLineProductCodes((prev) => {
+      const next = { ...prev };
+      for (const row of form.lines) {
+        const p = row.productId ? activeProducts.find((x) => String(x.id) === row.productId) : undefined;
+        const fromP = (p?.productCode ?? "").trim();
+        if (!(row.id in next)) {
+          next[row.id] = fromP;
+        } else if (row.productId && fromP && next[row.id] === "") {
+          next[row.id] = fromP;
+        }
+      }
+      for (const k of Object.keys(next)) {
+        if (!form.lines.some((r) => r.id === k)) delete next[k];
+      }
+      return next;
+    });
+  }, [lineIdsSig, activeProducts, form.lines]);
+
+  useEffect(() => {
+    setForm((f) => {
+      let changed = false;
+      const nextLines = f.lines.map((ln) => {
+        const v = (lineProductCodes[ln.id] ?? "").trim();
+        if (!/^\d{3}$/.test(v)) return ln;
+        const hit = resolveProductByCode(activeProducts, v);
+        if (!hit) {
+          if (ln.productId !== "") changed = true;
+          return { ...ln, productId: "", unitPrice: ln.unitPrice };
+        }
+        const pid = String(hit.id);
+        const price = defaultUnitPriceForProduct(hit, lastPriceMap);
+        if (ln.productId !== pid) {
+          changed = true;
+          return { ...ln, productId: pid, unitPrice: price };
+        }
+        if (ln.unitPrice.trim() === "") {
+          changed = true;
+          return { ...ln, productId: pid, unitPrice: price };
+        }
+        return ln;
+      });
+      return changed ? { ...f, lines: nextLines } : f;
+    });
+  }, [activeProducts, lineProductCodes, lastPriceMap, setForm]);
+
+  const updateLine = (
+    id: string,
+    patch: Partial<{ productId: string; qty: number; unitPrice: string; billingType: LineBillingType; linePurpose: LinePurpose }>,
+  ) => {
+    setForm((f) => ({
+      ...f,
+      lines: f.lines.map((row) => (row.id === id ? { ...row, ...patch } : row)),
+    }));
+  };
+
+  const applyProductCodeChange = useCallback(
+    (rowId: string, raw: string) => {
+      const v = raw.replace(/\D/g, "").slice(0, 3);
+      setLineProductCodes((prev) => ({ ...prev, [rowId]: v }));
+      setForm((f) => {
+        let validProduct = false;
+        const nextLines = f.lines.map((ln) => {
+          if (ln.id !== rowId) return ln;
+          if (!/^\d{3}$/.test(v)) {
+            return { ...ln, productId: "", unitPrice: ln.unitPrice };
+          }
+          const hit = resolveProductByCode(activeProducts, v);
+          if (!hit) {
+            return { ...ln, productId: "", unitPrice: ln.unitPrice };
+          }
+          validProduct = true;
+          const pid = String(hit.id);
+          const price = defaultUnitPriceForProduct(hit, lastPriceMap);
+          const productChanged = ln.productId !== pid;
+          return {
+            ...ln,
+            productId: pid,
+            unitPrice: productChanged ? price : ln.unitPrice.trim() !== "" ? ln.unitPrice : price,
+          };
+        });
+        const rowIdx = nextLines.findIndex((ln) => ln.id === rowId);
+        if (validProduct && rowIdx === nextLines.length - 1) {
+          const def = parseLineBilling(selectedCustomer?.billingType);
+          return { ...f, lines: [...nextLines, newOrderFormLine(def)] };
+        }
+        return { ...f, lines: nextLines };
+      });
+      return /^\d{3}$/.test(v) && Boolean(resolveProductByCode(activeProducts, v));
+    },
+    [activeProducts, lastPriceMap, selectedCustomer?.billingType, setForm],
+  );
+
+  const handleLineFieldEnter = useCallback(
+    (e: React.KeyboardEvent, rowId: string, field: OrderLineField) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      const row = form.lines.find((ln) => ln.id === rowId);
+      if (!row) return;
+
+      if (field === "code") {
+        const digits = (lineProductCodes[rowId] ?? "").trim();
+        if (/^\d{3}$/.test(digits) && resolveProductByCode(activeProducts, digits)) {
+          focusLineField(rowId, "billing");
+        }
+        return;
+      }
+      if (field === "billing") {
+        focusLineField(rowId, "price");
+        return;
+      }
+      if (field === "price") {
+        focusLineField(rowId, "qty");
+        return;
+      }
+      const idx = form.lines.findIndex((ln) => ln.id === rowId);
+      const nextRow = idx >= 0 ? form.lines[idx + 1] : undefined;
+      if (nextRow) {
+        focusLineField(nextRow.id, "code");
+        return;
+      }
+      if (row.productId) {
+        const def = parseLineBilling(selectedCustomer?.billingType);
+        const newLine = newOrderFormLine(def);
+        pendingLineFocus.current = { rowId: newLine.id, field: "code" };
+        setForm((f) => ({ ...f, lines: [...f.lines, newLine] }));
+      }
+    },
+    [activeProducts, focusLineField, form.lines, lineProductCodes, selectedCustomer?.billingType, setForm],
+  );
+
+  const onOrderLinesKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key !== "Enter") return;
+    if ((e.target as HTMLElement).closest(".order-lines-field")) {
+      e.preventDefault();
+    }
+  }, []);
+
+  const addLine = () => {
+    const def = parseLineBilling(selectedCustomer?.billingType);
+    setForm((f) => ({ ...f, lines: [...f.lines, newOrderFormLine(def)] }));
+  };
+
+  const removeLine = (id: string) => {
+    setForm((f) => {
+      if (f.lines.length <= 1) return f;
+      return { ...f, lines: f.lines.filter((row) => row.id !== id) };
+    });
+  };
+
+  return (
+    <section className="card order-new-page order-new-page--pro">
+      <header className="order-new__hero">
+        <div className="order-new__hero-top">
+          <div className="order-new__hero-titles">
+            <span className="order-new__badge">建立訂單</span>
+            <h2 className="order-new__page-title">新增訂單</h2>
+          </div>
+        </div>
+        <p className="order-new__hero-lead">
+          區塊 <strong>①②③</strong> 為客戶與參考資訊；區塊 <strong>④</strong> 為商品明細。左欄輸入<strong>6 碼編號</strong>
+          或電話／名稱即自動匹配，右欄可對照歷史叫貨。
+        </p>
+      </header>
+
+      <form onSubmit={onSubmitCreateOrder} className="order-new__form order-new__form--layout" onKeyDown={onOrderLinesKeyDown}>
+        <div className="order-new__workspace" aria-label="訂單資料分區">
+          <section className="order-new__zone order-new__zone--tools" aria-labelledby="order-new-zone-tools-title">
+            <header className="order-new__zone-head">
+              <span className="order-new__zone-index" aria-hidden="true">
+                1
+              </span>
+              <div className="order-new__zone-head-text">
+                <p className="order-new__zone-eyebrow">輸入 · 送貨設定</p>
+                <h3 id="order-new-zone-tools-title" className="order-new__zone-title">
+                  搜尋客戶與送貨條件
+                </h3>
+              </div>
+            </header>
+            <div className="order-new__zone-body">
+              <div className="order-new__tool-section">
+                <p className="order-new__tool-section-label">客戶搜尋</p>
+                <div className="field order-new__field--code">
+                  <label htmlFor="order-new-customer-search">關鍵字（6 碼編號優先）</label>
+                  <input
+                    id="order-new-customer-search"
+                    type="search"
+                    className="order-new__input-code"
+                    placeholder="6 碼編號或關鍵字"
+                    value={customerKeyword}
+                    onChange={(e) => setCustomerKeyword(e.target.value)}
+                    autoComplete="off"
+                  />
+                  {matchHint ? <p className={orderNewMatchHintClass(matchHint)}>{matchHint}</p> : null}
+
+                  {customerKeyword.trim() && pickerOptions.length > 1 ? (
+                    <div className="field order-new__field--nested">
+                      <label htmlFor="order-new-customer-picker">改選相符客戶</label>
+                      <select
+                        id="order-new-customer-picker"
+                        className="order-new__select-block"
+                        value={form.customerId}
+                        onChange={(e) => {
+                          const id = e.target.value;
+                          const row = pickerOptions.find(({ c }) => String(c.id) === id);
+                          const addrId = row ? defaultDeliveryAddressId(row.c) : "";
+                          setForm((prev) => ({
+                            ...prev,
+                            customerId: id,
+                            deliveryAddressId: addrId,
+                          }));
+                        }}
+                        aria-label="改選其他相符客戶"
+                      >
+                        {pickerOptions.map(({ c }) => (
+                          <option key={String(c.id)} value={String(c.id)}>
+                            {`${c.customerCode ?? "------"} · ${c.name}${c.phone ? ` · ${c.phone}` : ""}`}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : null}
+
+                  <p className="order-new__meta-line">相符約 {alternateCandidates.length} 筆（改選最多 18 筆）</p>
+                </div>
+              </div>
+
+              <hr className="order-new__surface-rule" />
+
+              <div className="order-new__tool-section">
+                <p className="order-new__tool-section-label">送貨點</p>
+                <div className="field">
+                  <label htmlFor="order-new-delivery">送貨地址</label>
+                  <select
+                    id="order-new-delivery"
+                    className="order-new__select-block"
+                    value={form.deliveryAddressId}
+                    onChange={(e) => setForm({ ...form, deliveryAddressId: e.target.value })}
+                  >
+                    <option value="">請選擇</option>
+                    {(selectedCustomer?.addresses ?? []).map((a) => (
+                      <option key={String(a.id)} value={String(a.id)}>
+                        {a.label ? `${a.label} — ` : ""}
+                        {a.addressLine}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <hr className="order-new__surface-rule" />
+
+              <div className="order-new__tool-section">
+                <p className="order-new__tool-section-label">配送與現金區發票</p>
+                <div className="order-new__inline-row">
+                  <div className="field order-new__field--date">
+                    <label htmlFor="order-new-scheduled-date">預計配送日</label>
+                    <input
+                      id="order-new-scheduled-date"
+                      type="date"
+                      className="order-new__input-date"
+                      value={form.scheduledDeliveryDate}
+                      onChange={(e) => setForm({ ...form, scheduledDeliveryDate: e.target.value })}
+                    />
+                  </div>
+                  <div className="field order-new__field--invoice-mini">
+                    <label htmlFor="order-new-cash-invoice">現金區發票</label>
+                    <select
+                      id="order-new-cash-invoice"
+                      className="order-new__select-short"
+                      value={form.cashInvoiceMode ?? "none"}
+                      onChange={(e) => setForm((f) => ({ ...f, cashInvoiceMode: e.target.value }))}
+                    >
+                      <option value="none">不開</option>
+                      <option value="tax_exclusive">稅外加</option>
+                      <option value="tax_inclusive">含稅</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section className="order-new__zone order-new__zone--main" aria-labelledby="order-new-zone-main-title">
+            <header className="order-new__zone-head">
+              <span className="order-new__zone-index order-new__zone-index--slate" aria-hidden="true">
+                2
+              </span>
+              <div className="order-new__zone-head-text">
+                <p className="order-new__zone-eyebrow">主檔 · 帳務</p>
+                <h3 id="order-new-zone-main-title" className="order-new__zone-title">
+                  客戶資料與帳務摘要
+                </h3>
+              </div>
+            </header>
+            <div className="order-new__zone-body">
+            {form.customerId && selectedCustomer ? (
+              <div className="order-new__cust-billing-merge">
+                <div className="order-new__cust-col">
+                  <p className="order-new__identity order-new__identity--compact">
+                    <span className="mono-text">
+                      <strong>{selectedCustomer.customerCode ?? "------"}</strong>
+                    </span>
+                    {" · "}
+                    <strong>{selectedCustomer.name}</strong>
+                    {selectedCustomer.phone ? (
+                      <>
+                        {" · "}
+                        <span className="mono-text">{selectedCustomer.phone}</span>
+                      </>
+                    ) : null}
+                    <span className="text-muted">　ID {selectedCustomer.id}</span>
+                  </p>
+
+                  {(() => {
+                    const selectedAddr = (selectedCustomer.addresses ?? []).find(
+                      (a) => String(a.id) === form.deliveryAddressId,
+                    );
+                    const addrBarrels = selectedAddr?.barrelsOnSite;
+                    const totalBarrels = sumCustomerBarrelsOnSite(selectedCustomer);
+                    if (addrBarrels == null && totalBarrels === 0) return null;
+                    return (
+                      <p className="order-new__compact-kv">
+                        <span className="text-muted">未收回空桶</span>{" "}
+                        {selectedAddr ? (
+                          <>
+                            此送貨點 <strong>{addrBarrels ?? 0}</strong>
+                            {(selectedCustomer.addresses ?? []).length > 1 ? (
+                              <span className="text-muted">（全址合計 {totalBarrels}）</span>
+                            ) : null}
+                          </>
+                        ) : (
+                          <>
+                            合計 <strong>{totalBarrels}</strong>
+                            <span className="text-muted">（請先選送貨點以檢視該點桶數）</span>
+                          </>
+                        )}
+                      </p>
+                    );
+                  })()}
+
+                  {(selectedCustomer.addresses ?? []).length > 0 ? (
+                    <>
+                      <p className="order-new__subsection-label order-new__subsection-label--inline">送貨點</p>
+                      <ul className="order-new__address-list order-new__address-list--scroll">
+                        {(selectedCustomer.addresses ?? []).map((a) => (
+                          <li key={String(a.id)}>
+                            {a.isDefault ? <strong title="預設送貨點">★ </strong> : null}
+                            {a.label ? `${a.label} · ` : null}
+                            {a.addressLine}
+                            {a.contactPhone ? <span className="text-muted"> （{a.contactPhone}）</span> : null}
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : (
+                    <p className="text-muted order-new__placeholder-sm">尚無送貨地址</p>
+                  )}
+                </div>
+
+                <div className="order-new__billing-col">
+                  {summaryLoading ? (
+                    <p className="text-muted order-new__placeholder-sm">帳務摘要載入中…</p>
+                  ) : billingSummary ? (
+                    <dl className="order-new__kv order-new__kv--tight">
+                      <dt>結帳方式</dt>
+                      <dd>
+                        <strong>{billingTypeLabel(billingSummary.billingType)}</strong>
+                        {billingSummary.billingType === "monthly" ? (
+                          billingSummary.monthlySettlementDay != null ? (
+                            <>
+                              {" "}
+                              · 每月 <strong>{billingSummary.monthlySettlementDay}</strong> 號
+                            </>
+                          ) : (
+                            <span className="text-muted"> · 月結日未設定</span>
+                          )
+                        ) : null}
+                      </dd>
+                      <dt>往來餘額</dt>
+                      <dd>
+                        <strong>$ {Number(billingSummary.accountBalance).toLocaleString()}</strong>
+                        <span className="text-muted">（正＝客戶欠公司）</span>
+                      </dd>
+                      <dt>預付桶剩餘</dt>
+                      <dd>
+                        <strong>{billingSummary.prepaidBarrelBalance}</strong> 桶
+                        {billingSummary.allowPrepaidOverdraft ? "（允許透支）" : ""}
+                        {Array.isArray(billingSummary.prepaidBarrelByProduct) && billingSummary.prepaidBarrelByProduct.length > 0 ? (
+                          <>
+                            <br />
+                            <small className="text-muted">
+                              {billingSummary.prepaidBarrelByProduct.map((x) => `${x.productName} ${x.barrels}桶`).join("、")}
+                            </small>
+                          </>
+                        ) : null}
+                      </dd>
+                    </dl>
+                  ) : (
+                    <p className="order-new__placeholder-sm">
+                      <span className="feedback feedback--err">無法讀取帳務摘要。</span>{" "}
+                      <span className="text-muted">主檔：{billingTypeLabel(parseLineBilling(selectedCustomer.billingType))}</span>
+                    </p>
+                  )}
+                  <p className="order-new__meta-line order-new__meta-line--tight">
+                    單內可混現金／月結／預付；預付桶儲值於明細勾選。
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="order-new__empty-state">
+                <p className="order-new__empty-state-title">尚未選定客戶</p>
+                <p className="text-muted order-new__empty-state-desc">請於區塊 ① 輸入客戶編號或關鍵字。</p>
+              </div>
+            )}
+            </div>
+          </section>
+
+          <aside className="order-new__zone order-new__zone--history" aria-label="客戶歷史訂單">
+            <header className="order-new__zone-head">
+              <span className="order-new__zone-index order-new__zone-index--amber" aria-hidden="true">
+                3
+              </span>
+              <div className="order-new__zone-head-text">
+                <p className="order-new__zone-eyebrow">參考</p>
+                <h3 className="order-new__zone-title">歷史叫貨清單</h3>
+              </div>
+            </header>
+            <div className="order-new__zone-body order-new__zone-body--history">
+            {!form.customerId ? (
+              <p className="text-muted order-new__placeholder-sm">選定客戶後顯示</p>
+            ) : historyLoading ? (
+              <p className="text-muted order-new__placeholder-sm">載入中…</p>
+            ) : sortedHistoryOrders.length === 0 ? (
+              <p className="text-muted order-new__placeholder-sm">尚無紀錄</p>
+            ) : (
+              <>
+                <p className="order-new__meta-line order-new__history-caption">
+                  {sortedHistoryOrders.length} 筆 · 配送日近→遠 · 最多 100 筆
+                </p>
+                <div className="order-new__history-table" role="list">
+                  {sortedHistoryOrders.map((o) => {
+                    const dateStr = historyDisplayYmd(o);
+                    const statusRaw = String(o.status ?? "");
+                    const goods = historyGoodsSummary(o);
+                    const title = historyRowDetailTitle(o);
+                    return (
+                      <div role="listitem" key={String(o.id)} className="order-new__history-row" title={title}>
+                        <span className="order-new__history-row__top">
+                          <span className="order-new__history-row__ymd mono-text">{dateStr}</span>
+                          <span className="order-new__history-row__no mono-text">{o.orderNo}</span>
+                          <span className={orderStatusBadgeClass(statusRaw)}>{orderStatusLabel(o.status)}</span>
+                        </span>
+                        <span className="order-new__history-row__goods">{goods || "無明細"}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+            </div>
+          </aside>
+        </div>
+
+        <section className="order-new__zone order-new__zone--lines" aria-labelledby="order-new-lines-title">
+          <header className="order-new__zone-head order-new__zone-head--flush">
+            <span className="order-new__zone-index order-new__zone-index--brand" aria-hidden="true">
+              4
+            </span>
+            <div className="order-new__zone-head-text">
+              <p className="order-new__zone-eyebrow">明細 · 計價</p>
+              <div className="order-new__lines-title-row">
+                <h3 id="order-new-lines-title" className="order-new__zone-title">
+                  商品明細
+                </h3>
+                <span className="order-new__zone-tag">3 碼編號</span>
+              </div>
+            </div>
+          </header>
+          <div className="order-new__zone-body order-new__zone-body--lines">
+            <span id="order-new-lines-desc" className="sr-only">
+              每列請輸入三位數商品編號，並選擇結帳方式、單價與數量。
+            </span>
+            <div className="field field--full order-lines-field" role="group" aria-describedby="order-new-lines-desc">
+              <span aria-hidden="true">商品列</span>
+              <div className="order-lines">
+            <div className="order-lines__head">
+              <span className="order-lines__col order-lines__col--product">商品編號（3 碼）</span>
+              <span className="order-lines__col order-lines__col--billing">結帳</span>
+              <span className="order-lines__col order-lines__col--price">單價</span>
+              <span className="order-lines__col order-lines__col--qty">數量</span>
+              <span className="order-lines__col order-lines__col--sub">小計</span>
+              <span className="order-lines__col order-lines__col--act" />
+            </div>
+            {form.lines.map((row, idx) => (
+              <div key={row.id} className="order-lines__row">
+                <div className="order-lines__col order-lines__col--product">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={3}
+                    className="mono-text order-new__product-code"
+                    placeholder="例 001"
+                    value={lineProductCodes[row.id] ?? ""}
+                    ref={setLineFieldRef(row.id, "code")}
+                    onChange={(e) => {
+                      applyProductCodeChange(row.id, e.target.value);
+                    }}
+                    onKeyDown={(e) => handleLineFieldEnter(e, row.id, "code")}
+                    aria-label={`第 ${idx + 1} 列商品編號`}
+                  />
+                  {(() => {
+                    const digits = (lineProductCodes[row.id] ?? "").trim();
+                    const matched = digits.length === 3 ? resolveProductByCode(activeProducts, digits) : undefined;
+                    if (digits.length === 3 && !matched) {
+                      return (
+                        <span className="order-new__line-help feedback feedback--err">
+                          無此編號或商品未設定編號／已下架
+                        </span>
+                      );
+                    }
+                    if (matched) {
+                      const last = row.productId ? lastPriceMap[row.productId] : undefined;
+                      return (
+                        <span className="order-new__line-help text-muted">
+                          {matched.name}　·　售價 $ {matched.salePrice}
+                          {matched.unit ? `／${matched.unit}` : ""}
+                          {last ? (
+                            <>
+                              {" "}
+                              ·{" "}
+                              <span className="order-lines__last-price">
+                                上次 $ {last.unitPrice}
+                                {last.orderNo ? `（${last.orderNo}）` : ""}
+                              </span>
+                            </>
+                          ) : null}
+                        </span>
+                      );
+                    }
+                    return digits.length > 0 && digits.length < 3 ? (
+                      <span className="order-new__line-help text-muted">請輸入完整 3 碼</span>
+                    ) : null;
+                  })()}
+                  {selectedCustomer ? (
+                    <label className="order-line-topup-check">
+                      <input
+                        type="checkbox"
+                        checked={row.linePurpose === "prepaid_barrel_topup"}
+                        onChange={(e) => {
+                          const topup = e.target.checked;
+                          updateLine(row.id, {
+                            linePurpose: topup ? "prepaid_barrel_topup" : "delivery",
+                            billingType: topup ? "cash" : parseLineBilling(selectedCustomer.billingType),
+                          });
+                        }}
+                      />
+                      預付桶儲值（現金應收沖清後入帳桶數）
+                    </label>
+                  ) : null}
+                </div>
+                <div className="order-lines__col order-lines__col--billing">
+                  <select
+                    ref={setLineFieldRef(row.id, "billing")}
+                    value={row.billingType}
+                    onChange={(e) => updateLine(row.id, { billingType: e.target.value as LineBillingType })}
+                    onKeyDown={(e) => handleLineFieldEnter(e, row.id, "billing")}
+                    disabled={row.linePurpose === "prepaid_barrel_topup"}
+                    aria-label={`第 ${idx + 1} 列結帳方式`}
+                  >
+                    <option value="cash">現金</option>
+                    <option value="monthly">月結</option>
+                    <option value="prepaid">預付（桶）</option>
+                  </select>
+                </div>
+                <div className="order-lines__col order-lines__col--price">
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    ref={setLineFieldRef(row.id, "price")}
+                    value={row.unitPrice}
+                    onChange={(e) => updateLine(row.id, { unitPrice: e.target.value })}
+                    onKeyDown={(e) => handleLineFieldEnter(e, row.id, "price")}
+                    aria-label={`第 ${idx + 1} 列單價`}
+                  />
+                </div>
+                <div className="order-lines__col order-lines__col--qty">
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    ref={setLineFieldRef(row.id, "qty")}
+                    value={row.qty}
+                    onChange={(e) => updateLine(row.id, { qty: Math.max(0, Math.floor(Number(e.target.value)) || 0) })}
+                    onKeyDown={(e) => handleLineFieldEnter(e, row.id, "qty")}
+                    aria-label={`第 ${idx + 1} 列數量`}
+                  />
+                </div>
+                <div className="order-lines__col order-lines__col--sub num">
+                  {lineSubtotals[idx] ? lineSubtotals[idx].toLocaleString() : "—"}
+                </div>
+                <div className="order-lines__col order-lines__col--act">
+                  <button
+                    type="button"
+                    className="btn btn--danger btn--sm"
+                    disabled={form.lines.length <= 1}
+                    onClick={() => removeLine(row.id)}
+                    title={form.lines.length <= 1 ? "至少保留一列" : "移除此列"}
+                  >
+                    刪除
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="order-lines__toolbar">
+            <button type="button" className="btn btn--secondary btn--sm" onClick={addLine} disabled={form.lines.length >= 30}>
+              ＋ 新增商品列
+            </button>
+            <div className="order-new__totals-bar order-lines__total">
+              預計合計（依售價）：<strong>$ {estimatedTotal.toLocaleString()}</strong>
+              {estimatedTotal > 0 && (lineBillingMix || estimatedByBilling.cash > 0) ? (
+                <>
+                  {" "}
+                  · 現金列 <strong>$ {estimatedByBilling.cash.toLocaleString()}</strong>
+                  {estimatedByBilling.monthly > 0 ? (
+                    <>
+                      {" "}
+                      · 月結列 <strong>$ {estimatedByBilling.monthly.toLocaleString()}</strong>
+                    </>
+                  ) : null}
+                  {estimatedByBilling.prepaid > 0 ? (
+                    <>
+                      {" "}
+                      · 預付列 <strong>$ {estimatedByBilling.prepaid.toLocaleString()}</strong>（送達扣桶）
+                    </>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
+          </div>
+            </div>
+          </div>
+        </section>
+
+        <div className="order-new__trail">
+          {selectedCustomer && estimatedByBilling.cash > 0 ? (
+            <p className="order-new__cash-policy">
+              <strong>現金列：</strong>前期未清欠款與本單<strong>現金列</strong>金額由系統合併；司機端顯示前期未收＋本次現金列與建議收款，核銷時以<strong>FIFO</strong>沖銷實收。
+            </p>
+          ) : null}
+
+          <div className="order-new__invoice-detail">
+          <p className="order-new__invoice-detail-lead text-muted">
+            <strong>現金／儲值區發票</strong>選項見左上「現金區發票」。稅外加時現金應收／司機收款為含稅；月結批次發票於 AR 作業台處理。
+          </p>
+          {form.cashInvoiceMode !== "none" && estimatedByBilling.cash <= 0 ? (
+            <p className="text-muted order-new__meta-line">目前無現金列小計，勾選發票後預覽將在明細含現金列後顯示。</p>
+          ) : null}
+          {cashInvoicePreview ? (
+            <div className="order-new__tax-preview">
+              <p className="order-new__tax-preview-title">
+                現金列發票試算（稅率 {(cashInvoicePreview.taxRate * 100).toFixed(0)}%）
+              </p>
+              <dl className="order-new__kv order-new__kv--tax">
+                <dt>現金列未稅合計</dt>
+                <dd className="num">
+                  <strong>$ {cashInvoicePreview.untaxedAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+                </dd>
+                <dt>營業稅</dt>
+                <dd className="num">
+                  <strong>$ {cashInvoicePreview.taxAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+                </dd>
+                <dt>含稅總額（憑證參考）</dt>
+                <dd className="num">
+                  <strong>$ {cashInvoicePreview.totalWithTax.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+                </dd>
+              </dl>
+              <p className="text-muted order-new__tax-preview-note">
+                {cashInvoicePreview.mode === "tax_exclusive"
+                  ? "稅外加：現金列合計視為未稅金額，由系統另計稅額。"
+                  : "含稅：現金列合計為含稅總額，由系統反拆未稅與稅額。"}
+              </p>
+            </div>
+          ) : null}
+          <p className="text-muted order-new__meta-line order-new__meta-line--vat">預設營業稅率 {DEFAULT_VAT_RATE * 100}%（後端 VAT_RATE）。</p>
+          </div>
+
+          <div className="order-new__footer-row">
+          <div className="field order-new__field--remark">
+            <label htmlFor="order-new-remark">備註（選填）</label>
+            <textarea
+              id="order-new-remark"
+              className="order-new__input-remark"
+              rows={2}
+              placeholder="例如：代收貨款、指定時段…；亦可點選下方標語快速加入"
+              value={form.remark}
+              onChange={(e) => setForm({ ...form, remark: e.target.value })}
+            />
+            <RemarkSloganPicker value={form.remark} onChange={(remark) => setForm({ ...form, remark })} />
+          </div>
+          <div className="order-new__submit-area order-new__submit-area--inline">
+            <div className="form-actions">
+              {lastOrderSlipForPrint ? (
+                <button
+                  type="button"
+                  className="btn btn--secondary"
+                  onClick={() => {
+                    void (async () => {
+                      const slip = await slipWithOrderAnnouncement(lastOrderSlipForPrint);
+                      const ok = openOrderPrintWindow(slip);
+                      if (!ok) window.alert("無法開啟列印視窗，請允許此網站的彈出視窗後再試。");
+                    })();
+                  }}
+                >
+                  列印上一筆訂單
+                </button>
+              ) : null}
+              <button type="submit" className="btn btn--primary" disabled={saving}>
+                {saving ? "建立中..." : "建立訂單"}
+              </button>
+              {formMessage ? (
+                <span className={formMessage.includes("成功") ? "feedback feedback--ok" : "feedback feedback--err"}>{formMessage}</span>
+              ) : null}
+            </div>
+          </div>
+        </div>
+        </div>
+      </form>
+    </section>
+  );
+}
