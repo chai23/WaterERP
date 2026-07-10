@@ -26,6 +26,8 @@
   --nav-barrel-bg: rgba(8, 145, 178, 0.1);
   --nav-data: #2563eb;
   --nav-data-bg: rgba(37, 99, 235, 0.08);
+  --nav-expenses: #be185d;
+  --nav-expenses-bg: rgba(190, 24, 93, 0.1);
   --nav-reports: #b45309;
   --nav-reports-bg: rgba(180, 83, 9, 0.1);
   --nav-settings: #6d28d9;
@@ -424,6 +426,11 @@
   background: linear-gradient(145deg, rgba(37, 99, 235, 0.2) 0%, rgba(15, 23, 42, 0.65) 100%);
 }
 
+.admin-nav__accordion--expenses {
+  border-color: rgba(244, 114, 182, 0.24);
+  background: linear-gradient(145deg, rgba(219, 39, 119, 0.24) 0%, rgba(15, 23, 42, 0.65) 100%);
+}
+
 .admin-nav__accordion--reports {
   border-color: rgba(251, 191, 36, 0.2);
   background: linear-gradient(145deg, rgba(180, 83, 9, 0.22) 0%, rgba(15, 23, 42, 0.65) 100%);
@@ -499,6 +506,11 @@
   color: #93c5fd;
 }
 
+.admin-nav__accordion--expenses .admin-nav__accordion-head--route-active,
+.admin-nav__accordion--expenses .admin-nav__accordion-head--open {
+  color: #f9a8d4;
+}
+
 .admin-nav__accordion--reports .admin-nav__accordion-head--route-active,
 .admin-nav__accordion--reports .admin-nav__accordion-head--open {
   color: #fcd34d;
@@ -535,6 +547,10 @@
 
 .admin-nav__accordion--data .admin-nav__chevron--open {
   color: #93c5fd;
+}
+
+.admin-nav__accordion--expenses .admin-nav__chevron--open {
+  color: #f9a8d4;
 }
 
 .admin-nav__accordion--reports .admin-nav__chevron--open {
@@ -583,6 +599,11 @@
 .admin-nav__accordion--data .admin-nav__sublist {
   background: linear-gradient(180deg, rgba(37, 99, 235, 0.14) 0%, rgba(15, 23, 42, 0.85) 100%);
   border-top-color: rgba(96, 165, 250, 0.2);
+}
+
+.admin-nav__accordion--expenses .admin-nav__sublist {
+  background: linear-gradient(180deg, rgba(219, 39, 119, 0.16) 0%, rgba(15, 23, 42, 0.85) 100%);
+  border-top-color: rgba(244, 114, 182, 0.22);
 }
 
 .admin-nav__accordion--reports .admin-nav__sublist {
@@ -659,6 +680,13 @@
   color: #93c5fd;
   border-left-color: #60a5fa;
   background: linear-gradient(90deg, rgba(59, 130, 246, 0.22) 0%, rgba(15, 23, 42, 0.4) 100%);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+
+.admin-nav__accordion--expenses .admin-nav__sublink--active {
+  color: #f9a8d4;
+  border-left-color: #f472b6;
+  background: linear-gradient(90deg, rgba(236, 72, 153, 0.22) 0%, rgba(15, 23, 42, 0.4) 100%);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
 }
 
@@ -4166,6 +4194,7 @@ body {
 .admin-nav__accordion--orders,
 .admin-nav__accordion--barrel-pickup,
 .admin-nav__accordion--data,
+.admin-nav__accordion--expenses,
 .admin-nav__accordion--reports,
 .admin-nav__accordion--settings {
   border: 0;
@@ -4176,14 +4205,15 @@ body {
 }
 
 .admin-nav__accordion-head {
-  padding: 0.8rem 0.55rem 0.45rem;
-  background: transparent !important;
-  color: var(--text-muted) !important;
+  padding: 0.62rem 0.68rem;
   cursor: pointer;
   width: 100%;
-  font-size: 1rem;
+  font-size: 0.95rem;
   text-transform: uppercase;
   font-weight: 800;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
 .admin-nav__collapse {
@@ -4202,6 +4232,7 @@ body {
 .admin-nav__accordion--orders .admin-nav__sublist,
 .admin-nav__accordion--barrel-pickup .admin-nav__sublist,
 .admin-nav__accordion--data .admin-nav__sublist,
+.admin-nav__accordion--expenses .admin-nav__sublist,
 .admin-nav__accordion--reports .admin-nav__sublist,
 .admin-nav__accordion--settings .admin-nav__sublist {
   padding: 0;
@@ -4217,7 +4248,10 @@ body {
 }
 
 .admin-nav__sublink--active,
+.admin-nav__accordion--orders .admin-nav__sublink--active,
+.admin-nav__accordion--barrel-pickup .admin-nav__sublink--active,
 .admin-nav__accordion--data .admin-nav__sublink--active,
+.admin-nav__accordion--expenses .admin-nav__sublink--active,
 .admin-nav__accordion--reports .admin-nav__sublink--active,
 .admin-nav__accordion--settings .admin-nav__sublink--active {
   color: var(--brand);
@@ -4522,6 +4556,8 @@ body {
   --nav-barrel-bg: #dcf3fb;
   --nav-data: #256fc2;
   --nav-data-bg: #e5f0fb;
+  --nav-expenses: #b44d7a;
+  --nav-expenses-bg: #fae4ee;
   --nav-reports: #b06712;
   --nav-reports-bg: #fff0d9;
   --nav-settings: #7650b8;
@@ -4604,26 +4640,79 @@ body,
 .admin-nav__accordion--orders .admin-nav__accordion-head {
   color: var(--nav-orders) !important;
   background: var(--nav-orders-bg) !important;
+  border-color: rgba(0, 138, 122, 0.18);
 }
 
 .admin-nav__accordion--barrel-pickup .admin-nav__accordion-head {
   color: var(--nav-barrel) !important;
   background: var(--nav-barrel-bg) !important;
+  border-color: rgba(14, 127, 160, 0.18);
 }
 
 .admin-nav__accordion--data .admin-nav__accordion-head {
   color: var(--nav-data) !important;
   background: var(--nav-data-bg) !important;
+  border-color: rgba(37, 111, 194, 0.18);
+}
+
+.admin-nav__accordion--expenses .admin-nav__accordion-head {
+  color: var(--nav-expenses) !important;
+  background: var(--nav-expenses-bg) !important;
+  border-color: rgba(180, 77, 122, 0.18);
 }
 
 .admin-nav__accordion--reports .admin-nav__accordion-head {
   color: var(--nav-reports) !important;
   background: var(--nav-reports-bg) !important;
+  border-color: rgba(176, 103, 18, 0.18);
 }
 
 .admin-nav__accordion--settings .admin-nav__accordion-head {
   color: var(--nav-settings) !important;
   background: var(--nav-settings-bg) !important;
+  border-color: rgba(118, 80, 184, 0.18);
+}
+
+.admin-nav__accordion--orders .admin-nav__accordion-head:hover,
+.admin-nav__accordion--orders .admin-nav__accordion-head--open,
+.admin-nav__accordion--orders .admin-nav__accordion-head--route-active {
+  background: #d4efe9 !important;
+  box-shadow: inset 0 0 0 1px rgba(0, 138, 122, 0.12);
+}
+
+.admin-nav__accordion--barrel-pickup .admin-nav__accordion-head:hover,
+.admin-nav__accordion--barrel-pickup .admin-nav__accordion-head--open,
+.admin-nav__accordion--barrel-pickup .admin-nav__accordion-head--route-active {
+  background: #cfeaf5 !important;
+  box-shadow: inset 0 0 0 1px rgba(14, 127, 160, 0.12);
+}
+
+.admin-nav__accordion--data .admin-nav__accordion-head:hover,
+.admin-nav__accordion--data .admin-nav__accordion-head--open,
+.admin-nav__accordion--data .admin-nav__accordion-head--route-active {
+  background: #d9e8fa !important;
+  box-shadow: inset 0 0 0 1px rgba(37, 111, 194, 0.12);
+}
+
+.admin-nav__accordion--expenses .admin-nav__accordion-head:hover,
+.admin-nav__accordion--expenses .admin-nav__accordion-head--open,
+.admin-nav__accordion--expenses .admin-nav__accordion-head--route-active {
+  background: #f6d7e4 !important;
+  box-shadow: inset 0 0 0 1px rgba(180, 77, 122, 0.12);
+}
+
+.admin-nav__accordion--reports .admin-nav__accordion-head:hover,
+.admin-nav__accordion--reports .admin-nav__accordion-head--open,
+.admin-nav__accordion--reports .admin-nav__accordion-head--route-active {
+  background: #ffe8c7 !important;
+  box-shadow: inset 0 0 0 1px rgba(176, 103, 18, 0.12);
+}
+
+.admin-nav__accordion--settings .admin-nav__accordion-head:hover,
+.admin-nav__accordion--settings .admin-nav__accordion-head--open,
+.admin-nav__accordion--settings .admin-nav__accordion-head--route-active {
+  background: #e3d8f7 !important;
+  box-shadow: inset 0 0 0 1px rgba(118, 80, 184, 0.12);
 }
 
 .admin-nav__sublink:hover {
@@ -4646,6 +4735,12 @@ body,
   color: var(--nav-data);
   background: var(--nav-data-bg);
   box-shadow: inset 4px 0 0 var(--nav-data);
+}
+
+.admin-nav__accordion--expenses .admin-nav__sublink--active {
+  color: var(--nav-expenses);
+  background: var(--nav-expenses-bg);
+  box-shadow: inset 4px 0 0 var(--nav-expenses);
 }
 
 .admin-nav__accordion--reports .admin-nav__sublink--active {
@@ -5063,6 +5158,8 @@ body,
   --nav-barrel-bg: rgba(56, 189, 224, 0.17);
   --nav-data: #73b7ff;
   --nav-data-bg: rgba(80, 151, 230, 0.16);
+  --nav-expenses: #ff8ec0;
+  --nav-expenses-bg: rgba(255, 120, 176, 0.16);
   --nav-reports: #ffc66d;
   --nav-reports-bg: rgba(255, 178, 71, 0.16);
   --nav-settings: #c8a8ff;
@@ -5159,10 +5256,21 @@ body,
   box-shadow: inset 4px 0 0 var(--nav-reports);
 }
 
+:root[data-theme="dark"] .admin-nav__accordion--expenses .admin-nav__sublink--active {
+  color: var(--nav-expenses);
+  background: var(--nav-expenses-bg);
+  box-shadow: inset 4px 0 0 var(--nav-expenses);
+}
+
 :root[data-theme="dark"] .admin-nav__accordion--settings .admin-nav__sublink--active {
   color: var(--nav-settings);
   background: var(--nav-settings-bg);
   box-shadow: inset 4px 0 0 var(--nav-settings);
+}
+
+:root[data-theme="dark"] .admin-nav__accordion--orders .admin-nav__accordion-head {
+  color: var(--nav-orders) !important;
+  background: var(--nav-orders-bg) !important;
 }
 
 :root[data-theme="dark"] .admin-nav__accordion--barrel-pickup .admin-nav__accordion-head {
@@ -5170,9 +5278,30 @@ body,
   background: var(--nav-barrel-bg) !important;
 }
 
+:root[data-theme="dark"] .admin-nav__accordion--data .admin-nav__accordion-head {
+  color: var(--nav-data) !important;
+  background: var(--nav-data-bg) !important;
+}
+
+:root[data-theme="dark"] .admin-nav__accordion--expenses .admin-nav__accordion-head {
+  color: var(--nav-expenses) !important;
+  background: var(--nav-expenses-bg) !important;
+}
+
+:root[data-theme="dark"] .admin-nav__accordion--reports .admin-nav__accordion-head {
+  color: var(--nav-reports) !important;
+  background: var(--nav-reports-bg) !important;
+}
+
+:root[data-theme="dark"] .admin-nav__accordion--settings .admin-nav__accordion-head {
+  color: var(--nav-settings) !important;
+  background: var(--nav-settings-bg) !important;
+}
+
 :root[data-theme="dark"] .admin-nav__accordion--orders .admin-nav__accordion-head,
 :root[data-theme="dark"] .admin-nav__accordion--barrel-pickup .admin-nav__accordion-head,
 :root[data-theme="dark"] .admin-nav__accordion--data .admin-nav__accordion-head,
+:root[data-theme="dark"] .admin-nav__accordion--expenses .admin-nav__accordion-head,
 :root[data-theme="dark"] .admin-nav__accordion--reports .admin-nav__accordion-head,
 :root[data-theme="dark"] .admin-nav__accordion--settings .admin-nav__accordion-head {
   border: 1px solid rgba(255, 255, 255, 0.06);

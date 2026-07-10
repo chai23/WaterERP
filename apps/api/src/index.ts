@@ -219,6 +219,35 @@ const parseLocalYmdRange = (ymd: string): { start: Date; end: Date } | null => {
   return { start, end };
 };
 
+/** Prisma @db.Date：以 UTC 午夜表示曆日（讀寫與查詢一致，避免本地午夜 equality 差 8 小時） */
+const parseLocalYmdToDbDate = (ymd: string): Date | null => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim());
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return null;
+  return dt;
+};
+
+/** 單日 @db.Date 查詢條件 */
+const dbDateEqualsFilter = (ymd: string): Prisma.DateTimeFilter | null => {
+  const day = parseLocalYmdToDbDate(ymd);
+  if (!day) return null;
+  const next = new Date(day);
+  next.setUTCDate(next.getUTCDate() + 1);
+  return { gte: day, lt: next };
+};
+
+const fmtDbDateYmd = (d: Date): string => {
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+};
+
 /** 月結 v1：依核銷完成日所屬曆月 */
 const billingPeriodKeyFromDate = (d: Date): string => {
   const y = d.getFullYear();
@@ -3482,7 +3511,7 @@ app.post("/api/users", async (req, res) => {
     const phoneRaw = typeof body.phone === "string" ? body.phone.trim() : "";
     const password = typeof body.password === "string" ? body.password : "";
     const roleRaw = typeof body.role === "string" ? body.role.trim() : "dispatcher";
-    const role = ["admin", "dispatcher", "warehouse"].includes(roleRaw) ? roleRaw : "dispatcher";
+    const role = ["admin", "dispatcher", "warehouse", "accounting"].includes(roleRaw) ? roleRaw : "dispatcher";
     if (!name || !employeeCode || !password) {
       res.status(400).json({ ok: false, message: "姓名、帳號、密碼為必填" });
       return;
@@ -3534,7 +3563,7 @@ app.patch("/api/users/:userId", async (req, res) => {
     const data: Prisma.UserUpdateInput = {};
     if (typeof body.name === "string" && body.name.trim()) data.name = body.name.trim();
     if (body.phone !== undefined) data.phone = typeof body.phone === "string" && body.phone.trim() ? body.phone.trim() : null;
-    if (typeof body.role === "string" && ["admin", "dispatcher", "warehouse"].includes(body.role)) data.role = body.role;
+    if (typeof body.role === "string" && ["admin", "dispatcher", "warehouse", "accounting"].includes(body.role)) data.role = body.role;
     if (typeof body.isActive === "boolean") {
       if (userId === auth.id && body.isActive === false) {
         res.status(400).json({ ok: false, message: "不可停用目前登入中的自己" });
@@ -7092,6 +7121,960 @@ app.post("/api/driver/barrel-pickups/:pickupId/report", async (req, res) => {
         },
       });
       return updated;
+    });
+
+    res.json({ ok: true, data: result });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 公司支出（expense vouchers）
+// ---------------------------------------------------------------------------
+
+const EXPENSE_PAYMENT_METHODS = ["cash", "transfer", "check", "monthly", "other"] as const;
+
+const expenseVoucherInclude = {
+  affiliatedCompany: true,
+  createdBy: { select: { id: true, name: true, employeeCode: true } },
+  verifiedBy: { select: { id: true, name: true, employeeCode: true } },
+  lines: {
+    orderBy: { sortOrder: "asc" as const },
+    include: {
+      category: true,
+      customer: { select: { id: true, name: true, customerCode: true } },
+    },
+  },
+} as const;
+
+function normalizeExpenseTaxMode(raw: unknown): "tax_inclusive" | "tax_exclusive" | "none" {
+  const s = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  if (s === "tax_inclusive" || s === "tax_exclusive" || s === "none") return s;
+  return "tax_exclusive";
+}
+
+function normalizeExpensePaymentMethod(raw: unknown): (typeof EXPENSE_PAYMENT_METHODS)[number] {
+  const s = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  if ((EXPENSE_PAYMENT_METHODS as readonly string[]).includes(s)) return s as (typeof EXPENSE_PAYMENT_METHODS)[number];
+  return "cash";
+}
+
+function computeExpenseLineTotals(
+  qty: number,
+  unitPrice: Prisma.Decimal,
+  taxMode: "tax_inclusive" | "tax_exclusive" | "none",
+): { untaxedAmount: Prisma.Decimal; taxAmount: Prisma.Decimal; lineAmount: Prisma.Decimal } {
+  const subtotal = unitPrice.mul(qty);
+  if (subtotal.lessThanOrEqualTo(0)) {
+    return {
+      untaxedAmount: new Prisma.Decimal(0),
+      taxAmount: new Prisma.Decimal(0),
+      lineAmount: new Prisma.Decimal(0),
+    };
+  }
+  if (taxMode === "none") {
+    return { untaxedAmount: subtotal, taxAmount: new Prisma.Decimal(0), lineAmount: subtotal };
+  }
+  if (taxMode === "tax_exclusive") {
+    const { taxAmount, totalWithTax } = computeTaxFromUntaxed(subtotal, DEFAULT_VAT_RATE);
+    return { untaxedAmount: subtotal, taxAmount, lineAmount: totalWithTax };
+  }
+  const br = breakdownCashTaxInvoice(subtotal, "tax_inclusive", DEFAULT_VAT_RATE);
+  if (!br) {
+    return { untaxedAmount: subtotal, taxAmount: new Prisma.Decimal(0), lineAmount: subtotal };
+  }
+  return { untaxedAmount: br.untaxedAmount, taxAmount: br.taxAmount, lineAmount: br.totalWithTax };
+}
+
+type ParsedExpenseLine = {
+  categoryId: bigint | null;
+  itemName: string;
+  customerId: bigint | null;
+  qty: number;
+  unitPrice: Prisma.Decimal;
+  taxMode: "tax_inclusive" | "tax_exclusive" | "none";
+  taxAmount: Prisma.Decimal;
+  lineAmount: Prisma.Decimal;
+  sortOrder: number;
+};
+
+async function parseExpenseLinesInput(
+  linesRaw: unknown,
+): Promise<{ ok: true; lines: ParsedExpenseLine[]; totals: { untaxedTotal: Prisma.Decimal; taxTotal: Prisma.Decimal; totalAmount: Prisma.Decimal } } | { ok: false; message: string }> {
+  if (!Array.isArray(linesRaw) || linesRaw.length === 0) {
+    return { ok: false, message: "至少需要一筆支出明細" };
+  }
+  if (linesRaw.length > 50) {
+    return { ok: false, message: "單張憑證最多 50 筆明細" };
+  }
+
+  const categoryIds = new Set<bigint>();
+  for (const row of linesRaw) {
+    const cid = toBigInt((row as { categoryId?: unknown }).categoryId);
+    if (cid) categoryIds.add(cid);
+  }
+  const categories =
+    categoryIds.size > 0
+      ? await prisma.expenseCategory.findMany({ where: { id: { in: [...categoryIds] }, isActive: true } })
+      : [];
+  const categoryMap = new Map(categories.map((c) => [c.id.toString(), c]));
+
+  const parsed: ParsedExpenseLine[] = [];
+  let untaxedTotal = new Prisma.Decimal(0);
+  let taxTotal = new Prisma.Decimal(0);
+  let totalAmount = new Prisma.Decimal(0);
+
+  for (let i = 0; i < linesRaw.length; i++) {
+    const row = linesRaw[i] as {
+      categoryId?: unknown;
+      itemName?: unknown;
+      customerId?: unknown;
+      qty?: unknown;
+      unitPrice?: unknown;
+      taxMode?: unknown;
+    };
+    const itemName = typeof row.itemName === "string" ? row.itemName.trim() : "";
+    if (!itemName) {
+      return { ok: false, message: `第 ${i + 1} 筆明細：項目名稱為必填` };
+    }
+    if (itemName.length > 200) {
+      return { ok: false, message: `第 ${i + 1} 筆明細：項目名稱不可超過 200 字` };
+    }
+
+    const categoryId = toBigInt(row.categoryId);
+    const category = categoryId ? categoryMap.get(categoryId.toString()) : undefined;
+    if (categoryId && !category) {
+      return { ok: false, message: `第 ${i + 1} 筆明細：支出類別無效` };
+    }
+
+    const customerId = toBigInt(row.customerId);
+    if (category?.requiresCustomer && !customerId) {
+      return { ok: false, message: `第 ${i + 1} 筆明細：「${category.name}」須選擇客戶` };
+    }
+    if (customerId) {
+      const cust = await prisma.customer.findUnique({ where: { id: customerId }, select: { id: true } });
+      if (!cust) {
+        return { ok: false, message: `第 ${i + 1} 筆明細：找不到客戶` };
+      }
+    }
+
+    const qtyRaw = row.qty != null && row.qty !== "" ? Number(row.qty) : 1;
+    if (!Number.isInteger(qtyRaw) || qtyRaw <= 0) {
+      return { ok: false, message: `第 ${i + 1} 筆明細：數量須為正整數` };
+    }
+
+    const unitPriceRaw = row.unitPrice != null && row.unitPrice !== "" ? String(row.unitPrice).trim() : "0";
+    let unitPrice: Prisma.Decimal;
+    try {
+      unitPrice = new Prisma.Decimal(unitPriceRaw);
+      if (unitPrice.lessThan(0)) throw new Error("negative");
+    } catch {
+      return { ok: false, message: `第 ${i + 1} 筆明細：單價格式錯誤` };
+    }
+
+    const taxMode = normalizeExpenseTaxMode(row.taxMode);
+    const computed = computeExpenseLineTotals(qtyRaw, unitPrice, taxMode);
+
+    parsed.push({
+      categoryId: categoryId ?? null,
+      itemName,
+      customerId: customerId ?? null,
+      qty: qtyRaw,
+      unitPrice,
+      taxMode,
+      taxAmount: computed.taxAmount,
+      lineAmount: computed.lineAmount,
+      sortOrder: i,
+    });
+    untaxedTotal = untaxedTotal.plus(computed.untaxedAmount);
+    taxTotal = taxTotal.plus(computed.taxAmount);
+    totalAmount = totalAmount.plus(computed.lineAmount);
+  }
+
+  return {
+    ok: true,
+    lines: parsed,
+    totals: {
+      untaxedTotal: untaxedTotal.toDecimalPlaces(2),
+      taxTotal: taxTotal.toDecimalPlaces(2),
+      totalAmount: totalAmount.toDecimalPlaces(2),
+    },
+  };
+}
+
+function canModifyExpenseVoucher(user: AuthUser, voucher: { createdByUserId: bigint | null; status: string }): boolean {
+  if (voucher.status === "verified") return false;
+  if (user.role === "admin" || user.role === "accounting") return true;
+  if (voucher.createdByUserId != null && voucher.createdByUserId === user.id) return true;
+  return false;
+}
+
+function canVerifyExpense(user: AuthUser): boolean {
+  return user.role === "admin" || user.role === "accounting";
+}
+
+const allocateExpenseVoucherNo = async (tx: Prisma.TransactionClient, expenseDate: Date): Promise<string> => {
+  const yyyy = expenseDate.getUTCFullYear();
+  const mm = String(expenseDate.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(expenseDate.getUTCDate()).padStart(2, "0");
+  const prefix = `EX${yyyy}${mm}${dd}`;
+  const last = await tx.expenseVoucher.findFirst({
+    where: { voucherNo: { startsWith: prefix } },
+    orderBy: { voucherNo: "desc" },
+    select: { voucherNo: true },
+  });
+  let seq = 1;
+  if (last) {
+    const tail = last.voucherNo.slice(prefix.length);
+    const n = parseInt(tail, 10);
+    if (Number.isFinite(n)) seq = n + 1;
+  }
+  return `${prefix}${String(seq).padStart(3, "0")}`;
+};
+
+type ExpenseFlatLine = {
+  lineId: string;
+  voucherId: string;
+  voucherNo: string;
+  expenseDate: string;
+  vendorName: string;
+  companyId: string;
+  companyName: string;
+  invoiceDate: string | null;
+  paymentMethod: string;
+  voucherRemark: string | null;
+  status: string;
+  categoryId: string | null;
+  categoryName: string | null;
+  itemName: string;
+  customerId: string | null;
+  customerName: string | null;
+  customerCode: string | null;
+  qty: number;
+  unitPrice: string;
+  taxMode: string;
+  taxAmount: string;
+  lineAmount: string;
+  createdByName: string | null;
+  verifiedAt: string | null;
+};
+
+function flattenExpenseVouchers(vouchers: Prisma.ExpenseVoucherGetPayload<{ include: typeof expenseVoucherInclude }>[]): ExpenseFlatLine[] {
+  const out: ExpenseFlatLine[] = [];
+  for (const v of vouchers) {
+    const expenseDate = fmtDbDateYmd(v.expenseDate);
+    const invoiceDate = v.invoiceDate ? fmtDbDateYmd(v.invoiceDate) : null;
+    for (const line of v.lines) {
+      out.push({
+        lineId: line.id.toString(),
+        voucherId: v.id.toString(),
+        voucherNo: v.voucherNo,
+        expenseDate,
+        vendorName: v.vendorName,
+        companyId: v.affiliatedCompanyId.toString(),
+        companyName: v.affiliatedCompany?.name ?? "",
+        invoiceDate,
+        paymentMethod: v.paymentMethod,
+        voucherRemark: v.remark,
+        status: v.status,
+        categoryId: line.categoryId?.toString() ?? null,
+        categoryName: line.category?.name ?? null,
+        itemName: line.itemName,
+        customerId: line.customerId?.toString() ?? null,
+        customerName: line.customer?.name ?? null,
+        customerCode: line.customer?.customerCode ?? null,
+        qty: line.qty,
+        unitPrice: line.unitPrice.toString(),
+        taxMode: line.taxMode,
+        taxAmount: line.taxAmount.toString(),
+        lineAmount: line.lineAmount.toString(),
+        createdByName: v.createdBy?.name ?? null,
+        verifiedAt: v.verifiedAt ? v.verifiedAt.toISOString() : null,
+      });
+    }
+  }
+  return out;
+}
+
+function fmtLocalYmdFromDate(d: Date): string {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function buildExpenseSummary(
+  vouchers: Prisma.ExpenseVoucherGetPayload<{ include: typeof expenseVoucherInclude }>[],
+  dateLabel: string,
+) {
+  const flatLines = flattenExpenseVouchers(vouchers);
+  let untaxedTotal = new Prisma.Decimal(0);
+  let taxTotal = new Prisma.Decimal(0);
+  let totalAmount = new Prisma.Decimal(0);
+  for (const v of vouchers) {
+    untaxedTotal = untaxedTotal.plus(v.untaxedTotal);
+    taxTotal = taxTotal.plus(v.taxTotal);
+    totalAmount = totalAmount.plus(v.totalAmount);
+  }
+  const verifiedCount = vouchers.filter((v) => v.status === "verified").length;
+  const pendingCount = vouchers.filter((v) => v.status === "pending").length;
+
+  const byCategoryMap = new Map<string, { name: string; totalAmount: Prisma.Decimal; count: number }>();
+  for (const line of flatLines) {
+    const key = line.categoryId ?? "_none";
+    const name = line.categoryName ?? "未分類";
+    const prev = byCategoryMap.get(key) ?? { name, totalAmount: new Prisma.Decimal(0), count: 0 };
+    prev.totalAmount = prev.totalAmount.plus(new Prisma.Decimal(line.lineAmount));
+    prev.count += 1;
+    byCategoryMap.set(key, prev);
+  }
+
+  const byCompanyMap = new Map<string, { name: string; totalAmount: Prisma.Decimal; count: number }>();
+  for (const v of vouchers) {
+    const key = v.affiliatedCompanyId.toString();
+    const name = v.affiliatedCompany?.name ?? "";
+    const prev = byCompanyMap.get(key) ?? { name, totalAmount: new Prisma.Decimal(0), count: 0 };
+    prev.totalAmount = prev.totalAmount.plus(v.totalAmount);
+    prev.count += 1;
+    byCompanyMap.set(key, prev);
+  }
+
+  return {
+    date: dateLabel,
+    voucherCount: vouchers.length,
+    lineCount: flatLines.length,
+    untaxedTotal: untaxedTotal.toDecimalPlaces(2).toString(),
+    taxTotal: taxTotal.toDecimalPlaces(2).toString(),
+    totalAmount: totalAmount.toDecimalPlaces(2).toString(),
+    verifiedCount,
+    pendingCount,
+    byCategory: [...byCategoryMap.values()]
+      .map((x) => ({ name: x.name, totalAmount: x.totalAmount.toDecimalPlaces(2).toString(), count: x.count }))
+      .sort((a, b) => Number(b.totalAmount) - Number(a.totalAmount)),
+    byCompany: [...byCompanyMap.values()]
+      .map((x) => ({ name: x.name, totalAmount: x.totalAmount.toDecimalPlaces(2).toString(), count: x.count }))
+      .sort((a, b) => Number(b.totalAmount) - Number(a.totalAmount)),
+    lines: flatLines.map((line) => ({
+      ...line,
+      lineId: line.lineId,
+    })),
+  };
+}
+
+app.get("/api/expense-categories", async (req, res) => {
+  try {
+    const all = req.query.all === "1" || req.query.all === "true";
+    const rows = await prisma.expenseCategory.findMany({
+      where: all ? undefined : { isActive: true },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+    });
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+app.post("/api/expense-categories", async (req, res) => {
+  if (!requireRole(req, res, ["admin"])) return;
+  try {
+    const body = req.body as { name?: unknown; sortOrder?: unknown; requiresCustomer?: unknown };
+    const name = trimOptionalString(body.name);
+    if (!name) {
+      res.status(400).json({ ok: false, message: "類別名稱為必填" });
+      return;
+    }
+    if (name.length > 80) {
+      res.status(400).json({ ok: false, message: "類別名稱不可超過 80 字" });
+      return;
+    }
+    const sortOrder = Math.floor(Number(body.sortOrder ?? 0));
+    const row = await prisma.expenseCategory.create({
+      data: {
+        name,
+        sortOrder: Number.isFinite(sortOrder) ? sortOrder : 0,
+        requiresCustomer: body.requiresCustomer === true,
+      },
+    });
+    res.status(201).json({ ok: true, data: row });
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+      res.status(409).json({ ok: false, message: "此類別名稱已存在" });
+      return;
+    }
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+app.patch("/api/expense-categories/:categoryId", async (req, res) => {
+  if (!requireRole(req, res, ["admin"])) return;
+  try {
+    const categoryId = toBigInt(req.params.categoryId);
+    if (!categoryId) {
+      res.status(400).json({ ok: false, message: "參數錯誤" });
+      return;
+    }
+    const body = req.body as { name?: unknown; sortOrder?: unknown; isActive?: unknown; requiresCustomer?: unknown };
+    const data: Prisma.ExpenseCategoryUpdateInput = {};
+    if (body.name !== undefined) {
+      const name = trimOptionalString(body.name);
+      if (!name) {
+        res.status(400).json({ ok: false, message: "類別名稱不可為空" });
+        return;
+      }
+      data.name = name;
+    }
+    if (body.sortOrder !== undefined) {
+      const sortOrder = Math.floor(Number(body.sortOrder));
+      data.sortOrder = Number.isFinite(sortOrder) ? sortOrder : 0;
+    }
+    if (typeof body.isActive === "boolean") data.isActive = body.isActive;
+    if (typeof body.requiresCustomer === "boolean") data.requiresCustomer = body.requiresCustomer;
+    if (Object.keys(data).length === 0) {
+      res.status(400).json({ ok: false, message: "沒有要更新的欄位" });
+      return;
+    }
+    const row = await prisma.expenseCategory.update({ where: { id: categoryId }, data });
+    res.json({ ok: true, data: row });
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2025") {
+      res.status(404).json({ ok: false, message: "找不到類別" });
+      return;
+    }
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+app.delete("/api/expense-categories/:categoryId", async (req, res) => {
+  if (!requireRole(req, res, ["admin"])) return;
+  try {
+    const categoryId = toBigInt(req.params.categoryId);
+    if (!categoryId) {
+      res.status(400).json({ ok: false, message: "參數錯誤" });
+      return;
+    }
+    const used = await prisma.expenseLine.count({ where: { categoryId } });
+    if (used > 0) {
+      res.status(400).json({ ok: false, message: `仍有 ${used} 筆支出明細使用此類別，請改為停用` });
+      return;
+    }
+    await prisma.expenseCategory.delete({ where: { id: categoryId } });
+    res.json({ ok: true });
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2025") {
+      res.status(404).json({ ok: false, message: "找不到類別" });
+      return;
+    }
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+app.get("/api/expense-vouchers/daily-summary", async (req, res) => {
+  try {
+    const dateParam = typeof req.query.date === "string" ? req.query.date.trim() : "";
+    const ymd = dateParam || fmtLocalYmdFromDate(new Date());
+    const dateFilter = dbDateEqualsFilter(ymd);
+    if (!dateFilter) {
+      res.status(400).json({ ok: false, message: "date 格式須為 YYYY-MM-DD" });
+      return;
+    }
+    const vouchers = await prisma.expenseVoucher.findMany({
+      where: { expenseDate: dateFilter },
+      include: expenseVoucherInclude,
+      orderBy: [{ voucherNo: "asc" }],
+    });
+    res.json({ ok: true, data: buildExpenseSummary(vouchers, ymd) });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+app.get("/api/expense-vouchers/today-summary", async (req, res) => {
+  try {
+    const dateParam = typeof req.query.date === "string" ? req.query.date.trim() : fmtLocalYmdFromDate(new Date());
+    const dateFilter = dbDateEqualsFilter(dateParam);
+    if (!dateFilter) {
+      res.status(400).json({ ok: false, message: "date 格式須為 YYYY-MM-DD" });
+      return;
+    }
+    const companyId = toBigInt(req.query.companyId);
+    const categoryId = toBigInt(req.query.categoryId);
+    const statusParam = typeof req.query.status === "string" ? req.query.status.trim() : "";
+    const vendorQ = typeof req.query.vendor === "string" ? req.query.vendor.trim().toLowerCase() : "";
+
+    const where: Prisma.ExpenseVoucherWhereInput = { expenseDate: dateFilter };
+    if (companyId) where.affiliatedCompanyId = companyId;
+    if (statusParam === "pending" || statusParam === "verified") where.status = statusParam;
+    if (categoryId) {
+      where.lines = { some: { categoryId } };
+    }
+
+    let vouchers = await prisma.expenseVoucher.findMany({
+      where,
+      include: expenseVoucherInclude,
+      orderBy: [{ voucherNo: "asc" }],
+    });
+    if (vendorQ) {
+      vouchers = vouchers.filter((v) => v.vendorName.toLowerCase().includes(vendorQ));
+    }
+    res.json({ ok: true, data: buildExpenseSummary(vouchers, dateParam) });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+app.get("/api/expense-vouchers/reports/monthly", async (req, res) => {
+  try {
+    const ym = typeof req.query.ym === "string" ? req.query.ym.trim() : "";
+    if (!/^\d{4}-\d{2}$/.test(ym)) {
+      res.status(400).json({ ok: false, message: "ym 格式須為 YYYY-MM" });
+      return;
+    }
+    const [y, m] = ym.split("-").map(Number);
+    const start = new Date(y, m - 1, 1);
+    const end = new Date(y, m, 1);
+    const vouchers = await prisma.expenseVoucher.findMany({
+      where: { expenseDate: { gte: start, lt: end } },
+      include: expenseVoucherInclude,
+      orderBy: [{ expenseDate: "asc" }, { voucherNo: "asc" }],
+    });
+    res.json({ ok: true, data: buildExpenseSummary(vouchers, ym) });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+app.get("/api/expense-vouchers/reports/by-category", async (req, res) => {
+  try {
+    const dateFromParam = typeof req.query.dateFrom === "string" ? req.query.dateFrom.trim() : "";
+    const dateToParam = typeof req.query.dateTo === "string" ? req.query.dateTo.trim() : "";
+    const where: Prisma.ExpenseVoucherWhereInput = {};
+    if (dateFromParam || dateToParam) {
+      const range: Prisma.DateTimeFilter = {};
+      if (dateFromParam) {
+        const parsedFrom = parseLocalYmdRange(dateFromParam);
+        if (!parsedFrom) {
+          res.status(400).json({ ok: false, message: "dateFrom 格式須為 YYYY-MM-DD" });
+          return;
+        }
+        range.gte = parsedFrom.start;
+      }
+      if (dateToParam) {
+        const parsedTo = parseLocalYmdRange(dateToParam);
+        if (!parsedTo) {
+          res.status(400).json({ ok: false, message: "dateTo 格式須為 YYYY-MM-DD" });
+          return;
+        }
+        range.lt = parsedTo.end;
+      }
+      where.expenseDate = range;
+    }
+    const vouchers = await prisma.expenseVoucher.findMany({
+      where,
+      include: expenseVoucherInclude,
+    });
+    const summary = buildExpenseSummary(vouchers, `${dateFromParam || "—"} ~ ${dateToParam || "—"}`);
+    res.json({ ok: true, data: summary.byCategory });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+app.get("/api/expense-vouchers", async (req, res) => {
+  try {
+    const statusParam = typeof req.query.status === "string" ? req.query.status.trim() : "";
+    const dateParam = typeof req.query.date === "string" ? req.query.date.trim() : "";
+    const dateFromParam = typeof req.query.dateFrom === "string" ? req.query.dateFrom.trim() : "";
+    const dateToParam = typeof req.query.dateTo === "string" ? req.query.dateTo.trim() : "";
+    const q = typeof req.query.q === "string" ? req.query.q.trim().toLowerCase() : "";
+    const companyId = toBigInt(req.query.companyId);
+    const categoryId = toBigInt(req.query.categoryId);
+    const customerId = toBigInt(req.query.customerId);
+    const vendorQ = typeof req.query.vendor === "string" ? req.query.vendor.trim().toLowerCase() : "";
+
+    const where: Prisma.ExpenseVoucherWhereInput = {};
+    if (statusParam === "pending" || statusParam === "verified") where.status = statusParam;
+    if (companyId) where.affiliatedCompanyId = companyId;
+    if (dateParam) {
+      const dateFilter = dbDateEqualsFilter(dateParam);
+      if (!dateFilter) {
+        res.status(400).json({ ok: false, message: "date 格式須為 YYYY-MM-DD" });
+        return;
+      }
+      where.expenseDate = dateFilter;
+    } else if (dateFromParam || dateToParam) {
+      const range: Prisma.DateTimeFilter = {};
+      if (dateFromParam) {
+        const parsedFrom = parseLocalYmdRange(dateFromParam);
+        if (!parsedFrom) {
+          res.status(400).json({ ok: false, message: "dateFrom 格式須為 YYYY-MM-DD" });
+          return;
+        }
+        range.gte = parsedFrom.start;
+      }
+      if (dateToParam) {
+        const parsedTo = parseLocalYmdRange(dateToParam);
+        if (!parsedTo) {
+          res.status(400).json({ ok: false, message: "dateTo 格式須為 YYYY-MM-DD" });
+          return;
+        }
+        range.lt = parsedTo.end;
+      }
+      where.expenseDate = range;
+    }
+    if (categoryId || customerId) {
+      where.lines = {
+        some: {
+          ...(categoryId ? { categoryId } : {}),
+          ...(customerId ? { customerId } : {}),
+        },
+      };
+    }
+
+    let rows = await prisma.expenseVoucher.findMany({
+      where,
+      include: expenseVoucherInclude,
+      orderBy: [{ expenseDate: "desc" }, { voucherNo: "desc" }],
+      take: 400,
+    });
+
+    if (q || vendorQ) {
+      const needle = q || vendorQ;
+      rows = rows.filter((v) => {
+        const hay = [
+          v.voucherNo,
+          v.vendorName,
+          v.remark,
+          v.affiliatedCompany?.name,
+          ...v.lines.map((l) => [l.itemName, l.category?.name, l.customer?.name].filter(Boolean).join(" ")),
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        return hay.includes(needle);
+      });
+    }
+
+    res.json(rows.slice(0, 300));
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+app.get("/api/expense-vouchers/:voucherId", async (req, res) => {
+  try {
+    const voucherId = toBigInt(req.params.voucherId);
+    if (!voucherId) {
+      res.status(400).json({ ok: false, message: "參數錯誤" });
+      return;
+    }
+    const row = await prisma.expenseVoucher.findUnique({
+      where: { id: voucherId },
+      include: expenseVoucherInclude,
+    });
+    if (!row) {
+      res.status(404).json({ ok: false, message: "找不到支出憑證" });
+      return;
+    }
+    res.json(row);
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+app.post("/api/expense-vouchers", async (req, res) => {
+  try {
+    const auth = getAuthUser(req);
+    const body = req.body as {
+      expenseDateYmd?: unknown;
+      vendorName?: unknown;
+      affiliatedCompanyId?: unknown;
+      invoiceDateYmd?: unknown;
+      paymentMethod?: unknown;
+      remark?: unknown;
+      lines?: unknown;
+    };
+
+    const expenseDateYmd = typeof body.expenseDateYmd === "string" ? body.expenseDateYmd.trim() : "";
+    const vendorName = typeof body.vendorName === "string" ? body.vendorName.trim() : "";
+    const affiliatedCompanyId = toBigInt(body.affiliatedCompanyId);
+    const invoiceDateYmd = typeof body.invoiceDateYmd === "string" ? body.invoiceDateYmd.trim() : "";
+    const paymentMethod = normalizeExpensePaymentMethod(body.paymentMethod);
+    const remark = typeof body.remark === "string" ? body.remark.trim() : "";
+
+    if (!expenseDateYmd || !vendorName || !affiliatedCompanyId) {
+      res.status(400).json({ ok: false, message: "支出日期、廠商／對象、發票歸屬公司為必填" });
+      return;
+    }
+    if (vendorName.length > 200) {
+      res.status(400).json({ ok: false, message: "廠商／對象不可超過 200 字" });
+      return;
+    }
+
+    const expenseDate = parseLocalYmdToDbDate(expenseDateYmd);
+    if (!expenseDate) {
+      res.status(400).json({ ok: false, message: "expenseDateYmd 須為 YYYY-MM-DD" });
+      return;
+    }
+    const companyOk = await assertAffiliatedCompanyId(affiliatedCompanyId);
+    if (!companyOk) {
+      res.status(400).json({ ok: false, message: "發票歸屬公司無效" });
+      return;
+    }
+
+    let invoiceDate: Date | null = null;
+    if (invoiceDateYmd) {
+      invoiceDate = parseLocalYmdToDbDate(invoiceDateYmd);
+      if (!invoiceDate) {
+        res.status(400).json({ ok: false, message: "invoiceDateYmd 須為 YYYY-MM-DD" });
+        return;
+      }
+    }
+
+    const parsedLines = await parseExpenseLinesInput(body.lines);
+    if (!parsedLines.ok) {
+      res.status(400).json({ ok: false, message: parsedLines.message });
+      return;
+    }
+
+    const creatorId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
+    const result = await prisma.$transaction(async (tx) => {
+      const voucherNo = await allocateExpenseVoucherNo(tx, expenseDate);
+      const voucher = await tx.expenseVoucher.create({
+        data: {
+          voucherNo,
+          expenseDate,
+          vendorName,
+          affiliatedCompanyId,
+          invoiceDate,
+          paymentMethod,
+          remark: remark || null,
+          status: "pending",
+          untaxedTotal: parsedLines.totals.untaxedTotal,
+          taxTotal: parsedLines.totals.taxTotal,
+          totalAmount: parsedLines.totals.totalAmount,
+          createdByUserId: creatorId,
+          lines: {
+            create: parsedLines.lines.map((line) => ({
+              categoryId: line.categoryId,
+              itemName: line.itemName,
+              customerId: line.customerId,
+              qty: line.qty,
+              unitPrice: line.unitPrice,
+              taxMode: line.taxMode,
+              taxAmount: line.taxAmount,
+              lineAmount: line.lineAmount,
+              sortOrder: line.sortOrder,
+            })),
+          },
+        },
+        include: expenseVoucherInclude,
+      });
+      return voucher;
+    });
+
+    res.json({ ok: true, data: result });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+app.patch("/api/expense-vouchers/:voucherId", async (req, res) => {
+  try {
+    const auth = getAuthUser(req);
+    if (!auth) {
+      res.status(401).json({ ok: false, message: "未登入" });
+      return;
+    }
+    const voucherId = toBigInt(req.params.voucherId);
+    if (!voucherId) {
+      res.status(400).json({ ok: false, message: "參數錯誤" });
+      return;
+    }
+    const existing = await prisma.expenseVoucher.findUnique({ where: { id: voucherId } });
+    if (!existing) {
+      res.status(404).json({ ok: false, message: "找不到支出憑證" });
+      return;
+    }
+    if (!canModifyExpenseVoucher(auth, existing)) {
+      res.status(403).json({ ok: false, message: existing.status === "verified" ? "已核銷不可修改" : "無權限修改此憑證" });
+      return;
+    }
+
+    const body = req.body as {
+      expenseDateYmd?: unknown;
+      vendorName?: unknown;
+      affiliatedCompanyId?: unknown;
+      invoiceDateYmd?: unknown;
+      paymentMethod?: unknown;
+      remark?: unknown;
+      lines?: unknown;
+    };
+
+    const headerData: Prisma.ExpenseVoucherUpdateInput = {};
+    if (body.expenseDateYmd !== undefined) {
+      const expenseDateYmd = typeof body.expenseDateYmd === "string" ? body.expenseDateYmd.trim() : "";
+      const expenseDate = parseLocalYmdToDbDate(expenseDateYmd);
+      if (!expenseDate) {
+        res.status(400).json({ ok: false, message: "expenseDateYmd 須為 YYYY-MM-DD" });
+        return;
+      }
+      headerData.expenseDate = expenseDate;
+    }
+    if (body.vendorName !== undefined) {
+      const vendorName = typeof body.vendorName === "string" ? body.vendorName.trim() : "";
+      if (!vendorName) {
+        res.status(400).json({ ok: false, message: "廠商／對象不可為空" });
+        return;
+      }
+      headerData.vendorName = vendorName;
+    }
+    if (body.affiliatedCompanyId !== undefined) {
+      const affiliatedCompanyId = toBigInt(body.affiliatedCompanyId);
+      if (!affiliatedCompanyId) {
+        res.status(400).json({ ok: false, message: "發票歸屬公司無效" });
+        return;
+      }
+      const companyOk = await assertAffiliatedCompanyId(affiliatedCompanyId);
+      if (!companyOk) {
+        res.status(400).json({ ok: false, message: "發票歸屬公司無效" });
+        return;
+      }
+      headerData.affiliatedCompany = { connect: { id: affiliatedCompanyId } };
+    }
+    if (body.invoiceDateYmd !== undefined) {
+      const invoiceDateYmd = typeof body.invoiceDateYmd === "string" ? body.invoiceDateYmd.trim() : "";
+      if (!invoiceDateYmd) {
+        headerData.invoiceDate = null;
+      } else {
+        const invoiceDate = parseLocalYmdToDbDate(invoiceDateYmd);
+        if (!invoiceDate) {
+          res.status(400).json({ ok: false, message: "invoiceDateYmd 須為 YYYY-MM-DD" });
+          return;
+        }
+        headerData.invoiceDate = invoiceDate;
+      }
+    }
+    if (body.paymentMethod !== undefined) {
+      headerData.paymentMethod = normalizeExpensePaymentMethod(body.paymentMethod);
+    }
+    if (body.remark !== undefined) {
+      headerData.remark = typeof body.remark === "string" && body.remark.trim() ? body.remark.trim() : null;
+    }
+
+    let parsedLines: Awaited<ReturnType<typeof parseExpenseLinesInput>> | null = null;
+    if (body.lines !== undefined) {
+      parsedLines = await parseExpenseLinesInput(body.lines);
+      if (!parsedLines.ok) {
+        res.status(400).json({ ok: false, message: parsedLines.message });
+        return;
+      }
+      headerData.untaxedTotal = parsedLines.totals.untaxedTotal;
+      headerData.taxTotal = parsedLines.totals.taxTotal;
+      headerData.totalAmount = parsedLines.totals.totalAmount;
+    }
+
+    if (Object.keys(headerData).length === 0 && !parsedLines) {
+      res.status(400).json({ ok: false, message: "沒有要更新的欄位" });
+      return;
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      if (parsedLines?.ok) {
+        await tx.expenseLine.deleteMany({ where: { expenseVoucherId: voucherId } });
+        await tx.expenseLine.createMany({
+          data: parsedLines.lines.map((line) => ({
+            expenseVoucherId: voucherId,
+            categoryId: line.categoryId,
+            itemName: line.itemName,
+            customerId: line.customerId,
+            qty: line.qty,
+            unitPrice: line.unitPrice,
+            taxMode: line.taxMode,
+            taxAmount: line.taxAmount,
+            lineAmount: line.lineAmount,
+            sortOrder: line.sortOrder,
+          })),
+        });
+      }
+      return tx.expenseVoucher.update({
+        where: { id: voucherId },
+        data: headerData,
+        include: expenseVoucherInclude,
+      });
+    });
+
+    res.json({ ok: true, data: result });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+app.delete("/api/expense-vouchers/:voucherId", async (req, res) => {
+  try {
+    const auth = getAuthUser(req);
+    if (!auth) {
+      res.status(401).json({ ok: false, message: "未登入" });
+      return;
+    }
+    const voucherId = toBigInt(req.params.voucherId);
+    if (!voucherId) {
+      res.status(400).json({ ok: false, message: "參數錯誤" });
+      return;
+    }
+    const existing = await prisma.expenseVoucher.findUnique({ where: { id: voucherId } });
+    if (!existing) {
+      res.status(404).json({ ok: false, message: "找不到支出憑證" });
+      return;
+    }
+    if (!canModifyExpenseVoucher(auth, existing)) {
+      res.status(403).json({ ok: false, message: existing.status === "verified" ? "已核銷不可刪除" : "無權限刪除此憑證" });
+      return;
+    }
+    await prisma.expenseVoucher.delete({ where: { id: voucherId } });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+app.post("/api/expense-vouchers/batch-verify", async (req, res) => {
+  const auth = getAuthUser(req);
+  if (!auth || !canVerifyExpense(auth)) {
+    res.status(403).json({ ok: false, message: "僅會計或管理員可核銷支出" });
+    return;
+  }
+  try {
+    const body = req.body as { ids?: unknown };
+    if (!Array.isArray(body.ids) || body.ids.length === 0) {
+      res.status(400).json({ ok: false, message: "請提供 ids 陣列" });
+      return;
+    }
+    const ids = body.ids.map((id) => toBigInt(id)).filter((id): id is bigint => id != null);
+    if (ids.length === 0) {
+      res.status(400).json({ ok: false, message: "ids 無效" });
+      return;
+    }
+
+    const now = new Date();
+    const result = await prisma.$transaction(async (tx) => {
+      const pending = await tx.expenseVoucher.findMany({
+        where: { id: { in: ids }, status: "pending" },
+        select: { id: true },
+      });
+      const pendingIds = pending.map((p) => p.id);
+      if (pendingIds.length === 0) {
+        return { count: 0 };
+      }
+      await tx.expenseVoucher.updateMany({
+        where: { id: { in: pendingIds } },
+        data: {
+          status: "verified",
+          verifiedAt: now,
+          verifiedByUserId: auth.id,
+        },
+      });
+      return { count: pendingIds.length };
     });
 
     res.json({ ok: true, data: result });

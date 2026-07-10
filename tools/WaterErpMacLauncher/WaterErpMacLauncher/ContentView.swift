@@ -15,6 +15,7 @@ struct ContentView: View {
             Group {
                 switch vm.selectedTab {
                 case .services: ServicesView(vm: vm)
+                case .legacy: LegacyMigrationView(vm: vm)
                 case .git: GitView(vm: vm)
                 case .logs: LogsView(vm: vm)
                 case .settings: SettingsView(vm: vm)
@@ -43,6 +44,7 @@ struct ContentView: View {
     private func icon(for tab: LauncherTab) -> String {
         switch tab {
         case .services: return "server.rack"
+        case .legacy: return "arrow.triangle.2.circlepath"
         case .git: return "arrow.triangle.branch"
         case .logs: return "text.alignleft"
         case .settings: return "gearshape"
@@ -122,6 +124,105 @@ struct ServiceCard: View {
         if status.running && status.healthy { return .green }
         if status.running { return .orange }
         return .gray
+    }
+}
+
+// MARK: - Legacy Migration
+
+struct LegacyMigrationView: View {
+    @ObservedObject var vm: LauncherViewModel
+
+    private let columns = [GridItem(.adaptive(minimum: 180), spacing: 10)]
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("舊庫轉換")
+                    .font(.title2.bold())
+                Text("從舊庫 database 唯讀匯入至本機 water_erp，功能與 Windows 啟動器相同。")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                GroupBox("資料庫結構（water_erp）") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("檢查並套用 `database/migrations/` 內未執行的 SQL，補上新表／新欄位（例如支出功能 028）。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(vm.schemaStatusSummary)
+                            .font(.body)
+                        HStack {
+                            Button("檢查結構") { vm.checkSchemaMigration() }
+                                .disabled(vm.isBusy)
+                            Button("升級結構") { vm.applySchemaMigration() }
+                                .disabled(vm.isBusy || vm.schemaPendingCount == 0)
+                        }
+                        Text("與下方「舊庫轉換」不同：此處只更新表結構，不匯入舊庫業務資料。升級前建議備份。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(4)
+                }
+
+                GroupBox("舊庫連線（LEGACY_DATABASE_URL）") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("若舊庫在遠端 Windows 伺服器，請填寫連線字串（只需 mysql:// 開頭的網址，不要含 LEGACY_DATABASE_URL=）：")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        TextEditor(text: $vm.legacyDatabaseURL)
+                            .font(.system(.body, design: .monospaced))
+                            .frame(minHeight: 44, maxHeight: 64)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(Color.secondary.opacity(0.4), lineWidth: 1)
+                            )
+                        Text("例：mysql://user:pass@122.117.156.246:3306/database")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("留空則使用與 DATABASE_URL 同主機的 database 庫")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("儲存舊庫連線") { vm.saveLegacyDatabaseURL() }
+                            .disabled(vm.isBusy)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(4)
+                }
+
+                GroupBox("建議順序") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("1. 地址分區 → 2. 隸屬公司 → 3. 客戶資料")
+                        Text("4. 使用者資料 → 5. 司機資料 → 6. 商品資料")
+                    }
+                    .font(.caption)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(4)
+                }
+
+                LazyVGrid(columns: columns, spacing: 10) {
+                    ForEach(LegacyMigrationTask.allCases) { task in
+                        Button(task.title) {
+                            vm.runLegacyMigration(task)
+                        }
+                        .disabled(vm.isBusy)
+                    }
+                }
+
+                Divider()
+
+                Button("清空業務資料（db:reset）", role: .destructive) {
+                    vm.resetBusinessData()
+                }
+                .disabled(vm.isBusy)
+
+                Text("轉換前請先停止 API。舊庫僅讀取，不會修改遠端資料。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(20)
+        }
+        .navigationTitle("舊庫轉換")
+        .onAppear { vm.loadLegacySettings() }
     }
 }
 

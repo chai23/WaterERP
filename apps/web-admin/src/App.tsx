@@ -29,6 +29,12 @@ import SettingsOrderPrintPage from "./pages/SettingsOrderPrintPage";
 import SettingsCustomerMastersPage from "./pages/SettingsCustomerMastersPage";
 import SettingsPrintSlogansPage from "./pages/SettingsPrintSlogansPage";
 import SettingsOrderAnnouncementsPage from "./pages/SettingsOrderAnnouncementsPage";
+import ExpenseNewPage from "./pages/ExpenseNewPage";
+import ExpenseQueryPage from "./pages/ExpenseQueryPage";
+import ExpenseTodayPage from "./pages/ExpenseTodayPage";
+import ExpenseVerifyPage from "./pages/ExpenseVerifyPage";
+import ExpenseReportsPage from "./pages/ExpenseReportsPage";
+import SettingsExpenseCategoriesPage from "./pages/SettingsExpenseCategoriesPage";
 
 function ProtectedShell() {
   const { user, loading } = useAuth();
@@ -70,6 +76,14 @@ export default function App() {
               <Route path="data/vehicles" element={<DataVehiclesPage />} />
               <Route path="data/users" element={<DataUsersPage />} />
 
+              <Route path="expenses" element={<Navigate to="/expenses/new" replace />} />
+              <Route path="expenses/new" element={<ExpenseNewPage />} />
+              <Route path="expenses/edit/:voucherId" element={<ExpenseNewPage />} />
+              <Route path="expenses/query" element={<ExpenseQueryPage />} />
+              <Route path="expenses/today" element={<ExpenseTodayPage />} />
+              <Route path="expenses/verify" element={<ExpenseVerifyPage />} />
+              <Route path="expenses/reports" element={<ExpenseReportsPage />} />
+
               <Route path="reports" element={<Navigate to="/reports/daily" replace />} />
               <Route path="reports/daily" element={<ReportDailyPage />} />
               <Route path="reports/monthly" element={<ReportMonthlyPage />} />
@@ -83,6 +97,7 @@ export default function App() {
               <Route path="settings/print-slogans" element={<SettingsPrintSlogansPage />} />
               <Route path="settings/order-announcements" element={<SettingsOrderAnnouncementsPage />} />
               <Route path="settings/customer-masters" element={<SettingsCustomerMastersPage />} />
+              <Route path="settings/expense-categories" element={<SettingsExpenseCategoriesPage />} />
 
               {/* 舊路徑導向新結構 */}
               <Route path="masters" element={<Navigate to="/data/customers" replace />} />

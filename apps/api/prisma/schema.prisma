@@ -31,6 +31,8 @@ model User {
   barrelPickupsSettled     BarrelPickup[]         @relation("BarrelPickupSettler")
   paymentsRecorded         Payment[]              @relation("PaymentRecorder")
   customerLedgerEntries    CustomerLedgerEntry[]
+  expenseVouchersCreated   ExpenseVoucher[]       @relation("ExpenseVoucherCreator")
+  expenseVouchersVerified  ExpenseVoucher[]       @relation("ExpenseVoucherVerifier")
 
   @@map("users")
 }
@@ -91,6 +93,7 @@ model AffiliatedCompany {
   updatedAt DateTime @updatedAt @map("updated_at") @db.DateTime(3)
 
   customers Customer[]
+  expenseVouchers ExpenseVoucher[]
 
   @@map("affiliated_companies")
 }
@@ -172,6 +175,7 @@ model Customer {
   billingStatements BillingStatement[]
   taxInvoices       TaxInvoice[]
   barrelPickups     BarrelPickup[]
+  expenseLines      ExpenseLine[]
 
   @@map("customers")
 }
@@ -783,4 +787,71 @@ model BarrelPickupEvent {
 
   @@index([barrelPickupId])
   @@map("barrel_pickup_events")
+}
+
+model ExpenseCategory {
+  id               BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  name             String   @unique @db.VarChar(80)
+  sortOrder        Int      @default(0) @map("sort_order")
+  isActive         Boolean  @default(true) @map("is_active")
+  requiresCustomer Boolean  @default(false) @map("requires_customer")
+  createdAt        DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  lines ExpenseLine[]
+
+  @@map("expense_categories")
+}
+
+model ExpenseVoucher {
+  id                  BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  voucherNo           String    @unique @map("voucher_no") @db.VarChar(40)
+  expenseDate         DateTime  @map("expense_date") @db.Date
+  vendorName          String    @map("vendor_name") @db.VarChar(200)
+  affiliatedCompanyId BigInt    @map("affiliated_company_id") @db.UnsignedBigInt
+  invoiceDate         DateTime? @map("invoice_date") @db.Date
+  paymentMethod       String    @default("cash") @map("payment_method") @db.VarChar(32)
+  remark              String?   @db.Text
+  /// pending | verified
+  status              String    @default("pending") @db.VarChar(32)
+  untaxedTotal        Decimal   @default(0) @map("untaxed_total") @db.Decimal(14, 2)
+  taxTotal            Decimal   @default(0) @map("tax_total") @db.Decimal(14, 2)
+  totalAmount         Decimal   @default(0) @map("total_amount") @db.Decimal(14, 2)
+  verifiedAt          DateTime? @map("verified_at") @db.DateTime(3)
+  verifiedByUserId    BigInt?   @map("verified_by_user_id") @db.UnsignedBigInt
+  createdByUserId     BigInt?   @map("created_by_user_id") @db.UnsignedBigInt
+  createdAt           DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt           DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+
+  affiliatedCompany AffiliatedCompany @relation(fields: [affiliatedCompanyId], references: [id])
+  createdBy         User?             @relation("ExpenseVoucherCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  verifiedBy        User?             @relation("ExpenseVoucherVerifier", fields: [verifiedByUserId], references: [id], onDelete: SetNull)
+  lines             ExpenseLine[]
+
+  @@index([expenseDate, status])
+  @@map("expense_vouchers")
+}
+
+model ExpenseLine {
+  id               BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  expenseVoucherId BigInt   @map("expense_voucher_id") @db.UnsignedBigInt
+  categoryId       BigInt?  @map("category_id") @db.UnsignedBigInt
+  itemName         String   @map("item_name") @db.VarChar(200)
+  customerId       BigInt?  @map("customer_id") @db.UnsignedBigInt
+  qty              Int      @default(1)
+  unitPrice        Decimal  @default(0) @map("unit_price") @db.Decimal(14, 2)
+  /// tax_inclusive | tax_exclusive | none（未開發票，無稅金）
+  taxMode          String   @default("tax_exclusive") @map("tax_mode") @db.VarChar(32)
+  taxAmount        Decimal  @default(0) @map("tax_amount") @db.Decimal(14, 2)
+  lineAmount       Decimal  @default(0) @map("line_amount") @db.Decimal(14, 2)
+  sortOrder        Int      @default(0) @map("sort_order")
+  createdAt        DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  expenseVoucher ExpenseVoucher   @relation(fields: [expenseVoucherId], references: [id], onDelete: Cascade)
+  category       ExpenseCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  customer       Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  @@index([expenseVoucherId])
+  @@map("expense_lines")
 }

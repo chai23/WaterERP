@@ -1,7 +1,9 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import AccountingStatsSection from "../components/AccountingStatsSection";
+import ExpenseSummarySection, { ExpenseNetHint } from "../components/ExpenseSummarySection";
 import { todayLocalYmd } from "../adminUtils";
 import { useDashboard } from "../DashboardContext";
+import type { ExpenseSummary } from "../expenseUtils";
 
 function datePrefix() {
   return todayLocalYmd();
@@ -26,6 +28,21 @@ export default function ReportDailyPage() {
     () => payments.filter((p) => p.paidAt && String(p.paidAt).slice(0, 10) === todayStr),
     [payments, todayStr],
   );
+
+  const cashToday = useMemo(
+    () => paymentsToday.reduce((sum, p) => sum + Number(p.amount ?? 0), 0),
+    [paymentsToday],
+  );
+
+  const [expenseTotal, setExpenseTotal] = useState(0);
+  useEffect(() => {
+    fetch(`/api/expense-vouchers/daily-summary?date=${todayStr}`)
+      .then((r) => r.json())
+      .then((body) => {
+        if (body?.data) setExpenseTotal(Number((body.data as ExpenseSummary).totalAmount ?? 0));
+      })
+      .catch(() => setExpenseTotal(0));
+  }, [todayStr]);
 
   return (
     <>
@@ -98,6 +115,21 @@ export default function ReportDailyPage() {
             </tbody>
           </table>
         </div>
+      </section>
+
+      <ExpenseSummarySection
+        title="本日支出"
+        dateLabel={todayStr}
+        summaryUrl={`/api/expense-vouchers/daily-summary?date=${todayStr}`}
+        linkTo="/expenses/today"
+        linkLabel="查看完整支出"
+      />
+
+      <section className="card">
+        <h2 className="card__title">本日淨額參考</h2>
+        <p className="card__hint">現金收款合計（本日 payments）減本日支出含稅總額；支出數字請以「本日支出」區塊為準。</p>
+        <ExpenseNetHint cashReceived={cashToday} expenseTotal={expenseTotal} />
+        <p className="card__hint">本日支出含稅總額：{expenseTotal.toLocaleString()}</p>
       </section>
     </>
   );

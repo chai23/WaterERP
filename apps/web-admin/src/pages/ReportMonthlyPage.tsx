@@ -1,7 +1,9 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { todayLocalYm } from "../adminUtils";
 import AccountingStatsSection from "../components/AccountingStatsSection";
+import ExpenseSummarySection, { ExpenseNetHint } from "../components/ExpenseSummarySection";
 import { useDashboard } from "../DashboardContext";
+import type { ExpenseSummary } from "../expenseUtils";
 
 function monthPrefix() {
   return todayLocalYm();
@@ -25,6 +27,21 @@ export default function ReportMonthlyPage() {
     () => payments.filter((p) => p.paidAt && String(p.paidAt).slice(0, 7) === ym),
     [payments, ym],
   );
+
+  const cashMonth = useMemo(
+    () => paymentsMonth.reduce((sum, p) => sum + Number(p.amount ?? 0), 0),
+    [paymentsMonth],
+  );
+
+  const [expenseTotal, setExpenseTotal] = useState(0);
+  useEffect(() => {
+    fetch(`/api/expense-vouchers/reports/monthly?ym=${ym}`)
+      .then((r) => r.json())
+      .then((body) => {
+        if (body?.data) setExpenseTotal(Number((body.data as ExpenseSummary).totalAmount ?? 0));
+      })
+      .catch(() => setExpenseTotal(0));
+  }, [ym]);
 
   return (
     <>
@@ -97,6 +114,20 @@ export default function ReportMonthlyPage() {
             </tbody>
           </table>
         </div>
+      </section>
+
+      <ExpenseSummarySection
+        title="本月支出"
+        dateLabel={ym}
+        summaryUrl={`/api/expense-vouchers/reports/monthly?ym=${ym}`}
+        linkTo="/expenses/reports"
+        linkLabel="查看支出報表"
+      />
+
+      <section className="card">
+        <h2 className="card__title">本月淨額參考</h2>
+        <p className="card__hint">本月收款合計減本月支出含稅總額（payments 表現金收款 vs 支出憑證）。</p>
+        <ExpenseNetHint cashReceived={cashMonth} expenseTotal={expenseTotal} />
       </section>
     </>
   );

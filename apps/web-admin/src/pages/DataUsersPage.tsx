@@ -4,6 +4,7 @@ import { useAuth, type AuthUser } from "../AuthContext";
 
 const roleLabel: Record<string, string> = {
   admin: "管理員",
+  accounting: "會計",
   dispatcher: "調度/後台",
   warehouse: "倉管",
 };
@@ -112,6 +113,7 @@ export default function DataUsersPage() {
               <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
                 <option value="dispatcher">調度/後台</option>
                 <option value="warehouse">倉管</option>
+                <option value="accounting">會計</option>
                 <option value="admin">管理員</option>
               </select>
             </label>

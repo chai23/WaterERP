@@ -38,6 +38,17 @@ const navGroups: { id: string; title: string; items: { to: string; label: string
     ],
   },
   {
+    id: "expenses",
+    title: "公司支出",
+    items: [
+      { to: "/expenses/new", label: "新增支出" },
+      { to: "/expenses/query", label: "查詢支出" },
+      { to: "/expenses/today", label: "支出統計" },
+      { to: "/expenses/verify", label: "會計核銷" },
+      { to: "/expenses/reports", label: "支出報表" },
+    ],
+  },
+  {
     id: "reports",
     title: "會計報表",
     items: [
@@ -56,6 +67,7 @@ const navGroups: { id: string; title: string; items: { to: string; label: string
       { to: "/settings/order-announcements", label: "訂單公告" },
       { to: "/settings/print-slogans", label: "套印標語" },
       { to: "/settings/customer-masters", label: "地址分區與隸屬公司" },
+      { to: "/settings/expense-categories", label: "支出類別設定" },
     ],
   },
 ];
@@ -63,6 +75,7 @@ const navGroups: { id: string; title: string; items: { to: string; label: string
 function groupIdFromPath(pathname: string): string | null {
   if (pathname.startsWith("/orders/barrel-pickup")) return "barrel-pickup";
   if (pathname.startsWith("/orders")) return "orders";
+  if (pathname.startsWith("/expenses")) return "expenses";
   if (pathname.startsWith("/data")) return "data";
   if (pathname.startsWith("/reports")) return "reports";
   if (pathname.startsWith("/settings")) return "settings";

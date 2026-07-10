@@ -11,6 +11,8 @@
     "dev:driver": "npm run dev -w apps/web-driver",
     "build": "npm run build -w apps/api && npm run build -w apps/web-admin && npm run build -w apps/web-driver",
     "db:generate": "npm run prisma:generate -w apps/api",
+    "db:schema-status": "npm run db:schema-status -w apps/api",
+    "db:schema-apply": "npm run db:schema-apply -w apps/api",
     "db:reset": "npm run reset-data -w apps/api",
     "db:migrate-legacy-masters": "npm run migrate:legacy-masters -w apps/api",
     "db:migrate-zones": "npm run migrate:legacy-zones -w apps/api",

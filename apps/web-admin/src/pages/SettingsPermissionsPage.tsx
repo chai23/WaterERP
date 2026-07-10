@@ -2,20 +2,23 @@ import { Link } from "react-router-dom";
 import { useAuth } from "../AuthContext";
 
 const modules = [
-  { key: "overview", label: "總覽", admin: true, dispatcher: true, warehouse: true, driver: false },
-  { key: "orders", label: "訂單新增/查詢/修改", admin: true, dispatcher: true, warehouse: false, driver: false },
-  { key: "assign", label: "派車與核銷", admin: true, dispatcher: true, warehouse: false, driver: false },
-  { key: "masters", label: "客戶/商品/車輛主檔", admin: true, dispatcher: true, warehouse: true, driver: false },
-  { key: "accounting", label: "AR 沖帳與會計報表", admin: true, dispatcher: true, warehouse: false, driver: false },
-  { key: "users", label: "使用者與密碼重設", admin: true, dispatcher: false, warehouse: false, driver: false },
-  { key: "settings", label: "系統設定", admin: true, dispatcher: false, warehouse: false, driver: false },
-  { key: "driverApp", label: "司機端任務回報", admin: false, dispatcher: false, warehouse: false, driver: true },
+  { key: "overview", label: "總覽", admin: true, accounting: true, dispatcher: true, warehouse: true, driver: false },
+  { key: "orders", label: "訂單新增/查詢/修改", admin: true, accounting: true, dispatcher: true, warehouse: false, driver: false },
+  { key: "assign", label: "派車與核銷", admin: true, accounting: true, dispatcher: true, warehouse: false, driver: false },
+  { key: "expenses", label: "公司支出登錄與查詢", admin: true, accounting: true, dispatcher: true, warehouse: true, driver: false },
+  { key: "expenseVerify", label: "支出會計核銷", admin: true, accounting: true, dispatcher: false, warehouse: false, driver: false },
+  { key: "masters", label: "客戶/商品/車輛主檔", admin: true, accounting: true, dispatcher: true, warehouse: true, driver: false },
+  { key: "accounting", label: "AR 沖帳與會計報表", admin: true, accounting: true, dispatcher: true, warehouse: false, driver: false },
+  { key: "users", label: "使用者與密碼重設", admin: true, accounting: false, dispatcher: false, warehouse: false, driver: false },
+  { key: "settings", label: "系統設定", admin: true, accounting: false, dispatcher: false, warehouse: false, driver: false },
+  { key: "driverApp", label: "司機端任務回報", admin: false, accounting: false, dispatcher: false, warehouse: false, driver: true },
 ];
 
 const roles = [
   { key: "admin", label: "管理員", note: "完整後台權限，可維護帳號與重設密碼。" },
-  { key: "dispatcher", label: "調度/後台", note: "日常訂單、派車、核銷、報表作業。" },
-  { key: "warehouse", label: "倉管", note: "主檔與庫存相關作業，避免接觸帳號與收款設定。" },
+  { key: "accounting", label: "會計", note: "支出核銷、會計報表；可修改待核銷支出憑證。" },
+  { key: "dispatcher", label: "調度/後台", note: "日常訂單、派車、核銷、報表、支出登錄。" },
+  { key: "warehouse", label: "倉管", note: "主檔與支出登錄；不可核銷支出。" },
   { key: "driver", label: "司機", note: "只能登入司機端，只能回報自己的派單。" },
 ] as const;
 
@@ -74,7 +77,7 @@ export default function SettingsPermissionsPage() {
                   <td>{mod.label}</td>
                   {roles.map((role) => (
                     <td key={role.key}>
-                      <Mark enabled={Boolean(mod[role.key])} />
+                      <Mark enabled={Boolean(mod[role.key as keyof typeof mod])} />
                     </td>
                   ))}
                 </tr>
@@ -93,6 +96,7 @@ export default function SettingsPermissionsPage() {
         </div>
         <ul className="settings-list">
           <li>管理員帳號只保留給少數人，用於新增使用者、停用帳號、重設密碼。</li>
+          <li>會計帳號用於支出核銷與報表稽核，不建議共用 admin 帳號。</li>
           <li>一般後台人員使用「調度/後台」角色，不共用 admin 帳號。</li>
           <li>司機帳號由「司機資料」建立，登入司機端後只能看到自己的任務。</li>
           <li>離職或停用人員請到「使用者資料」停用帳號，不要刪除歷史帳務關聯。</li>
