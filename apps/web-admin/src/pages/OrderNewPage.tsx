@@ -441,13 +441,24 @@ export default function OrderNewPage() {
   }, [lastPriceMap, form.customerId, activeProducts, setForm]);
 
   const lineSubtotals = useMemo(() => {
+    const topupProducts = new Set(
+      form.lines.filter((l) => l.linePurpose === "prepaid_barrel_topup" && l.productId).map((l) => l.productId),
+    );
     return form.lines.map((l) => {
       if (!l.productId || l.qty <= 0) return 0;
       const p = activeProducts.find((x) => String(x.id) === l.productId);
       if (!p) return 0;
       const up = l.unitPrice.trim() === "" ? Number(p.salePrice) : Number(l.unitPrice);
       if (!Number.isFinite(up) || up < 0) return 0;
-      return up * l.qty;
+      const sub = up * l.qty;
+      if (
+        l.linePurpose !== "prepaid_barrel_topup" &&
+        l.billingType === "prepaid" &&
+        topupProducts.has(l.productId)
+      ) {
+        return 0;
+      }
+      return sub;
     });
   }, [form.lines, activeProducts]);
 

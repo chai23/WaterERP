@@ -15,9 +15,18 @@ type JobFormState = {
   failureReason: string;
   emptyBarrelsReturned: number;
   cashReceived: number;
+  checkReceived: number;
   note: string;
   /** 各明細實際配送桶數（lineId → qty） */
   lineQtyDelivered: Record<string, number>;
+  floorBonusRecords: FloorBonusRecordForm[];
+};
+
+type FloorBonusRecordForm = {
+  key: string;
+  lineId: string;
+  floor: string;
+  qty: string;
 };
 
 type OrderLineRow = {
@@ -25,7 +34,7 @@ type OrderLineRow = {
   qtyOrdered?: number;
   qtyDelivered?: number;
   linePurpose?: string | null;
-  product?: { name?: string; code?: string };
+  product?: { name?: string; code?: string; consumesPrepaidBarrel?: boolean };
 };
 
 type DriverBillingHints = {
@@ -55,6 +64,7 @@ type AssignmentJob = {
   failureReason?: string | null;
   emptyBarrelsReturned?: number;
   cashReceived?: unknown;
+  checkReceived?: unknown;
   settlementNote?: string | null;
   expectedAmount?: unknown;
   cashVariance?: unknown;
@@ -63,11 +73,18 @@ type AssignmentJob = {
     orderNo?: string;
     totalAmount?: unknown;
     customer?: { name?: string };
-    deliveryAddress?: { addressLine?: string; barrelsOnSite?: number };
+    deliveryAddress?: { addressLine?: string; barrelsOnSite?: number; deliveryFloor?: number | null };
     lines?: OrderLineRow[];
   };
   vehicle?: { plateNo?: string };
   driverBillingHints?: DriverBillingHints;
+  floorBonusRecords?: Array<{
+    id?: string;
+    salesOrderLineId?: string;
+    productName?: string;
+    floor?: number;
+    qty?: number;
+  }>;
 };
 
 const STATUS_FILTERS: { value: string; label: string }[] = [
@@ -79,6 +96,49 @@ const STATUS_FILTERS: { value: string; label: string }[] = [
 
 function deliveryLinesFromJob(job: AssignmentJob): OrderLineRow[] {
   return (job.salesOrder?.lines ?? []).filter((l) => (l.linePurpose ?? "delivery") === "delivery");
+}
+
+function floorBonusLinesFromJob(job: AssignmentJob): OrderLineRow[] {
+  return deliveryLinesFromJob(job).filter((line) => line.product?.consumesPrepaidBarrel === true);
+}
+
+function isFloorBonusEligible(floor: number): boolean {
+  return floor >= 2 || floor < 0;
+}
+
+function formatFloor(floor: number | null | undefined): string {
+  if (floor == null) return "未設定";
+  if (floor < 0) return `地下${Math.abs(floor)}樓`;
+  return `${floor}樓`;
+}
+
+function buildFloorBonusRecordsFromJob(job?: AssignmentJob): FloorBonusRecordForm[] {
+  if (!job?.floorBonusRecords?.length) return [];
+  return job.floorBonusRecords.map((r, idx) => ({
+    key: String(r.id ?? `${r.salesOrderLineId ?? "line"}-${r.floor ?? "floor"}-${idx}`),
+    lineId: String(r.salesOrderLineId ?? ""),
+    floor: r.floor != null ? String(r.floor) : "",
+    qty: r.qty != null ? String(r.qty) : "",
+  }));
+}
+
+function validateFloorBonusRecords(records: FloorBonusRecordForm[]): { ok: true; records: Array<{ lineId: string; floor: number; qty: number }> } | { ok: false; message: string } {
+  const out: Array<{ lineId: string; floor: number; qty: number }> = [];
+  for (const r of records) {
+    const hasFloorOrQty = r.floor.trim() || r.qty.trim();
+    if (!hasFloorOrQty) continue;
+    const floor = Math.floor(Number(r.floor));
+    const qty = Math.floor(Number(r.qty));
+    if (!r.lineId || !Number.isFinite(floor) || floor === 0 || !Number.isFinite(qty) || qty < 0) {
+      return { ok: false, message: "搬運紀錄請填完整：商品、有效樓層與非負整數桶數。" };
+    }
+    if (qty === 0) continue;
+    if (!isFloorBonusEligible(floor)) {
+      return { ok: false, message: "搬運樓層僅二樓以上或地下樓可計入；一樓請不要填搬運紀錄。" };
+    }
+    out.push({ lineId: r.lineId, floor, qty });
+  }
+  return { ok: true, records: out };
 }
 
 function buildLineQtyFromJob(job: AssignmentJob): Record<string, number> {
@@ -102,8 +162,10 @@ function defaultJobForm(job?: AssignmentJob): JobFormState {
     failureReason: "",
     emptyBarrelsReturned: 0,
     cashReceived: 0,
+    checkReceived: 0,
     note: "",
     lineQtyDelivered: job ? buildLineQtyFromJob(job) : {},
+    floorBonusRecords: buildFloorBonusRecordsFromJob(job),
   };
 }
 
@@ -121,8 +183,10 @@ function jobFormFromServer(job: AssignmentJob): JobFormState {
       failureReason: notDelivered ? String(job.failureReason ?? "") : "",
       emptyBarrelsReturned: Math.max(0, Math.floor(Number(job.emptyBarrelsReturned ?? 0))),
       cashReceived: Number(job.cashReceived ?? 0) || 0,
+      checkReceived: Number(job.checkReceived ?? 0) || 0,
       note: String(job.settlementNote ?? ""),
       lineQtyDelivered: buildLineQtyFromJob(job),
+      floorBonusRecords: buildFloorBonusRecordsFromJob(job),
     };
   }
   return defaultJobForm(job);
@@ -337,6 +401,13 @@ export default function OrderProxyReportPage() {
       setMessage("請先按「確認配送數量」，再提交代登回報。");
       return;
     }
+    const floorBonusPayload = form.delivered
+      ? validateFloorBonusRecords(form.floorBonusRecords)
+      : ({ ok: true, records: [] } as const);
+    if (!floorBonusPayload.ok) {
+      setMessage(floorBonusPayload.message);
+      return;
+    }
     const noteTrim = form.note.trim();
     const noteBody = noteTrim ? noteTrim : isAmendPending ? "" : "辦公室代登司機回報";
     setMessage("");
@@ -351,8 +422,10 @@ export default function OrderProxyReportPage() {
           failureReason: form.delivered ? "" : form.failureReason.trim(),
           emptyBarrelsReturned: form.delivered ? form.emptyBarrelsReturned : 0,
           cashReceived: form.delivered ? form.cashReceived : 0,
+          checkReceived: form.delivered ? form.checkReceived : 0,
           note: noteBody,
           reportedAtYmd: driverReportDate,
+          floorBonusRecords: floorBonusPayload.records,
         }),
       });
       const payload = await res.json();
@@ -642,6 +715,111 @@ export default function OrderProxyReportPage() {
                                 </div>
                               </div>
                             ) : null}
+                          {floorBonusLinesFromJob(job).length > 0 ? (
+                            <div style={{ marginBottom: "0.65rem", padding: "0.65rem", border: "1px dashed var(--border)", borderRadius: 8 }}>
+                              <div style={{ fontSize: "0.84rem", marginBottom: "0.35rem" }}>
+                                <strong>搬運紀錄</strong>
+                                <span className="proxy-report-card__cash-muted" style={{ marginLeft: "0.35rem" }}>
+                                  （二樓以上或地下樓才填；可新增多筆）
+                                </span>
+                              </div>
+                              <div className="proxy-report-card__cash-muted" style={{ fontSize: "0.8rem", marginBottom: "0.45rem" }}>
+                                送貨點主檔樓層：{formatFloor(job.salesOrder?.deliveryAddress?.deliveryFloor)}
+                              </div>
+                              {form.floorBonusRecords.map((record) => (
+                                <div
+                                  key={record.key}
+                                  style={{
+                                    display: "grid",
+                                    gridTemplateColumns: "minmax(8rem, 1fr) 4.5rem 4.5rem auto",
+                                    gap: "0.4rem",
+                                    alignItems: "center",
+                                    marginBottom: "0.35rem",
+                                  }}
+                                >
+                                  <select
+                                    value={record.lineId}
+                                    onChange={(e) =>
+                                      updateForm(id, {
+                                        floorBonusRecords: form.floorBonusRecords.map((r) =>
+                                          r.key === record.key ? { ...r, lineId: e.target.value } : r,
+                                        ),
+                                      })
+                                    }
+                                  >
+                                    <option value="">商品</option>
+                                    {floorBonusLinesFromJob(job).map((line) => (
+                                      <option key={String(line.id)} value={String(line.id)}>
+                                        {line.product?.name ?? "商品"}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <input
+                                    type="number"
+                                    step={1}
+                                    value={record.floor}
+                                    onChange={(e) =>
+                                      updateForm(id, {
+                                        floorBonusRecords: form.floorBonusRecords.map((r) =>
+                                          r.key === record.key ? { ...r, floor: e.target.value } : r,
+                                        ),
+                                      })
+                                    }
+                                    placeholder="樓層"
+                                    aria-label="搬運樓層"
+                                  />
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    step={1}
+                                    value={record.qty}
+                                    onChange={(e) =>
+                                      updateForm(id, {
+                                        floorBonusRecords: form.floorBonusRecords.map((r) =>
+                                          r.key === record.key ? { ...r, qty: e.target.value } : r,
+                                        ),
+                                      })
+                                    }
+                                    placeholder="桶數"
+                                    aria-label="搬運桶數"
+                                  />
+                                  <button
+                                    type="button"
+                                    className="btn btn--ghost btn--sm"
+                                    onClick={() =>
+                                      updateForm(id, {
+                                        floorBonusRecords: form.floorBonusRecords.filter((r) => r.key !== record.key),
+                                      })
+                                    }
+                                  >
+                                    移除
+                                  </button>
+                                </div>
+                              ))}
+                              <button
+                                type="button"
+                                className="btn btn--secondary btn--sm"
+                                onClick={() =>
+                                  updateForm(id, {
+                                    floorBonusRecords: [
+                                      ...form.floorBonusRecords,
+                                      {
+                                        key: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                                        lineId: String(floorBonusLinesFromJob(job)[0]?.id ?? ""),
+                                        floor:
+                                          job.salesOrder?.deliveryAddress?.deliveryFloor != null
+                                            ? String(job.salesOrder.deliveryAddress.deliveryFloor)
+                                            : "",
+                                        qty: "",
+                                      },
+                                    ],
+                                  })
+                                }
+                              >
+                                ＋ 新增搬運紀錄
+                              </button>
+                            </div>
+                          ) : null}
                           <div className="proxy-report-card__form-row proxy-report-card__form-row--cash">
                             <div className="field field--sm">
                               <span>空桶回收</span>
@@ -664,11 +842,21 @@ export default function OrderProxyReportPage() {
                                 onChange={(e) => updateForm(id, { cashReceived: Number(e.target.value) || 0 })}
                               />
                             </div>
+                            <div className="field field--sm">
+                              <span>實收支票</span>
+                              <input
+                                type="number"
+                                min={0}
+                                step="0.01"
+                                value={form.checkReceived}
+                                onChange={(e) => updateForm(id, { checkReceived: Number(e.target.value) || 0 })}
+                              />
+                            </div>
                             {cashDue != null && form.delivered ? (
                               <div className="field field--sm" style={{ alignSelf: "flex-end" }}>
                                 <span>與建議收款差額</span>
                                 <div className="proxy-report-card__variance">
-                                  {(form.cashReceived - cashDue).toFixed(2)}
+                                  {(form.cashReceived + form.checkReceived - cashDue).toFixed(2)}
                                 </div>
                               </div>
                             ) : null}

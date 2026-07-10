@@ -3,13 +3,27 @@ import { Link } from "react-router-dom";
 import {
   deliveryAssignmentStatusBadgeClass,
   deliveryAssignmentStatusLabel,
+  fmtLocalDateTimeShort,
+  formatOrderNoTail,
+  moneyText,
   settlementBadgeClass,
   settlementOutcomeLabel,
 } from "../adminUtils";
+import { DateTimeCell } from "../components/DateTimeCell";
+import { formatDeliveryFloor } from "../floorBonusUtils";
+
+type SettlementOrderLine = {
+  id: string | number;
+  linePurpose?: string | null;
+  qtyOrdered?: number | null;
+  qtyDelivered?: number | null;
+  product?: { name?: string; consumesPrepaidBarrel?: boolean } | null;
+};
 
 type SettlementRow = {
   id: string;
   status: string;
+  assignmentDate?: string | null;
   completedAt?: string | null;
   driverReportedAt?: string | null;
   officeSettledAt?: string | null;
@@ -18,11 +32,26 @@ type SettlementRow = {
   expectedAmount?: unknown;
   cashVariance?: unknown;
   cashReceived?: unknown;
+  checkReceived?: unknown;
   emptyBarrelsReturned?: number;
   settlementNote?: string | null;
-  salesOrder?: { orderNo?: string; customer?: { name?: string }; totalAmount?: unknown; cashSubtotal?: unknown };
+  orderBillableAmount?: unknown;
+  salesOrder?: {
+    orderNo?: string;
+    customer?: { name?: string };
+    totalAmount?: unknown;
+    cashSubtotal?: unknown;
+    lines?: SettlementOrderLine[];
+    deliveryAddress?: { deliveryFloor?: number | null };
+  };
   driver?: { user?: { employeeCode?: string; name?: string } };
   vehicle?: { plateNo?: string };
+  floorBonusRecords?: Array<{
+    id?: string;
+    productName?: string;
+    floor?: number;
+    qty?: number;
+  }>;
 };
 
 const PIPELINE_FILTERS: { value: string; label: string }[] = [
@@ -41,18 +70,20 @@ const OUTCOME_FILTERS: { value: string; label: string }[] = [
   { value: "legacy", label: "舊資料（無分類）" },
 ];
 
-function fmtDt(v: string | null | undefined): string {
-  if (!v) return "—";
-  const d = new Date(String(v));
-  if (Number.isNaN(d.getTime())) return String(v).slice(0, 19).replace("T", " ");
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-}
-
 /** 供 datetime-local 使用（本地時間） */
 function toDatetimeLocalValue(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function collectedTotal(row: SettlementRow): number {
+  return Number(row.cashReceived ?? 0) + Number(row.checkReceived ?? 0);
+}
+
+/** 差額＝回報合計（現金＋支票）− 應收現金 */
+function collectionVariance(row: SettlementRow): number | null {
+  if (row.expectedAmount == null) return null;
+  return collectedTotal(row) - Number(row.expectedAmount);
 }
 
 export default function OrderCompletePage() {
@@ -115,15 +146,23 @@ export default function OrderCompletePage() {
     return list;
   }, [rows, filterPipeline, filterOutcome, q]);
 
-  const approveAssignment = async (id: string) => {
+  const approveAssignment = async (row: SettlementRow) => {
+    const id = String(row.id);
     setApproveMsg("");
     const t = new Date(officeSettledAtLocal);
     if (Number.isNaN(t.getTime())) {
       setApproveMsg("請選擇有效的辦公室核銷時間。");
       return;
     }
+    const bonusSummary = (row.floorBonusRecords ?? [])
+      .map((r) => `${r.productName ?? "商品"} ${formatDeliveryFloor(r.floor)} ${r.qty ?? 0}桶`)
+      .join("\n");
     const ok = window.confirm(
-      `確認核銷此筆？\n\n辦公室核銷時間：${t.toLocaleString("zh-TW", { hour12: false })}\n\n將依司機回報正式執行：送達→訂單完成、出庫、現金入帳；未送達→訂單退回「已確認」可再分派。`,
+      `確認核銷此筆？\n\n辦公室核銷時間：${t.toLocaleString("zh-TW", { hour12: false })}\n` +
+        `回報現金：${moneyText(row.cashReceived)}　回報支票：${moneyText(row.checkReceived)}\n` +
+        `回報合計：${moneyText(collectedTotal(row))}　應收現金：${moneyText(row.expectedAmount)}\n\n${
+        bonusSummary ? `司機回報搬運紀錄：\n${bonusSummary}\n\n` : ""
+      }將依司機回報正式執行：送達→訂單完成、出庫、收款入帳（現金／支票分開）；未送達→訂單退回「已確認」可再分派。`,
     );
     if (!ok) return;
     setApprovingId(id);
@@ -161,16 +200,18 @@ export default function OrderCompletePage() {
       "車牌",
       "核銷結果（司機回報）",
       "應收現金",
-      "實收現金",
-      "差額(實收-應收)",
+      "回報現金",
+      "回報支票",
+      "回報合計",
+      "差額(合計-應收)",
       "空桶",
       "未送達原因",
       "備註",
     ];
     const lines = filtered.map((row) => [
       deliveryAssignmentStatusLabel(row.status),
-      fmtDt(row.driverReportedAt),
-      fmtDt(row.officeSettledAt ?? row.completedAt),
+      fmtLocalDateTimeShort(row.driverReportedAt),
+      fmtLocalDateTimeShort(row.officeSettledAt ?? row.completedAt),
       row.salesOrder?.orderNo ?? "",
       row.salesOrder?.customer?.name ?? "",
       [row.driver?.user?.employeeCode, row.driver?.user?.name].filter(Boolean).join(" / ") || "",
@@ -178,7 +219,9 @@ export default function OrderCompletePage() {
       settlementOutcomeLabel(row.settlementOutcome),
       row.expectedAmount != null ? String(row.expectedAmount) : "",
       row.cashReceived != null ? String(row.cashReceived) : "",
-      row.cashVariance != null ? String(row.cashVariance) : "",
+      row.checkReceived != null ? String(row.checkReceived) : "",
+      String(collectedTotal(row)),
+      collectionVariance(row) != null ? String(collectionVariance(row)) : "",
       row.emptyBarrelsReturned ?? "",
       row.failureReason ?? "",
       row.settlementNote ?? "",
@@ -217,11 +260,14 @@ export default function OrderCompletePage() {
           <br />
           <strong>司機更正：</strong>任務為「待辦公室核銷」時，司機可於司機端再次送出以<strong>修改</strong>空桶／收款／是否送達（辦公室核銷後即鎖定）；系統會記錄修正事件供查核。
           <br />
-          <strong>現金客戶：</strong>應收現金＝<strong>前期未清現金欠款＋本單訂單總額</strong>；核銷時先為本單<strong>立帳</strong>，再將實收依<strong>FIFO</strong>沖最舊未結清應收。司機僅填實收，無須手動拆沖帳。
+          <strong>現金客戶：</strong>應收現金＝<strong>前期未清現金欠款＋本單訂單總額</strong>；核銷時先為本單<strong>立帳</strong>，再將<strong>回報現金＋回報支票</strong>合計依<strong>FIFO</strong>沖最舊未結清應收（分開入帳）。司機回報時請分開填寫現金與支票欄位。
           <br />
           首次部署請執行 <code>database/migrations/006_office_settlement_gate.sql</code> 後重啟 API。
           <br />
           <strong>辦公室核銷時間</strong>可於下方自訂（預設為現在），用於測試或補登；月結之 <code>office_settled_at</code>、現金入帳時間與部分流水時間會與之一致。
+          <br />
+          <strong>搬運獎金：</strong>搬運紀錄由司機端或代登配送回報填寫；核銷時僅顯示司機回報內容供確認。紀錄請至{" "}
+          <Link to="/orders/floor-bonus">搬運獎金查詢</Link>。
         </p>
         {pendingCount > 0 ? (
           <p className="feedback feedback--warn" style={{ marginTop: "0.5rem" }}>
@@ -299,16 +345,17 @@ export default function OrderCompletePage() {
             <thead>
               <tr>
                 <th>流程狀態</th>
-                <th>司機回報時間</th>
-                <th>辦公室核銷時間</th>
-                <th>單號</th>
+                <th className="col-datetime">司機回報時間</th>
+                <th className="col-datetime">辦公室核銷時間</th>
                 <th>客戶</th>
-                <th className="num">訂單總額</th>
+                <th className="num">本單應收</th>
                 <th>司機</th>
                 <th>司機回報結果</th>
                 <th className="num">應收現金</th>
-                <th className="num">實收</th>
-                <th className="num">差額(實−應)</th>
+                <th className="num">回報現金</th>
+                <th className="num">回報支票</th>
+                <th className="num">回報合計</th>
+                <th className="num">差額</th>
                 <th className="num">空桶</th>
                 <th>原因 / 備註</th>
                 <th>操作</th>
@@ -320,17 +367,33 @@ export default function OrderCompletePage() {
                   <td>
                     <span className={deliveryAssignmentStatusBadgeClass(row.status)}>{deliveryAssignmentStatusLabel(row.status)}</span>
                   </td>
-                  <td className="cell-nowrap">{fmtDt(row.driverReportedAt)}</td>
-                  <td className="cell-nowrap">{fmtDt(row.officeSettledAt ?? row.completedAt)}</td>
-                  <td>
-                    <code style={{ fontSize: "0.8em" }}>{row.salesOrder?.orderNo ?? "—"}</code>
+                  <td className="col-datetime">
+                    <DateTimeCell value={row.driverReportedAt} />
                   </td>
-                  <td>{row.salesOrder?.customer?.name ?? "—"}</td>
-                  <td className="num">{row.salesOrder?.totalAmount != null ? String(row.salesOrder.totalAmount) : "—"}</td>
-                  <td>
-                    {row.driver?.user?.employeeCode ? `${row.driver.user.employeeCode} / ` : ""}
-                    {row.driver?.user?.name ?? "—"}
+                  <td className="col-datetime">
+                    <DateTimeCell value={row.officeSettledAt ?? row.completedAt} />
                   </td>
+                  <td>
+                    <div>{row.salesOrder?.customer?.name ?? "—"}</div>
+                    {row.salesOrder?.orderNo ? (
+                      <div className="cell-order-tail" title={`單號：${row.salesOrder.orderNo}`}>
+                        #{formatOrderNoTail(row.salesOrder.orderNo)}
+                      </div>
+                    ) : null}
+                    {row.salesOrder?.deliveryAddress?.deliveryFloor != null ? (
+                      <div className="text-muted" style={{ fontSize: "0.75rem" }}>
+                        主檔樓層：{formatDeliveryFloor(row.salesOrder.deliveryAddress.deliveryFloor)}
+                      </div>
+                    ) : null}
+                  </td>
+                  <td className="num">
+                    {row.orderBillableAmount != null
+                      ? String(row.orderBillableAmount)
+                      : row.salesOrder?.totalAmount != null
+                        ? String(row.salesOrder.totalAmount)
+                        : "—"}
+                  </td>
+                  <td className="cell-nowrap">{row.driver?.user?.name ?? "—"}</td>
                   <td>
                     <span className={settlementBadgeClass(row.settlementOutcome)}>{settlementOutcomeLabel(row.settlementOutcome)}</span>
                     {row.status === "pending_settlement" ? (
@@ -338,10 +401,24 @@ export default function OrderCompletePage() {
                         待辦公室確認
                       </div>
                     ) : null}
+                    {(row.floorBonusRecords ?? []).length > 0 ? (
+                      <div style={{ fontSize: "0.75rem", marginTop: "0.35rem", lineHeight: 1.35 }}>
+                        <strong>搬運：</strong>
+                        {(row.floorBonusRecords ?? []).map((r) => (
+                          <div key={String(r.id ?? `${r.productName}-${r.floor}-${r.qty}`)}>
+                            {r.productName ?? "商品"} · {formatDeliveryFloor(r.floor)} · {r.qty ?? 0}桶
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
                   </td>
-                  <td className="num">{row.expectedAmount != null ? String(row.expectedAmount) : "—"}</td>
-                  <td className="num">{row.cashReceived != null ? String(row.cashReceived) : "—"}</td>
-                  <td className="num">{row.cashVariance != null ? String(row.cashVariance) : "—"}</td>
+                  <td className="num">{row.expectedAmount != null ? moneyText(row.expectedAmount) : "—"}</td>
+                  <td className="num">{row.cashReceived != null ? moneyText(row.cashReceived) : "—"}</td>
+                  <td className="num">{row.checkReceived != null ? moneyText(row.checkReceived) : "—"}</td>
+                  <td className="num">{moneyText(collectedTotal(row))}</td>
+                  <td className="num">
+                    {collectionVariance(row) != null ? moneyText(collectionVariance(row)) : "—"}
+                  </td>
                   <td className="num">{row.emptyBarrelsReturned ?? "—"}</td>
                   <td style={{ maxWidth: "12rem", fontSize: "0.8125rem" }}>
                     {row.failureReason ? (
@@ -365,7 +442,7 @@ export default function OrderCompletePage() {
                         type="button"
                         className="btn btn--primary btn--sm"
                         disabled={approvingId === String(row.id)}
-                        onClick={() => void approveAssignment(String(row.id))}
+                        onClick={() => void approveAssignment(row)}
                       >
                         {approvingId === String(row.id) ? "處理中…" : "確認核銷"}
                       </button>

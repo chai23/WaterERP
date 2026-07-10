@@ -49,7 +49,7 @@ export default function ExpenseSummarySection({ title, dateLabel, summaryUrl, li
 
       {summary ? (
         <>
-          <div className="stats-grid" style={{ marginBottom: "1rem" }}>
+          <div className="stats-grid stats-grid--metrics" style={{ marginBottom: "1rem" }}>
             <article className="stat-card">
               <div className="stat-card__label">含稅總支出</div>
               <div className="stat-card__value">{Number(summary.totalAmount).toLocaleString()}</div>
@@ -140,12 +140,34 @@ export default function ExpenseSummarySection({ title, dateLabel, summaryUrl, li
   );
 }
 
-export function ExpenseNetHint({ cashReceived, expenseTotal }: { cashReceived: number; expenseTotal: number }) {
-  const net = cashReceived - expenseTotal;
+export function ExpenseNetHint({
+  collected,
+  expenseTotal,
+  inline = false,
+}: {
+  collected: number;
+  expenseTotal: number;
+  inline?: boolean;
+}) {
+  const net = collected - expenseTotal;
+  const value = (
+    <strong className={net >= 0 ? "text-success" : "text-danger"}>{net.toLocaleString()}</strong>
+  );
+  const suffix = net >= 0 ? "（入帳大於支出）" : "（支出大於入帳）";
+
+  if (inline) {
+    return (
+      <div className="report-flow-note__net-body">
+        <span className="report-flow-note__value report-flow-note__value--net">
+          {value} {suffix}
+        </span>
+      </div>
+    );
+  }
+
   return (
     <p className="card__hint" style={{ marginTop: "0.5rem" }}>
-      區間淨額（現收 − 支出）：{" "}
-      <strong className={net >= 0 ? "text-success" : "text-danger"}>{net.toLocaleString()}</strong>
+      淨流入（入帳 − 支出）： {value} {suffix}
     </p>
   );
 }

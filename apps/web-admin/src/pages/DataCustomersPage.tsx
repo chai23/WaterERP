@@ -15,10 +15,12 @@ import {
   billingTypeLabel,
   fmtLocalYmd,
   ledgerEntryTypeLabel,
+  moneyText,
   orderStatusBadgeClass,
   sumCustomerBarrelsOnSite,
 } from "../adminUtils";
 import { cashInvoiceModeLabel } from "../taxDisplay";
+import { formatDeliveryFloor } from "../floorBonusUtils";
 
 function parseBillingType(raw: string | undefined): "cash" | "monthly" | "prepaid" {
   if (raw === "monthly" || raw === "prepaid") return raw;
@@ -45,7 +47,9 @@ function orderStatusLabel(status: string | undefined): string {
 }
 import { useDashboard } from "../DashboardContext";
 
-type CustomerTab = "overview" | "create" | "edit" | "billing" | "orders";
+type WorkspaceTab = "summary" | "orders" | "billing" | "edit";
+type PageMode = "browse" | "create";
+type BillingFilter = "all" | "cash" | "monthly" | "prepaid";
 
 type AddressFormRow = {
   key: string;
@@ -164,164 +168,78 @@ function billingTypeBadgeClass(code: string | null | undefined): string {
   }
 }
 
-type CustomerTabPickerProps = {
-  customers: Customer[];
-  search: string;
-  onSearchChange: (value: string) => void;
-  showAll: boolean;
-  onShowAll: () => void;
-  onClear: () => void;
-  onSelect: (id: string) => void;
-  hint?: string;
-};
-
-function CustomerTabPicker({
-  customers,
-  search,
-  onSearchChange,
-  showAll,
-  onShowAll,
-  onClear,
-  onSelect,
-  hint,
-}: CustomerTabPickerProps) {
-  const hasQuery = search.trim().length > 0;
-  const listVisible = showAll || hasQuery;
-  const displayed = useMemo(() => {
-    if (!listVisible) return [];
-    const q = search.trim().toLowerCase();
-    if (!q) return customers;
-    return customers.filter((c) => matchCustomerOverviewQuery(c, q));
-  }, [customers, search, listVisible]);
-
-  return (
-    <>
-      {hint ? <p className="card__hint">{hint}</p> : null}
-      <div className="customer-overview-toolbar">
-        <div className="field customer-overview-toolbar__search">
-          <span>搜尋客戶</span>
-          <input
-            type="search"
-            value={search}
-            onChange={(e) => onSearchChange(e.target.value)}
-            placeholder="客戶編號、名稱、電話、手機…"
-            autoComplete="off"
-          />
-        </div>
-        <div className="customer-overview-toolbar__actions">
-          <button
-            type="button"
-            className={`btn btn--ghost${showAll && !hasQuery ? " btn--active" : ""}`}
-            onClick={onShowAll}
-          >
-            顯示所有客戶
-          </button>
-          {listVisible ? (
-            <button type="button" className="btn btn--ghost" onClick={onClear}>
-              清除
-            </button>
-          ) : null}
-        </div>
-      </div>
-      {!listVisible ? (
-        <div className="customer-overview-empty">
-          <p>輸入關鍵字搜尋客戶，或按「顯示所有客戶」。</p>
-        </div>
-      ) : displayed.length === 0 ? (
-        <p className="card__hint">沒有符合條件的客戶。</p>
-      ) : (
-        <div className="customer-edit-picker-list">
-          {displayed.map((c) => (
-            <button key={String(c.id)} type="button" className="customer-overview-card" onClick={() => onSelect(String(c.id))}>
-              <div className="customer-overview-card__head">
-                <span className="customer-overview-card__code mono-text">{c.customerCode ?? "—"}</span>
-                <span className={billingTypeBadgeClass(c.billingType)}>{billingTypeLabel(c.billingType)}</span>
-              </div>
-              <strong className="customer-overview-card__name">{c.name}</strong>
-              <div className="customer-overview-card__meta">
-                {c.phone ? <span>{c.phone}</span> : null}
-                {c.mobile ? <span>{c.mobile}</span> : null}
-              </div>
-            </button>
-          ))}
-        </div>
-      )}
-    </>
-  );
-}
-
 export default function DataCustomersPage() {
   const { customers, addressZones, affiliatedCompanies, loadDashboard } = useDashboard();
 
-  const [activeTab, setActiveTab] = useState<CustomerTab>("overview");
+  const [pageMode, setPageMode] = useState<PageMode>("browse");
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("summary");
+  const [detailId, setDetailId] = useState<string | null>(null);
   const [customerSearch, setCustomerSearch] = useState("");
-  const [showAllCustomers, setShowAllCustomers] = useState(false);
-  const [overviewSelectedId, setOverviewSelectedId] = useState<string | null>(null);
-  const [overviewBarrelPickups, setOverviewBarrelPickups] = useState<CustomerBarrelPickupRow[]>([]);
-  const [overviewBarrelPickupsLoading, setOverviewBarrelPickupsLoading] = useState(false);
-  const [overviewBarrelPickupsErr, setOverviewBarrelPickupsErr] = useState("");
-
-  const overviewHasQuery = customerSearch.trim().length > 0;
-  const overviewListVisible = showAllCustomers || overviewHasQuery;
+  const [billingFilter, setBillingFilter] = useState<BillingFilter>("all");
+  const [barrelPickups, setBarrelPickups] = useState<CustomerBarrelPickupRow[]>([]);
+  const [barrelPickupsLoading, setBarrelPickupsLoading] = useState(false);
+  const [barrelPickupsErr, setBarrelPickupsErr] = useState("");
 
   const displayedCustomers = useMemo(() => {
-    if (!overviewListVisible) return [];
+    let list = customers;
+    if (billingFilter !== "all") {
+      list = list.filter((c) => c.billingType === billingFilter);
+    }
     const q = customerSearch.trim().toLowerCase();
-    if (!q) return customers;
-    return customers.filter((c) => matchCustomerOverviewQuery(c, q));
-  }, [customers, customerSearch, overviewListVisible]);
+    if (q) list = list.filter((c) => matchCustomerOverviewQuery(c, q));
+    return list;
+  }, [customers, customerSearch, billingFilter]);
 
-  const overviewSelectedCustomer = useMemo(() => {
-    if (!overviewSelectedId) return null;
-    return displayedCustomers.find((c) => String(c.id) === overviewSelectedId) ?? null;
-  }, [displayedCustomers, overviewSelectedId]);
+  const selectedListCustomer = useMemo(() => {
+    if (!detailId) return null;
+    return customers.find((c) => String(c.id) === detailId) ?? null;
+  }, [customers, detailId]);
 
   useEffect(() => {
-    if (activeTab !== "overview") return;
+    if (pageMode !== "browse") return;
     if (displayedCustomers.length === 0) {
-      setOverviewSelectedId(null);
+      setDetailId(null);
       return;
     }
-    setOverviewSelectedId((prev) => {
+    setDetailId((prev) => {
       if (prev && displayedCustomers.some((c) => String(c.id) === prev)) return prev;
       return String(displayedCustomers[0].id);
     });
-  }, [displayedCustomers, activeTab]);
+  }, [displayedCustomers, pageMode]);
 
-  const loadOverviewBarrelPickups = useCallback(async (customerId: string) => {
-    setOverviewBarrelPickupsLoading(true);
-    setOverviewBarrelPickupsErr("");
+  const loadBarrelPickups = useCallback(async (customerId: string) => {
+    setBarrelPickupsLoading(true);
+    setBarrelPickupsErr("");
     try {
       const params = new URLSearchParams({ customerId });
       const res = await fetch(`/api/barrel-pickups?${params.toString()}`);
       const data = await res.json();
       if (!res.ok) {
-        setOverviewBarrelPickups([]);
-        setOverviewBarrelPickupsErr(typeof data?.message === "string" ? data.message : "讀取收空桶紀錄失敗");
+        setBarrelPickups([]);
+        setBarrelPickupsErr(typeof data?.message === "string" ? data.message : "讀取收空桶紀錄失敗");
         return;
       }
-      setOverviewBarrelPickups(Array.isArray(data) ? data : []);
+      setBarrelPickups(Array.isArray(data) ? data : []);
     } catch {
-      setOverviewBarrelPickups([]);
-      setOverviewBarrelPickupsErr("讀取收空桶紀錄失敗");
+      setBarrelPickups([]);
+      setBarrelPickupsErr("讀取收空桶紀錄失敗");
     } finally {
-      setOverviewBarrelPickupsLoading(false);
+      setBarrelPickupsLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    if (activeTab !== "overview" || !overviewSelectedId) {
-      setOverviewBarrelPickups([]);
-      setOverviewBarrelPickupsErr("");
+    if (pageMode !== "browse" || !detailId) {
+      setBarrelPickups([]);
+      setBarrelPickupsErr("");
       return;
     }
-    void loadOverviewBarrelPickups(overviewSelectedId);
-  }, [activeTab, overviewSelectedId, loadOverviewBarrelPickups]);
+    void loadBarrelPickups(detailId);
+  }, [pageMode, detailId, loadBarrelPickups]);
 
-  const clearOverviewSearch = () => {
+  const clearCustomerSearch = () => {
     setCustomerSearch("");
-    setShowAllCustomers(false);
-    setOverviewSelectedId(null);
+    setBillingFilter("all");
   };
 
   const [saving, setSaving] = useState(false);
@@ -344,7 +262,6 @@ export default function DataCustomersPage() {
   const [notes, setNotes] = useState("");
   const [addressRows, setAddressRows] = useState<AddressFormRow[]>(() => [emptyAddressRow(true)]);
 
-  const [detailId, setDetailId] = useState<string | null>(null);
   const [detail, setDetail] = useState<CustomerDetail | null>(null);
   const editZoneOptions = useMemo(
     () => mergeMasterOptions(addressZones, detail?.addressZone ?? null),
@@ -363,6 +280,7 @@ export default function DataCustomersPage() {
   const [newAddrContactPhone, setNewAddrContactPhone] = useState("");
   const [newAddrContactMobile, setNewAddrContactMobile] = useState("");
   const [newAddrDefault, setNewAddrDefault] = useState(false);
+  const [newAddrFloor, setNewAddrFloor] = useState("");
   const [addingAddr, setAddingAddr] = useState(false);
   const [addAddrMsg, setAddAddrMsg] = useState("");
 
@@ -398,14 +316,11 @@ export default function DataCustomersPage() {
   const [editAddrContactMobile, setEditAddrContactMobile] = useState("");
   const [editAddrDefault, setEditAddrDefault] = useState(false);
   const [editAddrBarrels, setEditAddrBarrels] = useState("0");
+  const [editAddrFloor, setEditAddrFloor] = useState("");
   const [patchAddrSaving, setPatchAddrSaving] = useState(false);
   const [patchAddrMsg, setPatchAddrMsg] = useState("");
   const [deletingAddrId, setDeletingAddrId] = useState<string | null>(null);
 
-  const [editPickerSearch, setEditPickerSearch] = useState("");
-  const [editPickerShowAll, setEditPickerShowAll] = useState(false);
-  const [detailPickerSearch, setDetailPickerSearch] = useState("");
-  const [detailPickerShowAll, setDetailPickerShowAll] = useState(false);
   const [showAddAddressForm, setShowAddAddressForm] = useState(false);
 
   const resetCreateForm = () => {
@@ -549,19 +464,24 @@ export default function DataCustomersPage() {
 
   const scrollToEditSection = scrollToSection;
 
-  const clearEditSelection = () => {
-    setDetailId(null);
-    setEditPickerSearch("");
-    setEditPickerShowAll(false);
-    setActiveTab("overview");
+  const selectCustomer = (id: string, tab: WorkspaceTab = "summary") => {
+    setDetailId(id);
+    setPageMode("browse");
+    setWorkspaceTab(tab);
   };
 
-  const clearDetailViewSelection = () => {
-    setDetailId(null);
-    setDetailPickerSearch("");
-    setDetailPickerShowAll(false);
-    setActiveTab("overview");
+  const startCreateCustomer = () => {
+    setPageMode("create");
+    resetCreateForm();
   };
+
+  const exitCreateCustomer = () => {
+    setPageMode("browse");
+    setWorkspaceTab("summary");
+  };
+
+  const customerOrderBillableAmount = (o: { orderBillableAmount?: string; totalAmount: string }) =>
+    Number(o.orderBillableAmount ?? o.totalAmount);
 
   const customerOrderStats = useMemo(() => {
     const list = detail?.salesOrders ?? [];
@@ -570,7 +490,7 @@ export default function DataCustomersPage() {
     for (const o of list) {
       byStatus[o.status] = (byStatus[o.status] ?? 0) + 1;
       if (o.status === "cancelled") continue;
-      const amt = Number(o.totalAmount);
+      const amt = customerOrderBillableAmount(o);
       if (Number.isFinite(amt)) totalAmount += amt;
     }
     return {
@@ -613,6 +533,7 @@ export default function DataCustomersPage() {
     setEditAddrContactMobile(a.contactMobile ?? "");
     setEditAddrDefault(Boolean(a.isDefault));
     setEditAddrBarrels(String(a.barrelsOnSite ?? 0));
+    setEditAddrFloor(a.deliveryFloor != null ? String(a.deliveryFloor) : "");
     setPatchAddrMsg("");
     scrollToEditSection("edit-addresses");
   };
@@ -734,6 +655,12 @@ export default function DataCustomersPage() {
       setPatchAddrMsg("未收回空桶須為非負整數");
       return;
     }
+    const floorTrim = editAddrFloor.trim();
+    const deliveryFloor = floorTrim === "" ? null : Math.floor(Number(floorTrim));
+    if (floorTrim !== "" && (!Number.isFinite(deliveryFloor) || deliveryFloor === 0)) {
+      setPatchAddrMsg("送貨樓層須為非零整數（地下樓可填 -1）或留空");
+      return;
+    }
     setPatchAddrSaving(true);
     try {
       const res = await fetch(`/api/customers/${detailId}/addresses/${editAddrId}`, {
@@ -742,6 +669,7 @@ export default function DataCustomersPage() {
         body: JSON.stringify({
           label: editAddrLabel.trim() || null,
           addressLine: line,
+          deliveryFloor,
           contactName: editAddrContactName.trim() || null,
           contactPhone: editAddrContactPhone.trim() || null,
           contactMobile: editAddrContactMobile.trim() || null,
@@ -899,7 +827,11 @@ export default function DataCustomersPage() {
       }
       setFormMessage("建立成功。");
       resetCreateForm();
-      setActiveTab("overview");
+      setPageMode("browse");
+      if (payload.data?.id != null) {
+        setDetailId(String(payload.data.id));
+        setWorkspaceTab("summary");
+      }
       loadDashboard();
     } catch {
       setFormMessage("無法連線 API");
@@ -917,6 +849,12 @@ export default function DataCustomersPage() {
       setAddAddrMsg("地址內容為必填");
       return;
     }
+    const floorTrim = newAddrFloor.trim();
+    const deliveryFloor = floorTrim === "" ? null : Math.floor(Number(floorTrim));
+    if (floorTrim !== "" && (!Number.isFinite(deliveryFloor) || deliveryFloor === 0)) {
+      setAddAddrMsg("送貨樓層須為非零整數（地下樓可填 -1）或留空");
+      return;
+    }
     setAddingAddr(true);
     try {
       const res = await fetch(`/api/customers/${detailId}/addresses`, {
@@ -925,6 +863,7 @@ export default function DataCustomersPage() {
         body: JSON.stringify({
           label: newAddrLabel.trim() || undefined,
           addressLine: line,
+          deliveryFloor,
           contactName: newAddrContactName.trim() || undefined,
           contactPhone: newAddrContactPhone.trim() || undefined,
           contactMobile: newAddrContactMobile.trim() || undefined,
@@ -943,6 +882,7 @@ export default function DataCustomersPage() {
       setNewAddrContactPhone("");
       setNewAddrContactMobile("");
       setNewAddrDefault(false);
+      setNewAddrFloor("");
       setShowAddAddressForm(false);
       await fetchDetail(detailId);
       loadDashboard();
@@ -966,387 +906,134 @@ export default function DataCustomersPage() {
     }
   };
 
-  const openCustomer = (id: string, tab: CustomerTab) => {
-    setDetailId(id);
-    setActiveTab(tab);
-  };
-
   const createHasValidCode = normalizeCustomerCode(customerCode) != null;
   const createHasName = name.trim().length > 0;
   const createHasAddress = addressRows.some((r) => r.addressLine.trim().length > 0);
   const createFormReady = createHasValidCode && createHasName && createHasAddress;
 
+  const workspaceCustomer = detail ?? selectedListCustomer;
+  const workspaceTabs: { id: WorkspaceTab; label: string; count?: number }[] = [
+    { id: "summary", label: "摘要" },
+    { id: "orders", label: "訂單", count: detail?.salesOrders?.length },
+    { id: "billing", label: "帳務", count: billingLedger?.entries.length },
+    { id: "edit", label: "編輯資料" },
+  ];
+
   return (
-    <>
-      <section className="card">
-        <h2 className="card__title">客戶資料</h2>
-        <nav className="customer-tabs" role="tablist" aria-label="客戶資料分頁">
+    <section className="card customer-hub">
+      <header className="customer-hub__header">
+        <div className="customer-hub__header-main">
+          <h2 className="card__title">客戶資料</h2>
+          <p className="customer-hub__lead">左側選客戶、右側看帳務與訂單；不必再切換分頁重選一次。</p>
+        </div>
+        <div className="customer-hub__header-actions">
+          {pageMode === "create" ? (
+            <button type="button" className="btn btn--ghost" onClick={exitCreateCustomer}>
+              返回瀏覽
+            </button>
+          ) : null}
           <button
             type="button"
-            role="tab"
-            aria-selected={activeTab === "overview"}
-            className={`customer-tabs__btn${activeTab === "overview" ? " customer-tabs__btn--active" : ""}`}
-            onClick={() => setActiveTab("overview")}
-          >
-            客戶總覽
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "create"}
-            className={`customer-tabs__btn${activeTab === "create" ? " customer-tabs__btn--active" : ""}`}
-            onClick={() => setActiveTab("create")}
+            className={`btn btn--primary${pageMode === "create" ? " btn--active" : ""}`}
+            onClick={startCreateCustomer}
           >
             新增客戶
           </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "edit"}
-            className={`customer-tabs__btn${activeTab === "edit" ? " customer-tabs__btn--active" : ""}`}
-            onClick={() => setActiveTab("edit")}
-          >
-            修改客戶資料
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "billing"}
-            className={`customer-tabs__btn${activeTab === "billing" ? " customer-tabs__btn--active" : ""}`}
-            onClick={() => setActiveTab("billing")}
-          >
-            收帳與帳務明細
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "orders"}
-            className={`customer-tabs__btn${activeTab === "orders" ? " customer-tabs__btn--active" : ""}`}
-            onClick={() => setActiveTab("orders")}
-          >
-            訂單紀錄
-          </button>
-        </nav>
-      </section>
+        </div>
+      </header>
 
-      {activeTab === "overview" ? (
-        <section className="card">
-          <h2 className="card__title">
-            客戶總覽
-            {overviewListVisible ? (
-              <span className="card__title-count">
-                {displayedCustomers.length}
-                {showAllCustomers && !overviewHasQuery ? ` / ${customers.length}` : ""} 筆
-              </span>
-            ) : null}
-          </h2>
+      <div className="customer-hub__toolbar">
+        <div className="field customer-hub__search">
+          <span>搜尋</span>
+          <input
+            type="search"
+            value={customerSearch}
+            onChange={(e) => setCustomerSearch(e.target.value)}
+            placeholder="編號、名稱、電話、統編、地址…"
+            autoComplete="off"
+          />
+        </div>
+        <div className="customer-hub__filters" role="group" aria-label="結帳方式篩選">
+          {(
+            [
+              ["all", "全部"],
+              ["cash", "現金"],
+              ["monthly", "月結"],
+              ["prepaid", "預付"],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              className={`customer-hub__filter${billingFilter === value ? " customer-hub__filter--active" : ""}`}
+              onClick={() => setBillingFilter(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="customer-hub__toolbar-meta">
+          <span className="customer-hub__count">
+            <strong>{displayedCustomers.length}</strong> / {customers.length} 筆
+          </span>
+          {customerSearch || billingFilter !== "all" ? (
+            <button type="button" className="btn btn--ghost btn--sm" onClick={clearCustomerSearch}>
+              清除篩選
+            </button>
+          ) : null}
+        </div>
+      </div>
 
-          <div className="customer-overview-toolbar">
-            <div className="field customer-overview-toolbar__search">
-              <span>搜尋客戶</span>
-              <input
-                type="search"
-                value={customerSearch}
-                onChange={(e) => setCustomerSearch(e.target.value)}
-                placeholder="客戶編號、名稱、電話、手機、統編、地址…"
-                autoComplete="off"
-              />
+      <div className="customer-hub__layout">
+        <aside className="customer-hub__list-panel" aria-label="客戶清單">
+          {displayedCustomers.length === 0 ? (
+            <div className="customer-hub__list-empty">
+              <p>沒有符合條件的客戶。</p>
+              <p className="card__hint">可調整搜尋關鍵字或結帳篩選。</p>
             </div>
-            <div className="customer-overview-toolbar__actions">
-              <button
-                type="button"
-                className={`btn btn--ghost${showAllCustomers && !overviewHasQuery ? " btn--active" : ""}`}
-                onClick={() => setShowAllCustomers(true)}
-              >
-                顯示所有客戶
-              </button>
-              {overviewListVisible ? (
-                <button type="button" className="btn btn--ghost" onClick={clearOverviewSearch}>
-                  清除
-                </button>
-              ) : null}
-            </div>
-          </div>
-
-          {!overviewListVisible ? (
-            <div className="customer-overview-empty">
-              <p>請輸入關鍵字搜尋客戶，或按「顯示所有客戶」瀏覽完整清單。</p>
-              <p className="card__hint">
-                可搜尋：客戶編號、名稱、聯絡人、電話、手機、統編、地址分區、隸屬公司、送貨地址、備註等。
-              </p>
-            </div>
-          ) : displayedCustomers.length === 0 ? (
-            <p className="card__hint">沒有符合條件的客戶，請換個關鍵字或按「顯示所有客戶」。</p>
           ) : (
-            <div className="customer-overview-layout">
-              <div className="customer-overview-list" role="list" aria-label="客戶清單">
-                {displayedCustomers.map((c) => {
-                  const defaultAddr = defaultCustomerAddress(c);
-                  const selected = overviewSelectedId === String(c.id);
-                  return (
-                    <button
-                      key={String(c.id)}
-                      type="button"
-                      role="listitem"
-                      className={`customer-overview-card${selected ? " customer-overview-card--selected" : ""}`}
-                      onClick={() => setOverviewSelectedId(String(c.id))}
-                    >
-                      <div className="customer-overview-card__head">
-                        <span className="customer-overview-card__code mono-text">{c.customerCode ?? "—"}</span>
-                        <span className={billingTypeBadgeClass(c.billingType)}>{billingTypeLabel(c.billingType)}</span>
-                      </div>
-                      <strong className="customer-overview-card__name">{c.name}</strong>
-                      <div className="customer-overview-card__meta">
-                        {c.contactName ? <span>{c.contactName}</span> : null}
-                        {c.phone ? <span>{c.phone}</span> : null}
-                        {c.mobile ? <span>{c.mobile}</span> : null}
-                      </div>
-                      {defaultAddr ? (
-                        <p className="customer-overview-card__addr">
-                          {defaultAddr.label ? `${defaultAddr.label} · ` : ""}
-                          {defaultAddr.addressLine}
-                        </p>
-                      ) : null}
-                      <div className="customer-overview-card__stats">
-                        <span>空桶 {sumCustomerBarrelsOnSite(c)}</span>
-                        <span>地址 {(c.addresses ?? []).length}</span>
-                        {c.billingType === "prepaid" ? <span>預付 {c.prepaidBarrelBalance ?? 0} 桶</span> : null}
-                        {c.billingType === "monthly" && c.monthlySettlementDay ? (
-                          <span>月結日 {c.monthlySettlementDay} 日</span>
-                        ) : null}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-
-              <aside className="customer-overview-preview" aria-label="客戶詳情預覽">
-                {overviewSelectedCustomer ? (
-                  <>
-                    <div className="customer-overview-preview__head">
-                      <div>
-                        <p className="customer-overview-preview__eyebrow mono-text">
-                          {overviewSelectedCustomer.customerCode ?? "—"} · ID {String(overviewSelectedCustomer.id)}
-                        </p>
-                        <h3 className="customer-overview-preview__title">{overviewSelectedCustomer.name}</h3>
-                        <div className="customer-overview-preview__badges">
-                          <span className={billingTypeBadgeClass(overviewSelectedCustomer.billingType)}>
-                            {billingTypeLabel(overviewSelectedCustomer.billingType)}
-                          </span>
-                          {overviewSelectedCustomer.billingType === "cash" ? (
-                            <span className="badge badge--default">
-                              {cashInvoiceModeLabel(overviewSelectedCustomer.defaultCashInvoiceMode)}
-                            </span>
-                          ) : null}
-                        </div>
-                      </div>
-                      <div className="customer-detail-actions customer-detail-actions--wrap">
-                        <button
-                          type="button"
-                          className="btn btn--primary btn--sm"
-                          onClick={() => openCustomer(String(overviewSelectedCustomer.id), "edit")}
-                        >
-                          修改資料
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn--ghost btn--sm"
-                          onClick={() => openCustomer(String(overviewSelectedCustomer.id), "billing")}
-                        >
-                          帳務
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn--ghost btn--sm"
-                          onClick={() => openCustomer(String(overviewSelectedCustomer.id), "orders")}
-                        >
-                          訂單
-                        </button>
-                      </div>
+            <div className="customer-hub__list" role="list">
+              {displayedCustomers.map((c) => {
+                const defaultAddr = defaultCustomerAddress(c);
+                const selected = detailId === String(c.id) && pageMode === "browse";
+                return (
+                  <button
+                    key={String(c.id)}
+                    type="button"
+                    role="listitem"
+                    className={`customer-hub__list-item${selected ? " customer-hub__list-item--selected" : ""}`}
+                    onClick={() => selectCustomer(String(c.id), workspaceTab === "edit" ? "summary" : workspaceTab)}
+                  >
+                    <div className="customer-hub__list-item-head">
+                      <span className="customer-hub__list-code mono-text">{c.customerCode ?? "—"}</span>
+                      <span className={billingTypeBadgeClass(c.billingType)}>{billingTypeLabel(c.billingType)}</span>
                     </div>
-
-                    <div className="customer-overview-preview__section">
-                      <h4 className="customer-overview-preview__section-title">聯絡資訊</h4>
-                      <dl className="customer-overview-dl">
-                        <dt>聯絡人</dt>
-                        <dd>{overviewSelectedCustomer.contactName ?? "—"}</dd>
-                        <dt>電話</dt>
-                        <dd>{overviewSelectedCustomer.phone ?? "—"}</dd>
-                        <dt>手機</dt>
-                        <dd>{overviewSelectedCustomer.mobile ?? "—"}</dd>
-                        <dt>統一編號</dt>
-                        <dd className="mono-text">{overviewSelectedCustomer.taxId ?? "—"}</dd>
-                      </dl>
+                    <strong className="customer-hub__list-name">{c.name}</strong>
+                    <div className="customer-hub__list-meta">
+                      {c.contactName ? <span>{c.contactName}</span> : null}
+                      {c.mobile || c.phone ? <span>{c.mobile || c.phone}</span> : null}
                     </div>
-
-                    <div className="customer-overview-preview__section">
-                      <h4 className="customer-overview-preview__section-title">帳務與額度</h4>
-                      <dl className="customer-overview-dl">
-                        <dt>結帳方式</dt>
-                        <dd>{billingTypeLabel(overviewSelectedCustomer.billingType)}</dd>
-                        {overviewSelectedCustomer.billingType === "monthly" ? (
-                          <>
-                            <dt>月結參考日</dt>
-                            <dd>
-                              {overviewSelectedCustomer.monthlySettlementDay
-                                ? `每月 ${overviewSelectedCustomer.monthlySettlementDay} 日`
-                                : "—"}
-                            </dd>
-                          </>
-                        ) : null}
-                        {overviewSelectedCustomer.billingType === "prepaid" ? (
-                          <>
-                            <dt>預付桶餘額</dt>
-                            <dd>{overviewSelectedCustomer.prepaidBarrelBalance ?? 0} 桶</dd>
-                            <dt>允許透支</dt>
-                            <dd>{overviewSelectedCustomer.allowPrepaidOverdraft ? "是" : "否"}</dd>
-                          </>
-                        ) : null}
-                        <dt>信用額度</dt>
-                        <dd>{fmtMoney(overviewSelectedCustomer.creditLimit)}</dd>
-                        <dt>未收回空桶（合計）</dt>
-                        <dd>{sumCustomerBarrelsOnSite(overviewSelectedCustomer)}</dd>
-                      </dl>
-                    </div>
-
-                    <div className="customer-overview-preview__section">
-                      <h4 className="customer-overview-preview__section-title">分區與歸屬</h4>
-                      <dl className="customer-overview-dl">
-                        <dt>地址分區</dt>
-                        <dd>{overviewSelectedCustomer.addressZone?.name ?? "—"}</dd>
-                        <dt>隸屬公司</dt>
-                        <dd>{overviewSelectedCustomer.affiliatedCompany?.name ?? "—"}</dd>
-                      </dl>
-                    </div>
-
-                    {(overviewSelectedCustomer.standingRemark || overviewSelectedCustomer.notes) ? (
-                      <div className="customer-overview-preview__section">
-                        <h4 className="customer-overview-preview__section-title">備註</h4>
-                        {overviewSelectedCustomer.standingRemark ? (
-                          <p className="customer-overview-preview__remark">
-                            <strong>常態備註：</strong>
-                            {overviewSelectedCustomer.standingRemark}
-                          </p>
-                        ) : null}
-                        {overviewSelectedCustomer.notes ? (
-                          <p className="customer-overview-preview__remark">
-                            <strong>內部備註：</strong>
-                            {overviewSelectedCustomer.notes}
-                          </p>
-                        ) : null}
-                      </div>
+                    {defaultAddr ? (
+                      <p className="customer-hub__list-addr">
+                        {defaultAddr.label ? `${defaultAddr.label} · ` : ""}
+                        {defaultAddr.addressLine}
+                      </p>
                     ) : null}
-
-                    <div className="customer-overview-preview__section">
-                      <h4 className="customer-overview-preview__section-title">
-                        送貨地址（{(overviewSelectedCustomer.addresses ?? []).length}）
-                      </h4>
-                      {(overviewSelectedCustomer.addresses ?? []).length === 0 ? (
-                        <p className="card__hint">尚無送貨地址</p>
-                      ) : (
-                        <ul className="customer-overview-addresses">
-                          {(overviewSelectedCustomer.addresses ?? []).map((a) => (
-                            <li key={String(a.id)} className="customer-overview-address">
-                              <div className="customer-overview-address__head">
-                                <strong>{a.label || "送貨點"}</strong>
-                                {a.isDefault ? <span className="badge badge--confirmed">預設</span> : null}
-                                <span className="badge badge--default">空桶 {a.barrelsOnSite ?? 0}</span>
-                              </div>
-                              <p>{a.addressLine}</p>
-                              {(a.contactName || a.contactPhone || a.contactMobile) ? (
-                                <p className="customer-overview-address__contact">
-                                  {[a.contactName, a.contactPhone, a.contactMobile].filter(Boolean).join(" · ")}
-                                </p>
-                              ) : null}
-                            </li>
-                          ))}
-                        </ul>
-                      )}
+                    <div className="customer-hub__list-stats">
+                      <span>空桶 {sumCustomerBarrelsOnSite(c)}</span>
+                      <span>地址 {(c.addresses ?? []).length}</span>
+                      {c.billingType === "prepaid" ? <span>預付 {c.prepaidBarrelBalance ?? 0}</span> : null}
                     </div>
-
-                    <div className="customer-overview-preview__section">
-                      <div className="customer-detail-head" style={{ alignItems: "center", gap: "0.5rem" }}>
-                        <h4 className="customer-overview-preview__section-title" style={{ margin: 0 }}>
-                          收空桶紀錄
-                        </h4>
-                        <div className="customer-detail-actions customer-detail-actions--wrap">
-                          <button
-                            type="button"
-                            className="btn btn--ghost btn--sm"
-                            onClick={() => void loadOverviewBarrelPickups(String(overviewSelectedCustomer.id))}
-                            disabled={overviewBarrelPickupsLoading}
-                          >
-                            {overviewBarrelPickupsLoading ? "讀取中…" : "重新載入"}
-                          </button>
-                          <Link
-                            className="btn btn--secondary btn--sm"
-                            to={`/orders/barrel-pickup/query?q=${encodeURIComponent(
-                              overviewSelectedCustomer.customerCode ?? overviewSelectedCustomer.name,
-                            )}`}
-                          >
-                            完整查詢
-                          </Link>
-                        </div>
-                      </div>
-                      {overviewBarrelPickupsErr ? (
-                        <p className="card__hint">{overviewBarrelPickupsErr}</p>
-                      ) : overviewBarrelPickupsLoading ? (
-                        <p className="card__hint">收空桶紀錄載入中…</p>
-                      ) : overviewBarrelPickups.length === 0 ? (
-                        <p className="card__hint">此客戶目前沒有收空桶紀錄。</p>
-                      ) : (
-                        <div className="table-wrap" style={{ marginTop: "0.5rem" }}>
-                          <table className="data-table data-table--compact">
-                            <thead>
-                              <tr>
-                                <th>狀態</th>
-                                <th>收桶日</th>
-                                <th>單號</th>
-                                <th>送貨點</th>
-                                <th className="num">實收</th>
-                                <th>核銷時間</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {overviewBarrelPickups.slice(0, 8).map((row) => (
-                                <tr key={String(row.id)}>
-                                  <td>
-                                    <span className={barrelPickupStatusBadgeClass(row.status)}>
-                                      {barrelPickupStatusLabel(row.status)}
-                                    </span>
-                                  </td>
-                                  <td className="cell-nowrap">{fmtLocalYmd(row.pickupDate)}</td>
-                                  <td>
-                                    <code style={{ fontSize: "0.8em" }}>{row.pickupNo ?? "—"}</code>
-                                  </td>
-                                  <td>
-                                    {row.deliveryAddress?.label ? `${row.deliveryAddress.label} · ` : ""}
-                                    {row.deliveryAddress?.addressLine ?? "—"}
-                                  </td>
-                                  <td className="num">{row.barrelsReturned ?? "—"}</td>
-                                  <td className="cell-nowrap">{fmtDateTime(row.officeSettledAt)}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                          {overviewBarrelPickups.length > 8 ? (
-                            <p className="card__hint">僅顯示最近 8 筆，更多紀錄請按「完整查詢」。</p>
-                          ) : null}
-                        </div>
-                      )}
-                    </div>
-                  </>
-                ) : (
-                  <p className="card__hint">請從左側清單選擇客戶以檢視詳情。</p>
-                )}
-              </aside>
+                  </button>
+                );
+              })}
             </div>
           )}
-        </section>
-      ) : null}
+        </aside>
 
-      {activeTab === "create" ? (
-        <section className="card card--detail customer-create-page">
+        <main className="customer-hub__workspace">
+          {pageMode === "create" ? (
+        <div className="customer-hub__create">
           <div className="customer-detail-head">
             <h2 className="card__title">新增客戶</h2>
             <button type="button" className="btn btn--ghost" onClick={resetCreateForm} disabled={saving}>
@@ -1699,91 +1386,305 @@ export default function DataCustomersPage() {
               ) : null}
             </div>
           </form>
-        </section>
-      ) : null}
+        </div>
+          ) : !detailId ? (
+            <div className="customer-hub__workspace-empty">
+              <p>請從左側清單選擇客戶。</p>
+              <p className="card__hint">或按右上角「新增客戶」建立新資料。</p>
+            </div>
+          ) : (
+            <div className="customer-hub__workspace-inner">
+              {detailLoading ? <p className="card__hint">客戶資料載入中…</p> : null}
+              {detailErr ? <p className="feedback feedback--err">{detailErr}</p> : null}
 
-      {activeTab === "edit" ? (
-        <section className="card card--detail customer-edit-page">
-          <div className="customer-detail-head">
-            <h2 className="card__title">修改客戶資料</h2>
-            {detailId ? (
-              <button type="button" className="btn btn--ghost" onClick={clearEditSelection}>
-                返回總覽
-              </button>
-            ) : null}
-          </div>
-
-          {!detailId ? (
-            <CustomerTabPicker
-              customers={customers}
-              search={editPickerSearch}
-              onSearchChange={setEditPickerSearch}
-              showAll={editPickerShowAll}
-              onShowAll={() => setEditPickerShowAll(true)}
-              onClear={() => {
-                setEditPickerSearch("");
-                setEditPickerShowAll(false);
-              }}
-              onSelect={setDetailId}
-              hint="請搜尋並選擇要修改的客戶，或從「客戶總覽」點選「修改資料」。"
-            />
-          ) : null}
-
-          {detailLoading && detailId ? <p className="card__hint">讀取中…</p> : null}
-          {detailErr && detailId ? <p className="feedback feedback--err">{detailErr}</p> : null}
-
-          {detail && !detailLoading && detailId ? (
-            <div className="customer-edit-layout">
-              <div className="customer-edit-hero">
-                <div className="customer-edit-hero__main">
-                  <p className="customer-edit-hero__code mono-text">
-                    {detail.customerCode ?? "—"} · ID {String(detail.id)}
-                  </p>
-                  <h3 className="customer-edit-hero__name">{detail.name}</h3>
-                  <div className="customer-edit-hero__badges">
-                    <span className={billingTypeBadgeClass(detail.billingType)}>{billingTypeLabel(detail.billingType)}</span>
-                    {detail.addressZone?.name ? <span className="badge badge--default">{detail.addressZone.name}</span> : null}
+              {workspaceCustomer ? (
+                <header className="customer-hub__hero">
+                  <div className="customer-hub__hero-main">
+                    <p className="customer-hub__hero-code mono-text">
+                      {workspaceCustomer.customerCode ?? "—"} · ID {String(workspaceCustomer.id)}
+                    </p>
+                    <h3 className="customer-hub__hero-title">{workspaceCustomer.name}</h3>
+                    <div className="customer-hub__hero-badges">
+                      <span className={billingTypeBadgeClass(workspaceCustomer.billingType)}>
+                        {billingTypeLabel(workspaceCustomer.billingType)}
+                      </span>
+                      {workspaceCustomer.billingType === "cash" ? (
+                        <span className="badge badge--default">
+                          {cashInvoiceModeLabel(workspaceCustomer.defaultCashInvoiceMode)}
+                        </span>
+                      ) : null}
+                      {workspaceCustomer.addressZone?.name ? (
+                        <span className="badge badge--default">{workspaceCustomer.addressZone.name}</span>
+                      ) : null}
+                      {workspaceCustomer.affiliatedCompany?.name ? (
+                        <span className="badge badge--default">{workspaceCustomer.affiliatedCompany.name}</span>
+                      ) : null}
+                    </div>
                   </div>
+                  <div className="customer-hub__hero-actions">
+                    <Link className="btn btn--secondary btn--sm" to="/orders/new">
+                      開新訂單
+                    </Link>
+                    {detailId ? (
+                      <button type="button" className="btn btn--ghost btn--sm" onClick={() => void fetchDetail(detailId)}>
+                        重新載入
+                      </button>
+                    ) : null}
+                  </div>
+                </header>
+              ) : null}
+
+              <div className="customer-hub__kpi-row">
+                <div className="customer-hub__kpi customer-hub__kpi--highlight">
+                  <span className="customer-hub__kpi-label">往來餘額</span>
+                  <strong className="customer-hub__kpi-value">
+                    $ {moneyText(billingSummary?.accountBalance ?? "—")}
+                  </strong>
+                  <span className="customer-hub__kpi-hint">正＝客戶欠公司</span>
                 </div>
-                <div className="customer-detail-actions customer-detail-actions--wrap">
-                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => openCustomer(String(detail.id), "billing")}>
-                    帳務明細
-                  </button>
-                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => openCustomer(String(detail.id), "orders")}>
-                    訂單紀錄
-                  </button>
-                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => setDetailId(null)}>
-                    換一位客戶
-                  </button>
+                <div className="customer-hub__kpi">
+                  <span className="customer-hub__kpi-label">AR 未清</span>
+                  <strong className="customer-hub__kpi-value">
+                    $ {moneyText(billingSummary?.arOutstandingAmount ?? 0)}
+                  </strong>
+                </div>
+                <div className="customer-hub__kpi">
+                  <span className="customer-hub__kpi-label">預付桶</span>
+                  <strong className="customer-hub__kpi-value">
+                    {billingSummary?.prepaidBarrelBalance ?? workspaceCustomer?.prepaidBarrelBalance ?? 0} 桶
+                  </strong>
+                </div>
+                <div className="customer-hub__kpi">
+                  <span className="customer-hub__kpi-label">訂單</span>
+                  <strong className="customer-hub__kpi-value">{customerOrderStats.count}</strong>
+                  <span className="customer-hub__kpi-hint">已完成 {customerOrderStats.completed}</span>
+                </div>
+                <div className="customer-hub__kpi">
+                  <span className="customer-hub__kpi-label">合計應收</span>
+                  <strong className="customer-hub__kpi-value">$ {moneyText(customerOrderStats.totalAmount)}</strong>
+                  <span className="customer-hub__kpi-hint">含稅 · 最近 100 筆</span>
+                </div>
+                <div className="customer-hub__kpi">
+                  <span className="customer-hub__kpi-label">未收回空桶</span>
+                  <strong className="customer-hub__kpi-value">
+                    {workspaceCustomer ? sumCustomerBarrelsOnSite(workspaceCustomer) : "—"}
+                  </strong>
                 </div>
               </div>
 
-              {billingSummary ? (
-                <div className="customer-edit-stats">
-                  <div className="customer-edit-stat">
-                    <span className="customer-edit-stat__label">往來餘額</span>
-                    <strong className="customer-edit-stat__value">
-                      $ {Number(billingSummary.accountBalance).toLocaleString()}
-                    </strong>
-                    <span className="customer-edit-stat__hint">正＝客戶欠公司</span>
+              <nav className="customer-hub__tabs" role="tablist" aria-label="客戶工作區">
+                {workspaceTabs.map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={workspaceTab === tab.id}
+                    className={`customer-hub__tab${workspaceTab === tab.id ? " customer-hub__tab--active" : ""}`}
+                    onClick={() => setWorkspaceTab(tab.id)}
+                  >
+                    {tab.label}
+                    {tab.count != null && tab.count > 0 ? (
+                      <span className="customer-hub__tab-count">{tab.count}</span>
+                    ) : null}
+                  </button>
+                ))}
+              </nav>
+
+              {workspaceTab === "summary" && workspaceCustomer ? (
+                <div className="customer-hub__summary">
+                  <div className="customer-hub__summary-grid">
+                    <section className="customer-hub__panel">
+                      <h4 className="customer-hub__panel-title">聯絡資訊</h4>
+                      <dl className="customer-overview-dl">
+                        <dt>聯絡人</dt>
+                        <dd>{workspaceCustomer.contactName ?? "—"}</dd>
+                        <dt>電話</dt>
+                        <dd>{workspaceCustomer.phone ?? "—"}</dd>
+                        <dt>手機</dt>
+                        <dd>{workspaceCustomer.mobile ?? "—"}</dd>
+                        <dt>統一編號</dt>
+                        <dd className="mono-text">{workspaceCustomer.taxId ?? "—"}</dd>
+                        <dt>信用額度</dt>
+                        <dd>{fmtMoney(workspaceCustomer.creditLimit)}</dd>
+                      </dl>
+                    </section>
+                    <section className="customer-hub__panel">
+                      <h4 className="customer-hub__panel-title">帳務設定</h4>
+                      <dl className="customer-overview-dl">
+                        <dt>結帳方式</dt>
+                        <dd>{billingTypeLabel(workspaceCustomer.billingType)}</dd>
+                        {workspaceCustomer.billingType === "monthly" ? (
+                          <>
+                            <dt>月結參考日</dt>
+                            <dd>
+                              {workspaceCustomer.monthlySettlementDay
+                                ? `每月 ${workspaceCustomer.monthlySettlementDay} 日`
+                                : "—"}
+                            </dd>
+                          </>
+                        ) : null}
+                        {workspaceCustomer.billingType === "prepaid" ? (
+                          <>
+                            <dt>允許透支</dt>
+                            <dd>{workspaceCustomer.allowPrepaidOverdraft ? "是" : "否"}</dd>
+                          </>
+                        ) : null}
+                        <dt>金額預收</dt>
+                        <dd>$ {moneyText(billingSummary?.prepaymentMoneyBalance ?? 0)}</dd>
+                      </dl>
+                    </section>
                   </div>
-                  <div className="customer-edit-stat">
-                    <span className="customer-edit-stat__label">AR 未清應收</span>
-                    <strong className="customer-edit-stat__value">
-                      $ {Number(billingSummary.arOutstandingAmount ?? 0).toLocaleString()}
-                    </strong>
-                  </div>
-                  <div className="customer-edit-stat">
-                    <span className="customer-edit-stat__label">預付桶餘額</span>
-                    <strong className="customer-edit-stat__value">{billingSummary.prepaidBarrelBalance} 桶</strong>
-                  </div>
-                  <div className="customer-edit-stat">
-                    <span className="customer-edit-stat__label">未收回空桶（合計）</span>
-                    <strong className="customer-edit-stat__value">{sumCustomerBarrelsOnSite(detail)}</strong>
-                  </div>
+
+                  {(workspaceCustomer.standingRemark || workspaceCustomer.notes) ? (
+                    <section className="customer-hub__panel">
+                      <h4 className="customer-hub__panel-title">備註</h4>
+                      {workspaceCustomer.standingRemark ? (
+                        <p className="customer-overview-preview__remark">
+                          <strong>常態備註：</strong>
+                          {workspaceCustomer.standingRemark}
+                        </p>
+                      ) : null}
+                      {workspaceCustomer.notes ? (
+                        <p className="customer-overview-preview__remark">
+                          <strong>內部備註：</strong>
+                          {workspaceCustomer.notes}
+                        </p>
+                      ) : null}
+                    </section>
+                  ) : null}
+
+                  <section className="customer-hub__panel">
+                    <div className="customer-hub__panel-head">
+                      <h4 className="customer-hub__panel-title">
+                        送貨地址（{(workspaceCustomer.addresses ?? []).length}）
+                      </h4>
+                      <button type="button" className="btn btn--ghost btn--sm" onClick={() => setWorkspaceTab("edit")}>
+                        管理地址
+                      </button>
+                    </div>
+                    {(workspaceCustomer.addresses ?? []).length === 0 ? (
+                      <p className="card__hint">尚無送貨地址</p>
+                    ) : (
+                      <ul className="customer-overview-addresses">
+                        {(workspaceCustomer.addresses ?? []).map((a) => (
+                          <li key={String(a.id)} className="customer-overview-address">
+                            <div className="customer-overview-address__head">
+                              <strong>{a.label || "送貨點"}</strong>
+                              {a.isDefault ? <span className="badge badge--confirmed">預設</span> : null}
+                              <span className="badge badge--default">空桶 {a.barrelsOnSite ?? 0}</span>
+                            {a.deliveryFloor != null ? (
+                              <span className="badge badge--default">{formatDeliveryFloor(a.deliveryFloor)}</span>
+                            ) : null}
+                            </div>
+                            <p>{a.addressLine}</p>
+                            {(a.contactName || a.contactPhone || a.contactMobile) ? (
+                              <p className="customer-overview-address__contact">
+                                {[a.contactName, a.contactPhone, a.contactMobile].filter(Boolean).join(" · ")}
+                              </p>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+
+                  <section className="customer-hub__panel">
+                    <div className="customer-hub__panel-head">
+                      <h4 className="customer-hub__panel-title">最近訂單</h4>
+                      <button type="button" className="btn btn--ghost btn--sm" onClick={() => setWorkspaceTab("orders")}>
+                        查看全部
+                      </button>
+                    </div>
+                    {(detail?.salesOrders ?? []).length === 0 ? (
+                      <p className="card__hint">尚無訂單紀錄</p>
+                    ) : (
+                      <ul className="customer-order-cards">
+                        {(detail?.salesOrders ?? []).slice(0, 3).map((o) => (
+                          <li key={String(o.id)} className="customer-order-card customer-order-card--compact">
+                            <div className="customer-order-card__head">
+                              <div className="customer-order-card__head-main">
+                                <span className="customer-order-card__no mono-text">{o.orderNo}</span>
+                                <span className={orderStatusBadgeClass(o.status)}>{orderStatusLabel(o.status)}</span>
+                              </div>
+                              <strong className="customer-order-card__amount">
+                                $ {moneyText(customerOrderBillableAmount(o))}
+                              </strong>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+
+                  <section className="customer-hub__panel">
+                    <div className="customer-hub__panel-head">
+                      <h4 className="customer-hub__panel-title">收空桶紀錄</h4>
+                      <div className="customer-detail-actions customer-detail-actions--wrap">
+                        <button
+                          type="button"
+                          className="btn btn--ghost btn--sm"
+                          onClick={() => detailId && void loadBarrelPickups(detailId)}
+                          disabled={barrelPickupsLoading}
+                        >
+                          {barrelPickupsLoading ? "讀取中…" : "重新載入"}
+                        </button>
+                        <Link
+                          className="btn btn--secondary btn--sm"
+                          to={`/orders/barrel-pickup/query?q=${encodeURIComponent(
+                            workspaceCustomer.customerCode ?? workspaceCustomer.name,
+                          )}`}
+                        >
+                          完整查詢
+                        </Link>
+                      </div>
+                    </div>
+                    {barrelPickupsErr ? (
+                      <p className="card__hint">{barrelPickupsErr}</p>
+                    ) : barrelPickupsLoading ? (
+                      <p className="card__hint">收空桶紀錄載入中…</p>
+                    ) : barrelPickups.length === 0 ? (
+                      <p className="card__hint">此客戶目前沒有收空桶紀錄。</p>
+                    ) : (
+                      <div className="table-wrap">
+                        <table className="data-table data-table--compact">
+                          <thead>
+                            <tr>
+                              <th>狀態</th>
+                              <th>收桶日</th>
+                              <th>單號</th>
+                              <th>送貨點</th>
+                              <th className="num">實收</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {barrelPickups.slice(0, 5).map((row) => (
+                              <tr key={String(row.id)}>
+                                <td>
+                                  <span className={barrelPickupStatusBadgeClass(row.status)}>
+                                    {barrelPickupStatusLabel(row.status)}
+                                  </span>
+                                </td>
+                                <td className="cell-nowrap">{fmtLocalYmd(row.pickupDate)}</td>
+                                <td>
+                                  <code style={{ fontSize: "0.8em" }}>{row.pickupNo ?? "—"}</code>
+                                </td>
+                                <td>
+                                  {row.deliveryAddress?.label ? `${row.deliveryAddress.label} · ` : ""}
+                                  {row.deliveryAddress?.addressLine ?? "—"}
+                                </td>
+                                <td className="num">{row.barrelsReturned ?? "—"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </section>
                 </div>
               ) : null}
 
+              {workspaceTab === "edit" && detail && !detailLoading && detailId ? (
+            <div className="customer-edit-layout">
               <nav className="customer-edit-nav" aria-label="修改區塊導覽">
                 <button type="button" className="customer-edit-nav__btn" onClick={() => scrollToEditSection("edit-identity")}>
                   基本識別
@@ -2063,6 +1964,16 @@ export default function DataCustomersPage() {
                         onChange={(e) => setEditAddrBarrels(e.target.value)}
                       />
                     </div>
+                    <div className="field">
+                      <span>送貨樓層（選填）</span>
+                      <input
+                        type="number"
+                        step={1}
+                        value={editAddrFloor}
+                        onChange={(e) => setEditAddrFloor(e.target.value)}
+                        placeholder="例：2、3、-1（地下一樓）"
+                      />
+                    </div>
                     <div className="form-actions">
                       <button type="submit" className="btn btn--primary btn--sm" disabled={patchAddrSaving}>
                         {patchAddrSaving ? "儲存中…" : "儲存地址"}
@@ -2090,6 +2001,9 @@ export default function DataCustomersPage() {
                             <strong>{a.label || "送貨點"}</strong>
                             {a.isDefault ? <span className="badge badge--confirmed">預設</span> : null}
                             <span className="badge badge--default">空桶 {a.barrelsOnSite ?? 0}</span>
+                            {a.deliveryFloor != null ? (
+                              <span className="badge badge--default">{formatDeliveryFloor(a.deliveryFloor)}</span>
+                            ) : null}
                           </div>
                           <div className="customer-detail-actions">
                             <button type="button" className="btn btn--ghost btn--sm" onClick={() => startEditAddress(a)}>
@@ -2147,6 +2061,16 @@ export default function DataCustomersPage() {
                       <input type="checkbox" checked={newAddrDefault} onChange={(e) => setNewAddrDefault(e.target.checked)} />
                       <span>設為預設送貨點</span>
                     </label>
+                    <div className="field">
+                      <span>送貨樓層（選填）</span>
+                      <input
+                        type="number"
+                        step={1}
+                        value={newAddrFloor}
+                        onChange={(e) => setNewAddrFloor(e.target.value)}
+                        placeholder="例：2、3、-1（地下一樓）"
+                      />
+                    </div>
                     <div className="form-actions">
                       <button type="submit" className="btn btn--primary btn--sm" disabled={addingAddr}>
                         {addingAddr ? "新增中…" : "新增地址"}
@@ -2159,101 +2083,10 @@ export default function DataCustomersPage() {
                 ) : null}
               </section>
             </div>
-          ) : null}
-        </section>
-      ) : null}
+              ) : null}
 
-      {activeTab === "billing" ? (
-        <section className="card card--detail customer-billing-page">
-          <div className="customer-detail-head">
-            <h2 className="card__title">收帳與帳務明細</h2>
-            {detailId ? (
-              <button type="button" className="btn btn--ghost" onClick={clearDetailViewSelection}>
-                返回總覽
-              </button>
-            ) : null}
-          </div>
-
-          {!detailId ? (
-            <CustomerTabPicker
-              customers={customers}
-              search={detailPickerSearch}
-              onSearchChange={setDetailPickerSearch}
-              showAll={detailPickerShowAll}
-              onShowAll={() => setDetailPickerShowAll(true)}
-              onClear={() => {
-                setDetailPickerSearch("");
-                setDetailPickerShowAll(false);
-              }}
-              onSelect={setDetailId}
-              hint="請搜尋並選擇要檢視帳務的客戶，或從「客戶總覽」點選「帳務」。"
-            />
-          ) : null}
-
-          {detailLoading && detailId ? <p className="card__hint">讀取中…</p> : null}
-          {detailErr && detailId ? <p className="feedback feedback--err">{detailErr}</p> : null}
-
-          {detail && !detailLoading && detailId ? (
+              {workspaceTab === "billing" && detail && !detailLoading && detailId ? (
             <div className="customer-edit-layout">
-              <div className="customer-edit-hero customer-billing-hero">
-                <div className="customer-edit-hero__main">
-                  <p className="customer-edit-hero__code mono-text">
-                    {detail.customerCode ?? "—"} · ID {String(detail.id)}
-                  </p>
-                  <h3 className="customer-edit-hero__name">{detail.name}</h3>
-                  <div className="customer-edit-hero__badges">
-                    <span className={billingTypeBadgeClass(detail.billingType)}>{billingTypeLabel(detail.billingType)}</span>
-                  </div>
-                </div>
-                <div className="customer-detail-actions customer-detail-actions--wrap">
-                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => void fetchDetail(detailId)}>
-                    重新載入
-                  </button>
-                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => openCustomer(String(detail.id), "edit")}>
-                    修改資料
-                  </button>
-                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => openCustomer(String(detail.id), "orders")}>
-                    訂單紀錄
-                  </button>
-                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => setDetailId(null)}>
-                    換一位客戶
-                  </button>
-                </div>
-              </div>
-
-              {billingSummary ? (
-                <div className="customer-edit-stats">
-                  <div className="customer-edit-stat customer-edit-stat--highlight">
-                    <span className="customer-edit-stat__label">往來餘額</span>
-                    <strong className="customer-edit-stat__value">
-                      $ {Number(billingSummary.accountBalance).toLocaleString()}
-                    </strong>
-                    <span className="customer-edit-stat__hint">正＝客戶欠公司；負＝預收可抵</span>
-                  </div>
-                  <div className="customer-edit-stat">
-                    <span className="customer-edit-stat__label">AR 未清應收</span>
-                    <strong className="customer-edit-stat__value">
-                      $ {Number(billingSummary.arOutstandingAmount ?? 0).toLocaleString()}
-                    </strong>
-                  </div>
-                  <div className="customer-edit-stat">
-                    <span className="customer-edit-stat__label">金額預收餘額</span>
-                    <strong className="customer-edit-stat__value">
-                      $ {Number(billingSummary.prepaymentMoneyBalance ?? 0).toLocaleString()}
-                    </strong>
-                  </div>
-                  <div className="customer-edit-stat">
-                    <span className="customer-edit-stat__label">預付桶餘額</span>
-                    <strong className="customer-edit-stat__value">{billingSummary.prepaidBarrelBalance} 桶</strong>
-                    <span className="customer-edit-stat__hint">
-                      {billingSummary.allowPrepaidOverdraft ? "可透支核銷" : "不足時阻擋核銷"}
-                    </span>
-                  </div>
-                </div>
-              ) : (
-                <p className="card__hint">無法顯示帳務摘要</p>
-              )}
-
               <nav className="customer-edit-nav" aria-label="帳務區塊導覽">
                 <button type="button" className="customer-edit-nav__btn" onClick={() => scrollToSection("billing-ledger")}>
                   帳務流水
@@ -2368,66 +2201,10 @@ export default function DataCustomersPage() {
                 </div>
               </section>
             </div>
-          ) : null}
-        </section>
-      ) : null}
+              ) : null}
 
-      {activeTab === "orders" ? (
-        <section className="card card--detail customer-orders-page">
-          <div className="customer-detail-head">
-            <h2 className="card__title">訂單紀錄</h2>
-            {detailId ? (
-              <button type="button" className="btn btn--ghost" onClick={clearDetailViewSelection}>
-                返回總覽
-              </button>
-            ) : null}
-          </div>
-
-          {!detailId ? (
-            <CustomerTabPicker
-              customers={customers}
-              search={detailPickerSearch}
-              onSearchChange={setDetailPickerSearch}
-              showAll={detailPickerShowAll}
-              onShowAll={() => setDetailPickerShowAll(true)}
-              onClear={() => {
-                setDetailPickerSearch("");
-                setDetailPickerShowAll(false);
-              }}
-              onSelect={setDetailId}
-              hint="請搜尋並選擇要檢視訂單的客戶，或從「客戶總覽」點選「訂單」。"
-            />
-          ) : null}
-
-          {detailLoading && detailId ? <p className="card__hint">讀取中…</p> : null}
-          {detailErr && detailId ? <p className="feedback feedback--err">{detailErr}</p> : null}
-
-          {detail && !detailLoading && detailId ? (
+              {workspaceTab === "orders" && detail && !detailLoading && detailId ? (
             <div className="customer-edit-layout">
-              <div className="customer-edit-hero customer-orders-hero">
-                <div className="customer-edit-hero__main">
-                  <p className="customer-edit-hero__code mono-text">
-                    {detail.customerCode ?? "—"} · ID {String(detail.id)}
-                  </p>
-                  <h3 className="customer-edit-hero__name">{detail.name}</h3>
-                  <div className="customer-edit-hero__badges">
-                    <span className={billingTypeBadgeClass(detail.billingType)}>{billingTypeLabel(detail.billingType)}</span>
-                    <span className="badge badge--default">最近 {customerOrderStats.count} 筆訂單</span>
-                  </div>
-                </div>
-                <div className="customer-detail-actions customer-detail-actions--wrap">
-                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => openCustomer(String(detail.id), "billing")}>
-                    帳務明細
-                  </button>
-                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => openCustomer(String(detail.id), "edit")}>
-                    修改資料
-                  </button>
-                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => setDetailId(null)}>
-                    換一位客戶
-                  </button>
-                </div>
-              </div>
-
               <div className="customer-edit-stats">
                 <div className="customer-edit-stat">
                   <span className="customer-edit-stat__label">訂單筆數</span>
@@ -2442,9 +2219,9 @@ export default function DataCustomersPage() {
                   <strong className="customer-edit-stat__value">{customerOrderStats.inProgress}</strong>
                 </div>
                 <div className="customer-edit-stat">
-                  <span className="customer-edit-stat__label">合計金額</span>
-                  <strong className="customer-edit-stat__value">$ {customerOrderStats.totalAmount.toLocaleString()}</strong>
-                  <span className="customer-edit-stat__hint">最近 100 筆加總</span>
+                  <span className="customer-edit-stat__label">合計應收</span>
+                  <strong className="customer-edit-stat__value">$ {moneyText(customerOrderStats.totalAmount)}</strong>
+                  <span className="customer-edit-stat__hint">含稅 · 最近 100 筆加總</span>
                 </div>
               </div>
 
@@ -2466,7 +2243,7 @@ export default function DataCustomersPage() {
                             <span className="customer-order-card__no mono-text">{o.orderNo}</span>
                             <span className={orderStatusBadgeClass(o.status)}>{orderStatusLabel(o.status)}</span>
                           </div>
-                          <strong className="customer-order-card__amount">$ {Number(o.totalAmount).toLocaleString()}</strong>
+                          <strong className="customer-order-card__amount">$ {moneyText(customerOrderBillableAmount(o))}</strong>
                         </div>
                         <dl className="customer-order-card__meta">
                           <dt>送貨日</dt>
@@ -2524,9 +2301,11 @@ export default function DataCustomersPage() {
                 </ul>
               )}
             </div>
-          ) : null}
-        </section>
-      ) : null}
-    </>
+              ) : null}
+            </div>
+          )}
+        </main>
+      </div>
+    </section>
   );
 }

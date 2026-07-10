@@ -71,6 +71,15 @@ async function columnExists(prisma: PrismaClient, table: string, column: string)
   return Number(rows[0]?.cnt ?? 0) > 0;
 }
 
+async function indexExists(prisma: PrismaClient, table: string, indexName: string): Promise<boolean> {
+  const rows = await prisma.$queryRaw<{ cnt: bigint }[]>`
+    SELECT COUNT(*) AS cnt
+    FROM information_schema.statistics
+    WHERE table_schema = DATABASE() AND table_name = ${table} AND index_name = ${indexName}
+  `;
+  return Number(rows[0]?.cnt ?? 0) > 0;
+}
+
 type MigrationProbe = (prisma: PrismaClient) => Promise<boolean>;
 
 const MIGRATION_PROBES: Record<string, MigrationProbe> = {
@@ -97,6 +106,9 @@ const MIGRATION_PROBES: Record<string, MigrationProbe> = {
   "026_barrel_pickups.sql": (p) => tableExists(p, "barrel_pickups"),
   "027_order_announcements.sql": (p) => tableExists(p, "order_announcements"),
   "028_expense_vouchers.sql": (p) => tableExists(p, "expense_vouchers"),
+  "029_tax_invoices_extended.sql": (p) => columnExists(p, "tax_invoices", "external_invoice_no"),
+  "030_floor_delivery_bonus.sql": (p) => tableExists(p, "floor_delivery_bonus_records"),
+  "031_floor_bonus_multiple_records.sql": (p) => indexExists(p, "floor_delivery_bonus_records", "idx_floor_bonus_line_assignment_floor"),
 };
 
 async function bootstrapFromExistingDb(prisma: PrismaClient): Promise<void> {

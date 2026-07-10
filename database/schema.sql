@@ -288,6 +288,7 @@ CREATE TABLE `delivery_addresses` (
   `customer_id` BIGINT UNSIGNED NOT NULL,
   `label` VARCHAR(100) NULL DEFAULT NULL COMMENT '例如：總公司、倉庫',
   `address_line` VARCHAR(500) NOT NULL,
+  `delivery_floor` SMALLINT NULL DEFAULT NULL COMMENT '送貨樓層（1=一樓, 2=二樓, -1=地下一樓；NULL=未設定）',
   `contact_name` VARCHAR(100) NULL DEFAULT NULL,
   `contact_phone` VARCHAR(32) NULL DEFAULT NULL,
   `contact_mobile` VARCHAR(32) NULL DEFAULT NULL COMMENT '現場手機',
@@ -491,6 +492,7 @@ CREATE TABLE `delivery_assignments` (
   `driver_reported_at` DATETIME(3) NULL DEFAULT NULL COMMENT '司機回報配送結果時間',
   `empty_barrels_returned` INT NOT NULL DEFAULT 0 COMMENT '回收空桶數',
   `cash_received` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '現場收款',
+  `check_received` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '現場收支票',
   `settlement_outcome` VARCHAR(40) NULL DEFAULT NULL COMMENT 'not_delivered,delivered_cash_exact,delivered_cash_short,delivered_cash_over,delivered_no_cash',
   `failure_reason` TEXT NULL COMMENT '未送達原因',
   `expected_amount` DECIMAL(14,2) NULL DEFAULT NULL COMMENT '結案時訂單應收',
@@ -522,6 +524,34 @@ CREATE TABLE `delivery_events` (
   KEY `fk_de_assignment` (`delivery_assignment_id`),
   CONSTRAINT `fk_de_assignment` FOREIGN KEY (`delivery_assignment_id`) REFERENCES `delivery_assignments` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `floor_delivery_bonus_records` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `delivery_assignment_id` BIGINT UNSIGNED NOT NULL,
+  `sales_order_id` BIGINT UNSIGNED NOT NULL,
+  `sales_order_line_id` BIGINT UNSIGNED NOT NULL,
+  `order_no` VARCHAR(40) NOT NULL,
+  `delivery_date` DATE NOT NULL COMMENT '實際配送日（assignment_date）',
+  `driver_id` BIGINT UNSIGNED NOT NULL,
+  `product_id` BIGINT UNSIGNED NOT NULL,
+  `product_name` VARCHAR(200) NOT NULL COMMENT '商品名稱快照',
+  `qty` INT UNSIGNED NOT NULL COMMENT '上樓搬運桶數（使用者填寫）',
+  `floor` SMALLINT NOT NULL COMMENT '搬運樓層（>=2 或地下樓）',
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  KEY `idx_floor_bonus_line_assignment_floor` (`delivery_assignment_id`, `sales_order_line_id`, `floor`),
+  KEY `idx_floor_bonus_delivery_date` (`delivery_date`),
+  KEY `idx_floor_bonus_driver_date` (`driver_id`, `delivery_date`),
+  KEY `fk_floor_bonus_assignment` (`delivery_assignment_id`),
+  KEY `fk_floor_bonus_order` (`sales_order_id`),
+  KEY `fk_floor_bonus_driver` (`driver_id`),
+  KEY `fk_floor_bonus_product` (`product_id`),
+  CONSTRAINT `fk_floor_bonus_assignment` FOREIGN KEY (`delivery_assignment_id`) REFERENCES `delivery_assignments` (`id`),
+  CONSTRAINT `fk_floor_bonus_order` FOREIGN KEY (`sales_order_id`) REFERENCES `sales_orders` (`id`),
+  CONSTRAINT `fk_floor_bonus_line` FOREIGN KEY (`sales_order_line_id`) REFERENCES `sales_order_lines` (`id`),
+  CONSTRAINT `fk_floor_bonus_driver` FOREIGN KEY (`driver_id`) REFERENCES `drivers` (`id`),
+  CONSTRAINT `fk_floor_bonus_product` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='二樓以上搬運獎金紀錄';
 
 CREATE TABLE `payments` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -646,16 +676,21 @@ CREATE TABLE `ar_documents` (
 CREATE TABLE `tax_invoices` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `invoice_no` VARCHAR(40) NOT NULL,
+  `external_invoice_no` VARCHAR(20) NULL DEFAULT NULL COMMENT '實際發票號碼（財務系統開出）',
   `customer_id` BIGINT UNSIGNED NOT NULL,
-  `basis_type` VARCHAR(24) NOT NULL COMMENT 'billing_statement | sales_order',
+  `basis_type` VARCHAR(24) NOT NULL COMMENT 'billing_statement | sales_order | prepayment_topup',
   `billing_statement_id` BIGINT UNSIGNED NULL DEFAULT NULL,
   `sales_order_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `receipt_voucher_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT '獨立儲值開票來源',
   `invoice_mode` VARCHAR(32) NOT NULL DEFAULT 'tax_exclusive',
   `untaxed_amount` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
   `tax_amount` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
   `total_amount` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+  `buyer_tax_id` VARCHAR(16) NULL DEFAULT NULL COMMENT '開票當下買方統編',
+  `buyer_name` VARCHAR(120) NULL DEFAULT NULL COMMENT '開票當下抬頭',
+  `note` TEXT NULL DEFAULT NULL COMMENT '備註（載具、捐贈碼等）',
   `tax_rate` DECIMAL(8,6) NOT NULL DEFAULT 0.050000,
-  `status` VARCHAR(24) NOT NULL DEFAULT 'issued',
+  `status` VARCHAR(24) NOT NULL DEFAULT 'planned' COMMENT 'planned=待開票 | issued=已開票 | voided=作廢',
   `issued_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (`id`),
@@ -663,9 +698,13 @@ CREATE TABLE `tax_invoices` (
   KEY `idx_tax_invoices_customer_issued` (`customer_id`, `issued_at`),
   KEY `idx_tax_invoices_billing_statement` (`billing_statement_id`),
   KEY `idx_tax_invoices_sales_order` (`sales_order_id`),
+  KEY `idx_tax_invoices_external_no` (`external_invoice_no`),
+  KEY `idx_tax_invoices_status` (`status`),
+  KEY `fk_tax_invoices_receipt_voucher` (`receipt_voucher_id`),
   CONSTRAINT `fk_tax_invoices_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
   CONSTRAINT `fk_tax_invoices_billing_statement` FOREIGN KEY (`billing_statement_id`) REFERENCES `billing_statements` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
-  CONSTRAINT `fk_tax_invoices_sales_order` FOREIGN KEY (`sales_order_id`) REFERENCES `sales_orders` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+  CONSTRAINT `fk_tax_invoices_sales_order` FOREIGN KEY (`sales_order_id`) REFERENCES `sales_orders` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_tax_invoices_receipt_voucher` FOREIGN KEY (`receipt_voucher_id`) REFERENCES `receipt_vouchers` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='發票主檔（憑證資訊；AR 仍為未稅本金）';
 
 CREATE TABLE `ar_open_items` (

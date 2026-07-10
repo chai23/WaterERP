@@ -8,6 +8,8 @@ export type Address = {
   isDefault?: boolean;
   /** 此送貨點未收回空桶數 */
   barrelsOnSite?: number;
+  /** 送貨樓層（1=一樓, 2=二樓, -1=地下一樓） */
+  deliveryFloor?: number | null;
 };
 
 /** 加總客戶各送貨地址未收回空桶（相容舊 barrelsOnSite 欄位） */
@@ -30,6 +32,37 @@ export function fmtLocalYmd(value: unknown): string {
   const d = new Date(raw);
   if (Number.isNaN(d.getTime())) return raw.slice(0, 10) || "—";
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+/** 表格用：將日期時間拆成 { date: YYYY-MM-DD, time: HH:mm } */
+export function splitLocalDateTime(value: unknown): { date: string; time: string } | null {
+  if (value == null || value === "") return null;
+  const raw = String(value).trim();
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) {
+    const m = raw.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})/);
+    if (m) return { date: m[1], time: m[2] };
+    return null;
+  }
+  return {
+    date: fmtLocalYmd(d),
+    time: `${pad2(d.getHours())}:${pad2(d.getMinutes())}`,
+  };
+}
+
+/** CSV／匯出用：YYYY-MM-DD HH:mm（不含秒） */
+export function fmtLocalDateTimeShort(value: unknown): string {
+  const parts = splitLocalDateTime(value);
+  if (!parts) return "—";
+  return `${parts.date} ${parts.time}`;
+}
+
+/** 表格用：單號尾碼（完整單號請放 title） */
+export function formatOrderNoTail(orderNo: unknown, tailLen = 6): string {
+  if (orderNo == null || orderNo === "") return "";
+  const s = String(orderNo);
+  if (s.length <= tailLen) return s;
+  return s.slice(-tailLen);
 }
 
 export function todayLocalYmd(): string {
@@ -80,6 +113,31 @@ export type Customer = {
   addresses: Address[];
 };
 
+/** 客戶關鍵字搜尋（編號、名稱、聯絡、電話、地址等） */
+export function matchCustomerQuery(c: Customer, q: string): boolean {
+  const haystacks = [
+    c.customerCode,
+    c.name,
+    c.contactName,
+    c.phone,
+    c.mobile,
+    c.taxId,
+    c.addressZone?.name,
+    c.affiliatedCompany?.name,
+    c.standingRemark,
+    c.notes,
+    String(c.id),
+    ...(c.addresses ?? []).flatMap((a) => [
+      a.label,
+      a.addressLine,
+      a.contactName,
+      a.contactPhone,
+      a.contactMobile,
+    ]),
+  ];
+  return haystacks.some((v) => (v ?? "").toLowerCase().includes(q));
+}
+
 /** GET /api/customers/:id 含訂單明細 */
 export type CustomerSalesOrderLine = {
   id: string;
@@ -99,6 +157,8 @@ export type CustomerSalesOrder = {
   status: string;
   scheduledDeliveryDate?: string | null;
   totalAmount: string;
+  /** 本單應收（現金含稅＋月結份額）；API 計算 */
+  orderBillableAmount?: string;
   remark?: string | null;
   billingTypeAtOrder?: string | null;
   billingPeriodKey?: string | null;
@@ -377,6 +437,65 @@ export function orderStatusBadgeClass(status: string): string {
     default:
       return "badge badge--default";
   }
+}
+
+export function orderStatusLabel(status: string | null | undefined): string {
+  switch (status) {
+    case "draft":
+      return "草稿";
+    case "confirmed":
+      return "已確認";
+    case "assigned":
+      return "已分派";
+    case "delivering":
+      return "配送中";
+    case "completed":
+      return "已完成";
+    case "not_delivered":
+      return "未送達";
+    case "cancelled":
+      return "已取消";
+    default:
+      return status ?? "—";
+  }
+}
+
+export function linePurposeLabel(purpose: string | null | undefined): string {
+  return purpose === "prepaid_barrel_topup" ? "預付桶儲值" : "一般出貨";
+}
+
+export function lineBillingTypeLabel(code: string | null | undefined): string {
+  switch (code) {
+    case "monthly":
+      return "月結";
+    case "prepaid":
+      return "預付（桶）";
+    case "cash":
+      return "現金";
+    default:
+      return "—";
+  }
+}
+
+/** 同單同商品儲值時，預付出貨列不計入訂單應收（與後端 computeOrderTotals 一致） */
+export function lineExcludedFromOrderTotal(
+  line: { linePurpose?: string | null; billingTypeAtLine?: string | null; productId?: unknown },
+  allLines: Array<{ linePurpose?: string | null; productId?: unknown }>,
+): boolean {
+  const purpose = line.linePurpose ?? "delivery";
+  if (purpose !== "delivery" || line.billingTypeAtLine !== "prepaid") return false;
+  const pid = line.productId != null ? String(line.productId) : "";
+  if (!pid) return false;
+  return allLines.some(
+    (l) => (l.linePurpose ?? "delivery") === "prepaid_barrel_topup" && String(l.productId ?? "") === pid,
+  );
+}
+
+export function moneyText(value: unknown): string {
+  if (value == null || value === "") return "—";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value);
+  return n.toLocaleString("zh-TW", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 }
 
 export function healthLedClass(raw: string): string {

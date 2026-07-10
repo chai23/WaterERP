@@ -114,8 +114,17 @@ type JobFormState = {
   failureReason: string;
   emptyBarrelsReturned: number;
   cashReceived: number;
+  checkReceived: number;
   note: string;
   lineQtyDelivered: Record<string, number>;
+  floorBonusRecords: FloorBonusRecordForm[];
+};
+
+type FloorBonusRecordForm = {
+  key: string;
+  lineId: string;
+  floor: string;
+  qty: string;
 };
 
 type OrderLineRow = {
@@ -123,7 +132,7 @@ type OrderLineRow = {
   qtyOrdered?: number;
   qtyDelivered?: number;
   linePurpose?: string | null;
-  product?: { name?: string; code?: string };
+  product?: { name?: string; code?: string; consumesPrepaidBarrel?: boolean };
 };
 
 type DriverJob = {
@@ -133,20 +142,71 @@ type DriverJob = {
   failureReason?: string | null;
   emptyBarrelsReturned?: number;
   cashReceived?: unknown;
+  checkReceived?: unknown;
   settlementNote?: string | null;
   salesOrder?: {
     orderNo?: string;
     totalAmount?: unknown;
     customer?: { name?: string };
-    deliveryAddress?: { addressLine?: string };
+    deliveryAddress?: { addressLine?: string; deliveryFloor?: number | null };
     lines?: OrderLineRow[];
   };
   vehicle?: { plateNo?: string };
   driverBillingHints?: Record<string, unknown>;
+  floorBonusRecords?: Array<{
+    id?: string;
+    salesOrderLineId?: string;
+    productName?: string;
+    floor?: number;
+    qty?: number;
+  }>;
 };
 
 function deliveryLinesFromJob(job: DriverJob): OrderLineRow[] {
   return (job.salesOrder?.lines ?? []).filter((l) => (l.linePurpose ?? "delivery") === "delivery");
+}
+
+function floorBonusLinesFromJob(job: DriverJob): OrderLineRow[] {
+  return deliveryLinesFromJob(job).filter((line) => line.product?.consumesPrepaidBarrel === true);
+}
+
+function isFloorBonusEligible(floor: number): boolean {
+  return floor >= 2 || floor < 0;
+}
+
+function formatFloor(floor: number | null | undefined): string {
+  if (floor == null) return "未設定";
+  if (floor < 0) return `地下${Math.abs(floor)}樓`;
+  return `${floor}樓`;
+}
+
+function buildFloorBonusRecordsFromJob(job?: DriverJob): FloorBonusRecordForm[] {
+  if (!job?.floorBonusRecords?.length) return [];
+  return job.floorBonusRecords.map((r, idx) => ({
+    key: String(r.id ?? `${r.salesOrderLineId ?? "line"}-${r.floor ?? "floor"}-${idx}`),
+    lineId: String(r.salesOrderLineId ?? ""),
+    floor: r.floor != null ? String(r.floor) : "",
+    qty: r.qty != null ? String(r.qty) : "",
+  }));
+}
+
+function validateFloorBonusRecords(records: FloorBonusRecordForm[]): { ok: true; records: Array<{ lineId: string; floor: number; qty: number }> } | { ok: false; message: string } {
+  const out: Array<{ lineId: string; floor: number; qty: number }> = [];
+  for (const r of records) {
+    const hasFloorOrQty = r.floor.trim() || r.qty.trim();
+    if (!hasFloorOrQty) continue;
+    const floor = Math.floor(Number(r.floor));
+    const qty = Math.floor(Number(r.qty));
+    if (!r.lineId || !Number.isFinite(floor) || floor === 0 || !Number.isFinite(qty) || qty < 0) {
+      return { ok: false, message: "搬運紀錄請填完整：商品、有效樓層與非負整數桶數。" };
+    }
+    if (qty === 0) continue;
+    if (!isFloorBonusEligible(floor)) {
+      return { ok: false, message: "搬運樓層僅二樓以上或地下樓可計入；一樓請不要填搬運紀錄。" };
+    }
+    out.push({ lineId: r.lineId, floor, qty });
+  }
+  return { ok: true, records: out };
 }
 
 function buildLineQtyFromJob(job: DriverJob): Record<string, number> {
@@ -169,8 +229,10 @@ const defaultJobForm = (job?: DriverJob): JobFormState => ({
   failureReason: "",
   emptyBarrelsReturned: 0,
   cashReceived: 0,
+  checkReceived: 0,
   note: "",
   lineQtyDelivered: job ? buildLineQtyFromJob(job) : {},
+  floorBonusRecords: buildFloorBonusRecordsFromJob(job),
 });
 
 /** 從伺服器任務帶入表單（待核銷時可修正回報） */
@@ -182,8 +244,10 @@ function jobFormFromServer(job: DriverJob): JobFormState {
       failureReason: notDelivered ? String(job.failureReason ?? "") : "",
       emptyBarrelsReturned: Math.max(0, Math.floor(Number(job.emptyBarrelsReturned ?? 0))),
       cashReceived: Number(job.cashReceived ?? 0) || 0,
+      checkReceived: Number(job.checkReceived ?? 0) || 0,
       note: String(job.settlementNote ?? ""),
       lineQtyDelivered: buildLineQtyFromJob(job),
+      floorBonusRecords: buildFloorBonusRecordsFromJob(job),
     };
   }
   return defaultJobForm(job);
@@ -377,6 +441,13 @@ export default function App() {
       setMessage("未送達時請填寫原因。");
       return;
     }
+    const floorBonusPayload = form.delivered
+      ? validateFloorBonusRecords(form.floorBonusRecords)
+      : ({ ok: true, records: [] } as const);
+    if (!floorBonusPayload.ok) {
+      setMessage(floorBonusPayload.message);
+      return;
+    }
     setMessage("");
     setSavingId(assignmentId);
     try {
@@ -389,8 +460,10 @@ export default function App() {
           failureReason: form.delivered ? "" : form.failureReason,
           emptyBarrelsReturned: form.delivered ? form.emptyBarrelsReturned : 0,
           cashReceived: form.delivered ? form.cashReceived : 0,
+          checkReceived: form.delivered ? form.checkReceived : 0,
           note: form.note,
           reportedAtYmd: driverReportDate,
+          floorBonusRecords: floorBonusPayload.records,
         }),
       });
       const payload = await res.json();
@@ -785,6 +858,102 @@ export default function App() {
                           </div>
                         </div>
                       ) : null}
+                      {floorBonusLinesFromJob(job as DriverJob).length > 0 ? (
+                        <div style={{ marginBottom: "0.65rem", padding: "0.55rem", border: "1px dashed var(--d-border-strong)", borderRadius: 8 }}>
+                          <div style={{ fontSize: "0.84rem", marginBottom: "0.35rem" }}>
+                            <strong>搬運紀錄</strong>
+                            <span style={{ color: "var(--d-muted)", marginLeft: "0.35rem", fontSize: "0.78rem" }}>
+                              （二樓以上或地下樓才填；可新增多筆）
+                            </span>
+                          </div>
+                          <div style={{ fontSize: "0.78rem", color: "var(--d-muted)", marginBottom: "0.4rem" }}>
+                            送貨點主檔樓層：{formatFloor((job as DriverJob).salesOrder?.deliveryAddress?.deliveryFloor)}
+                          </div>
+                          {form.floorBonusRecords.map((record) => (
+                            <div key={record.key} style={{ display: "grid", gridTemplateColumns: "minmax(8rem, 1fr) 4.5rem 4.5rem auto", gap: "0.4rem", alignItems: "center", marginBottom: "0.35rem" }}>
+                              <select
+                                value={record.lineId}
+                                onChange={(e) =>
+                                  updateForm(id, {
+                                    floorBonusRecords: form.floorBonusRecords.map((r) =>
+                                      r.key === record.key ? { ...r, lineId: e.target.value } : r,
+                                    ),
+                                  })
+                                }
+                              >
+                                <option value="">商品</option>
+                                {floorBonusLinesFromJob(job as DriverJob).map((line) => (
+                                  <option key={String(line.id)} value={String(line.id)}>
+                                    {line.product?.name ?? "商品"}
+                                  </option>
+                                ))}
+                              </select>
+                              <input
+                                type="number"
+                                step={1}
+                                value={record.floor}
+                                onChange={(e) =>
+                                  updateForm(id, {
+                                    floorBonusRecords: form.floorBonusRecords.map((r) =>
+                                      r.key === record.key ? { ...r, floor: e.target.value } : r,
+                                    ),
+                                  })
+                                }
+                                placeholder="樓層"
+                                aria-label="搬運樓層"
+                              />
+                              <input
+                                type="number"
+                                min={0}
+                                step={1}
+                                value={record.qty}
+                                onChange={(e) =>
+                                  updateForm(id, {
+                                    floorBonusRecords: form.floorBonusRecords.map((r) =>
+                                      r.key === record.key ? { ...r, qty: e.target.value } : r,
+                                    ),
+                                  })
+                                }
+                                placeholder="桶數"
+                                aria-label="搬運桶數"
+                              />
+                              <button
+                                type="button"
+                                className="d-btn d-btn--ghost"
+                                onClick={() =>
+                                  updateForm(id, {
+                                    floorBonusRecords: form.floorBonusRecords.filter((r) => r.key !== record.key),
+                                  })
+                                }
+                              >
+                                移除
+                              </button>
+                            </div>
+                          ))}
+                          <button
+                            type="button"
+                            className="d-btn d-btn--ghost"
+                            onClick={() =>
+                              updateForm(id, {
+                                floorBonusRecords: [
+                                  ...form.floorBonusRecords,
+                                  {
+                                    key: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                                    lineId: String(floorBonusLinesFromJob(job as DriverJob)[0]?.id ?? ""),
+                                    floor:
+                                      (job as DriverJob).salesOrder?.deliveryAddress?.deliveryFloor != null
+                                        ? String((job as DriverJob).salesOrder?.deliveryAddress?.deliveryFloor)
+                                        : "",
+                                    qty: "",
+                                  },
+                                ],
+                              })
+                            }
+                          >
+                            ＋ 新增搬運紀錄
+                          </button>
+                        </div>
+                      ) : null}
                       <label className="d-inline">
                         空桶回收
                         <input
@@ -795,7 +964,7 @@ export default function App() {
                         />
                       </label>
                       <label className="d-inline">
-                        現場收款
+                        現場現金
                         <input
                           type="number"
                           min={0}
@@ -804,8 +973,18 @@ export default function App() {
                           onChange={(e) => updateForm(id, { cashReceived: Number(e.target.value) || 0 })}
                         />
                       </label>
+                      <label className="d-inline">
+                        現場支票
+                        <input
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          value={form.checkReceived}
+                          onChange={(e) => updateForm(id, { checkReceived: Number(e.target.value) || 0 })}
+                        />
+                      </label>
                     <p style={{ margin: 0, fontSize: "0.78rem", color: "var(--d-muted)" }}>
-                      請以<strong>建議收款總額</strong>與<strong>現場收款</strong>比對；系統會自動分類少收／多收／足額。實際沖帳以辦公室核銷為準。
+                      請以<strong>建議收款總額</strong>與<strong>現金＋支票合計</strong>比對；系統會自動分類少收／多收／足額。實際沖帳以辦公室核銷為準。
                       {pendingOffice ? (
                         <>
                           {" "}

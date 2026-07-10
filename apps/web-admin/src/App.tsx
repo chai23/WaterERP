@@ -22,6 +22,7 @@ import DataVehiclesPage from "./pages/DataVehiclesPage";
 import DataUsersPage from "./pages/DataUsersPage";
 import ReportDailyPage from "./pages/ReportDailyPage";
 import ReportMonthlyPage from "./pages/ReportMonthlyPage";
+import DriverDailyCollectionReportPage from "./pages/DriverDailyCollectionReportPage";
 import BillingArPage from "./pages/BillingArPage";
 import SettingsPromotionsPage from "./pages/SettingsPromotionsPage";
 import SettingsPermissionsPage from "./pages/SettingsPermissionsPage";
@@ -35,6 +36,8 @@ import ExpenseTodayPage from "./pages/ExpenseTodayPage";
 import ExpenseVerifyPage from "./pages/ExpenseVerifyPage";
 import ExpenseReportsPage from "./pages/ExpenseReportsPage";
 import SettingsExpenseCategoriesPage from "./pages/SettingsExpenseCategoriesPage";
+import FloorDeliveryBonusQueryPage from "./pages/FloorDeliveryBonusQueryPage";
+import TaxInvoiceQueryPage from "./pages/TaxInvoiceQueryPage";
 
 function ProtectedShell() {
   const { user, loading } = useAuth();
@@ -63,6 +66,7 @@ export default function App() {
               <Route path="orders/assign" element={<OrderAssignPage />} />
               <Route path="orders/proxy-report" element={<OrderProxyReportPage />} />
               <Route path="orders/complete" element={<OrderCompletePage />} />
+              <Route path="orders/floor-bonus" element={<FloorDeliveryBonusQueryPage />} />
               <Route path="orders/barrel-pickup/new" element={<BarrelPickupNewPage />} />
               <Route path="orders/barrel-pickup/settle" element={<BarrelPickupSettlePage />} />
               <Route path="orders/barrel-pickup/query" element={<BarrelPickupQueryPage />} />
@@ -87,7 +91,9 @@ export default function App() {
               <Route path="reports" element={<Navigate to="/reports/daily" replace />} />
               <Route path="reports/daily" element={<ReportDailyPage />} />
               <Route path="reports/monthly" element={<ReportMonthlyPage />} />
+              <Route path="reports/driver-daily" element={<DriverDailyCollectionReportPage />} />
               <Route path="reports/billing-ar" element={<BillingArPage />} />
+              <Route path="reports/tax-invoices" element={<TaxInvoiceQueryPage />} />
               <Route path="reports/billing-monthly" element={<Navigate to="/reports/billing-ar" replace />} />
 
               <Route path="settings" element={<Navigate to="/settings/promotions" replace />} />

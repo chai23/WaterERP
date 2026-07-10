@@ -327,7 +327,7 @@ async function voidArForCancelledSalesOrder(tx: Prisma.TransactionClient, salesO
     });
   }
   await tx.taxInvoice.updateMany({
-    where: { salesOrderId, status: "issued" },
+    where: { salesOrderId, status: { in: ["planned", "issued"] } },
     data: { status: "voided" },
   });
 }
@@ -468,8 +468,25 @@ function effectiveLineDeliveryQty(line: {
   return line.qtyOrdered;
 }
 
+function lineCountsInOrderTotal(
+  line: { billingTypeAtLine: string | null; linePurpose?: string | null; productId?: bigint },
+  allLines: Array<{ linePurpose?: string | null; productId?: bigint }>,
+): boolean {
+  const purpose = line.linePurpose ?? "delivery";
+  if (purpose !== "delivery" || line.billingTypeAtLine !== "prepaid") return true;
+  if (line.productId == null) return true;
+  return !allLines.some(
+    (l) => (l.linePurpose ?? "delivery") === "prepaid_barrel_topup" && l.productId === line.productId,
+  );
+}
+
 function computeOrderTotalsFromLineAmounts(
-  lines: Array<{ lineAmount: Prisma.Decimal; billingTypeAtLine: string | null }>,
+  lines: Array<{
+    lineAmount: Prisma.Decimal;
+    billingTypeAtLine: string | null;
+    linePurpose?: string | null;
+    productId?: bigint;
+  }>,
 ): {
   subtotal: Prisma.Decimal;
   cashSubtotal: Prisma.Decimal;
@@ -480,6 +497,7 @@ function computeOrderTotalsFromLineAmounts(
   let cashSubtotal = new Prisma.Decimal(0);
   let monthlySubtotal = new Prisma.Decimal(0);
   for (const line of lines) {
+    if (!lineCountsInOrderTotal(line, lines)) continue;
     subtotal = subtotal.add(line.lineAmount);
     if (line.billingTypeAtLine === "cash") cashSubtotal = cashSubtotal.add(line.lineAmount);
     else if (line.billingTypeAtLine === "monthly") monthlySubtotal = monthlySubtotal.add(line.lineAmount);
@@ -487,7 +505,63 @@ function computeOrderTotalsFromLineAmounts(
   return { subtotal, cashSubtotal, monthlySubtotal, totalAmount: subtotal };
 }
 
-/** 依回報後訂單金額重建未沖帳 AR／現金發票試算（配送回報修正金額用） */
+/** 本單應向客戶收取之金額（現金應收含稅＋月結份額） */
+function orderBillableAmount(o: {
+  cashSubtotal?: Prisma.Decimal | { toString(): string } | null;
+  totalAmount: Prisma.Decimal | { toString(): string };
+  billingTypeAtOrder: string | null;
+  cashInvoiceMode?: string | null;
+  monthlySubtotal?: Prisma.Decimal | { toString(): string } | null;
+}): Prisma.Decimal {
+  return orderCashReceivablePortion(o).plus(orderMonthlyCap(o));
+}
+
+/** 司機回報之現場收款合計（現金＋支票） */
+function assignmentFieldCollectedTotal(row: {
+  cashReceived: Prisma.Decimal | number | { toString(): string };
+  checkReceived?: Prisma.Decimal | number | { toString(): string } | null;
+}): Prisma.Decimal {
+  return new Prisma.Decimal(String(row.cashReceived ?? 0)).plus(new Prisma.Decimal(String(row.checkReceived ?? 0)));
+}
+
+function driverCollectionStatusLabel(args: {
+  status: string;
+  settlementOutcome: string | null;
+  failureReason?: string | null;
+  expectedAmount: number;
+  collectedTotal: number;
+}): string {
+  if (args.status === "cancelled") return "已取消";
+  if (args.status === "assigned" || args.status === "delivering") return "配送中（尚未回報）";
+  if (args.settlementOutcome === "not_delivered" || args.status === "not_delivered") {
+    return args.failureReason?.trim() ? `未送達：${args.failureReason.trim()}` : "未送達";
+  }
+  const exp = args.expectedAmount;
+  const got = args.collectedTotal;
+  if (exp <= 0 && got <= 0) {
+    return args.status === "completed" ? "已結案·無現金應收" : "無現金應收（待核銷）";
+  }
+  if (args.status === "pending_settlement") {
+    if (got === exp) return "回報足額·待核銷";
+    if (got < exp) return `回報少收 ${(exp - got).toFixed(0)}·待核銷`;
+    if (got > exp) return `回報多收 ${(got - exp).toFixed(0)}·待核銷`;
+    return "待核銷";
+  }
+  switch (args.settlementOutcome) {
+    case "delivered_cash_exact":
+      return "已結案·足額";
+    case "delivered_cash_short":
+      return "已結案·少收";
+    case "delivered_cash_over":
+      return "已結案·多收";
+    case "delivered_no_cash":
+      return "已結案·未收款";
+    default:
+      return "已結案";
+  }
+}
+
+/** 依回報後訂單金額重建未沖帳 AR；待開票發票僅就地更新，不作廢重建（實務上多於核銷後才開票） */
 async function refreshOpenArForSalesOrder(
   tx: Prisma.TransactionClient,
   args: {
@@ -503,38 +577,53 @@ async function refreshOpenArForSalesOrder(
     cashInvoiceMode?: string | null;
   },
 ): Promise<void> {
+  const mode = normalizeCashInvoiceMode(args.cashInvoiceMode ?? "none");
+  const cashUntaxedBase = args.cashSubtotal.greaterThan(0)
+    ? args.cashSubtotal
+    : (args.billingTypeAtOrder === "cash" ? args.totalAmount : new Prisma.Decimal(0));
+  const cashBreakdown = breakdownCashTaxInvoice(cashUntaxedBase, mode);
+  const expectedCashPortion = cashBreakdown ? cashBreakdown.totalWithTax : cashUntaxedBase;
   const docs = await tx.arDocument.findMany({
     where: { salesOrderId: args.salesOrderId, status: { not: "voided" } },
     include: { openItems: { include: { allocations: true } } },
   });
-  for (const d of docs) {
-    for (const oi of d.openItems) {
-      if (oi.allocations.length > 0 || new Prisma.Decimal(oi.allocatedAmount).greaterThan(0)) {
-        throw new Error("AR_ALREADY_ALLOCATED");
+  const arUnchanged =
+    expectedCashPortion.greaterThan(0)
+      ? docs.length === 1 &&
+        docs[0].billingType === "cash" &&
+        new Prisma.Decimal(docs[0].documentAmount).equals(expectedCashPortion) &&
+        docs[0].openItems.length === 1 &&
+        new Prisma.Decimal(docs[0].openItems[0].originalAmount).equals(expectedCashPortion) &&
+        new Prisma.Decimal(docs[0].openItems[0].outstandingAmount).equals(expectedCashPortion) &&
+        new Prisma.Decimal(docs[0].openItems[0].allocatedAmount).equals(0)
+      : docs.length === 0;
+
+  if (!arUnchanged) {
+    for (const d of docs) {
+      for (const oi of d.openItems) {
+        if (oi.allocations.length > 0 || new Prisma.Decimal(oi.allocatedAmount).greaterThan(0)) {
+          throw new Error("AR_ALREADY_ALLOCATED");
+        }
+        await tx.arOpenItem.update({
+          where: { id: oi.id },
+          data: {
+            outstandingAmount: new Prisma.Decimal(0),
+            status: "paid",
+          },
+        });
       }
-      await tx.arOpenItem.update({
-        where: { id: oi.id },
-        data: {
-          outstandingAmount: new Prisma.Decimal(0),
-          status: "paid",
-        },
+      await tx.arDocument.update({
+        where: { id: d.id },
+        data: { status: "voided" },
       });
     }
-    await tx.arDocument.update({
-      where: { id: d.id },
-      data: { status: "voided" },
-    });
+    await createArForSalesOrder(tx, args);
   }
-  await tx.taxInvoice.updateMany({
-    where: { salesOrderId: args.salesOrderId, status: "issued" },
-    data: { status: "voided" },
-  });
-  await createArForSalesOrder(tx, args);
-  const cashInvoiceMode = normalizeCashInvoiceMode(args.cashInvoiceMode ?? "none");
-  await createCashTaxInvoiceIfNeeded(tx, {
+
+  await syncPlannedCashTaxInvoice(tx, {
     customerId: args.customerId,
     salesOrderId: args.salesOrderId,
-    cashInvoiceMode,
+    cashInvoiceMode: mode,
     cashSubtotal: args.cashSubtotal,
   });
 }
@@ -611,7 +700,12 @@ async function applyLineDeliveriesAtReport(
 ): Promise<void> {
   const dbLines = await tx.salesOrderLine.findMany({ where: { salesOrderId: order.id } });
   const deliveryMap = new Map(lineDeliveries.map((l) => [l.lineId.toString(), l.qtyDelivered]));
-  const lineAmountRows: Array<{ lineAmount: Prisma.Decimal; billingTypeAtLine: string | null }> = [];
+  const lineAmountRows: Array<{
+    lineAmount: Prisma.Decimal;
+    billingTypeAtLine: string | null;
+    linePurpose?: string | null;
+    productId?: bigint;
+  }> = [];
 
   for (const line of dbLines) {
     const purpose = line.linePurpose ?? "delivery";
@@ -623,11 +717,13 @@ async function applyLineDeliveriesAtReport(
         where: { id: line.id },
         data: { qtyDelivered, lineAmount },
       });
-      lineAmountRows.push({ lineAmount, billingTypeAtLine: line.billingTypeAtLine });
+      lineAmountRows.push({ lineAmount, billingTypeAtLine: line.billingTypeAtLine, linePurpose: purpose, productId: line.productId });
     } else {
       lineAmountRows.push({
         lineAmount: new Prisma.Decimal(line.lineAmount.toString()),
         billingTypeAtLine: line.billingTypeAtLine,
+        linePurpose: purpose,
+        productId: line.productId,
       });
     }
   }
@@ -774,11 +870,57 @@ function normalizeLinePurpose(raw: unknown): "delivery" | "prepaid_barrel_topup"
   return raw === "prepaid_barrel_topup" ? "prepaid_barrel_topup" : "delivery";
 }
 
+/** 彙總訂單明細：預付桶儲值（依商品） */
+function sumPrepaidTopupByProduct(
+  lines: Array<{ productId: bigint; qty: number; linePurpose?: string | null }>,
+): Map<bigint, number> {
+  const m = new Map<bigint, number>();
+  for (const l of lines) {
+    if ((l.linePurpose ?? "delivery") !== "prepaid_barrel_topup") continue;
+    m.set(l.productId, (m.get(l.productId) ?? 0) + l.qty);
+  }
+  return m;
+}
+
+async function adjustCustomerPrepaidProductBalance(
+  tx: Prisma.TransactionClient,
+  customerId: bigint,
+  productId: bigint,
+  delta: number,
+): Promise<void> {
+  if (delta === 0) return;
+  if (delta < 0) {
+    const qty = -delta;
+    const hit = await tx.customerPrepaidProductBalance.updateMany({
+      where: { customerId, productId },
+      data: { balanceBarrels: { decrement: qty } },
+    });
+    if (hit.count === 0) {
+      await tx.customerPrepaidProductBalance.create({
+        data: { customerId, productId, balanceBarrels: -qty },
+      });
+    }
+    return;
+  }
+  await tx.customerPrepaidProductBalance.upsert({
+    where: { customerId_productId: { customerId, productId } },
+    create: { customerId, productId, balanceBarrels: delta },
+    update: { balanceBarrels: { increment: delta } },
+  });
+}
+
 /**
  * 本單「現金」AR 全部沖清後，將 pending_prepaid_topup_barrels 入帳至客戶預付桶餘額（匯款／現金沖帳／預收扣抵皆然）。
+ * 若同單有同商品之預付出貨，與儲值一併以淨額入帳（避免先扣後補造成暫時負餘額）。
  */
 async function tryFulfillPendingPrepaidTopup(tx: Prisma.TransactionClient, salesOrderId: bigint): Promise<void> {
-  const order = await tx.salesOrder.findUnique({ where: { id: salesOrderId } });
+  const order = await tx.salesOrder.findUnique({
+    where: { id: salesOrderId },
+    include: {
+      lines: { include: { product: true } },
+      customer: true,
+    },
+  });
   if (!order || order.pendingPrepaidTopupBarrels <= 0) return;
 
   const cashOpens = await tx.arOpenItem.findMany({
@@ -794,23 +936,34 @@ async function tryFulfillPendingPrepaidTopup(tx: Prisma.TransactionClient, sales
   }
 
   const barrels = order.pendingPrepaidTopupBarrels;
-  const topLines = await tx.salesOrderLine.findMany({
-    where: { salesOrderId, linePurpose: "prepaid_barrel_topup" },
-    include: { product: true },
-  });
-  const parts = topLines.map((l) => `${l.product?.name ?? "商品"} +${l.qtyOrdered}`);
   const topupByProduct = new Map<bigint, number>();
-  for (const l of topLines) {
-    const k = l.productId;
-    topupByProduct.set(k, (topupByProduct.get(k) ?? 0) + l.qtyOrdered);
+  const topupParts: string[] = [];
+  for (const l of order.lines) {
+    if ((l.linePurpose ?? "delivery") !== "prepaid_barrel_topup") continue;
+    topupByProduct.set(l.productId, (topupByProduct.get(l.productId) ?? 0) + l.qtyOrdered);
+    topupParts.push(`${l.product?.name ?? "商品"} +${l.qtyOrdered}`);
   }
 
+  const deferredConsumeByProduct = new Map<bigint, number>();
+  let deferredConsumeTotal = 0;
+  for (const line of order.lines) {
+    if ((line.linePurpose ?? "delivery") === "prepaid_barrel_topup") continue;
+    const qty = effectiveLineDeliveryQty(line);
+    if (qty <= 0) continue;
+    if (lineBillingType(line, order, order.customer) !== "prepaid") continue;
+    if (line.product?.consumesPrepaidBarrel !== true) continue;
+    if ((topupByProduct.get(line.productId) ?? 0) <= 0) continue;
+    deferredConsumeByProduct.set(line.productId, (deferredConsumeByProduct.get(line.productId) ?? 0) + qty);
+    deferredConsumeTotal += qty;
+  }
+
+  const netBarrels = barrels - deferredConsumeTotal;
   const cust = await tx.customer.findUnique({ where: { id: order.customerId } });
   if (!cust) return;
 
   await tx.customer.update({
     where: { id: order.customerId },
-    data: { prepaidBarrelBalance: cust.prepaidBarrelBalance + barrels },
+    data: { prepaidBarrelBalance: cust.prepaidBarrelBalance + netBarrels },
   });
   await tx.customerLedgerEntry.create({
     data: {
@@ -820,22 +973,29 @@ async function tryFulfillPendingPrepaidTopup(tx: Prisma.TransactionClient, sales
       barrelDelta: barrels,
       salesOrderId,
       note:
-        parts.length > 0
-          ? `預付桶儲值 ${barrels}（訂單 ${order.orderNo}，現金應收已沖清）：${parts.join("；")}`
+        topupParts.length > 0
+          ? `預付桶儲值 ${barrels}（訂單 ${order.orderNo}，現金應收已沖清）：${topupParts.join("；")}`
           : `預付桶儲值 ${barrels}（訂單 ${order.orderNo}，現金應收已沖清）`,
       createdByUserId: DEFAULT_CREATOR_USER_ID,
     },
   });
-  for (const [productId, qty] of topupByProduct) {
-    await tx.customerPrepaidProductBalance.upsert({
-      where: { customerId_productId: { customerId: order.customerId, productId } },
-      create: {
+  if (deferredConsumeTotal > 0) {
+    await tx.customerLedgerEntry.create({
+      data: {
         customerId: order.customerId,
-        productId,
-        balanceBarrels: qty,
+        entryType: "prepaid_consumption",
+        amount: new Prisma.Decimal(0),
+        barrelDelta: -deferredConsumeTotal,
+        salesOrderId,
+        note: `預付扣桶 ${deferredConsumeTotal}（訂單 ${order.orderNo}，與本單儲值一併淨額入帳）`,
+        createdByUserId: DEFAULT_CREATOR_USER_ID,
       },
-      update: { balanceBarrels: { increment: qty } },
     });
+  }
+  const productIds = new Set([...topupByProduct.keys(), ...deferredConsumeByProduct.keys()]);
+  for (const productId of productIds) {
+    const net = (topupByProduct.get(productId) ?? 0) - (deferredConsumeByProduct.get(productId) ?? 0);
+    await adjustCustomerPrepaidProductBalance(tx, order.customerId, productId, net);
   }
   await tx.salesOrder.update({
     where: { id: salesOrderId },
@@ -862,7 +1022,58 @@ function breakdownCashTaxInvoice(
 }
 
 /** 現金／混單之現金部分：依 cash_invoice_mode 開立 sales_order 發票紀錄（AR 仍為未稅本金） */
-async function createCashTaxInvoiceIfNeeded(
+type TaxInvoiceBasisType = "sales_order" | "billing_statement" | "prepayment_topup";
+
+async function loadCustomerInvoiceBuyer(tx: Prisma.TransactionClient, customerId: bigint) {
+  const cust = await tx.customer.findUnique({
+    where: { id: customerId },
+    select: { name: true, taxId: true },
+  });
+  return {
+    buyerName: cust?.name ?? null,
+    buyerTaxId: cust?.taxId ?? null,
+  };
+}
+
+async function createTaxInvoicePlanned(
+  tx: Prisma.TransactionClient,
+  args: {
+    customerId: bigint;
+    basisType: TaxInvoiceBasisType;
+    salesOrderId?: bigint | null;
+    billingStatementId?: bigint | null;
+    receiptVoucherId?: bigint | null;
+    invoiceMode: "tax_inclusive" | "tax_exclusive";
+    untaxedAmount: Prisma.Decimal;
+    taxAmount: Prisma.Decimal;
+    totalAmount: Prisma.Decimal;
+    taxRate?: Prisma.Decimal;
+    note?: string | null;
+  },
+) {
+  const buyer = await loadCustomerInvoiceBuyer(tx, args.customerId);
+  return tx.taxInvoice.create({
+    data: {
+      invoiceNo: generateTaxInvoiceNo(),
+      customerId: args.customerId,
+      basisType: args.basisType,
+      billingStatementId: args.billingStatementId ?? null,
+      salesOrderId: args.salesOrderId ?? null,
+      receiptVoucherId: args.receiptVoucherId ?? null,
+      invoiceMode: args.invoiceMode,
+      untaxedAmount: args.untaxedAmount,
+      taxAmount: args.taxAmount,
+      totalAmount: args.totalAmount,
+      taxRate: args.taxRate ?? DEFAULT_VAT_RATE,
+      status: "planned",
+      buyerName: buyer.buyerName,
+      buyerTaxId: buyer.buyerTaxId,
+      note: args.note ?? null,
+    },
+  });
+}
+
+async function syncPlannedCashTaxInvoice(
   tx: Prisma.TransactionClient,
   args: {
     customerId: bigint;
@@ -874,20 +1085,50 @@ async function createCashTaxInvoiceIfNeeded(
 ): Promise<void> {
   const br = breakdownCashTaxInvoice(args.cashSubtotal, args.cashInvoiceMode, args.taxRate);
   if (!br) return;
-  await tx.taxInvoice.create({
-    data: {
-      invoiceNo: generateTaxInvoiceNo(),
-      customerId: args.customerId,
-      basisType: "sales_order",
-      billingStatementId: null,
-      salesOrderId: args.salesOrderId,
-      invoiceMode: args.cashInvoiceMode,
-      untaxedAmount: br.untaxedAmount,
-      taxAmount: br.taxAmount,
-      totalAmount: br.totalWithTax,
-      taxRate: args.taxRate ?? DEFAULT_VAT_RATE,
-      status: "issued",
-    },
+
+  const issued = await tx.taxInvoice.findFirst({
+    where: { salesOrderId: args.salesOrderId, status: "issued", basisType: "sales_order" },
+  });
+  if (issued) return;
+
+  const planned = await tx.taxInvoice.findFirst({
+    where: { salesOrderId: args.salesOrderId, status: "planned", basisType: "sales_order" },
+    orderBy: { id: "desc" },
+  });
+
+  if (planned) {
+    const unchanged =
+      planned.invoiceMode === args.cashInvoiceMode &&
+      new Prisma.Decimal(planned.untaxedAmount).equals(br.untaxedAmount) &&
+      new Prisma.Decimal(planned.taxAmount).equals(br.taxAmount) &&
+      new Prisma.Decimal(planned.totalAmount).equals(br.totalWithTax);
+    if (unchanged) return;
+
+    const buyer = await loadCustomerInvoiceBuyer(tx, args.customerId);
+    await tx.taxInvoice.update({
+      where: { id: planned.id },
+      data: {
+        invoiceMode: args.cashInvoiceMode,
+        untaxedAmount: br.untaxedAmount,
+        taxAmount: br.taxAmount,
+        totalAmount: br.totalWithTax,
+        taxRate: args.taxRate ?? DEFAULT_VAT_RATE,
+        buyerName: buyer.buyerName,
+        buyerTaxId: buyer.buyerTaxId,
+      },
+    });
+    return;
+  }
+
+  await createTaxInvoicePlanned(tx, {
+    customerId: args.customerId,
+    basisType: "sales_order",
+    salesOrderId: args.salesOrderId,
+    invoiceMode: args.cashInvoiceMode as "tax_inclusive" | "tax_exclusive",
+    untaxedAmount: br.untaxedAmount,
+    taxAmount: br.taxAmount,
+    totalAmount: br.totalWithTax,
+    taxRate: args.taxRate,
   });
 }
 
@@ -1186,6 +1427,100 @@ async function postCashArAccrualAndFifoReceipt(
   }
 }
 
+/** 辦公室核銷：依收款方式入帳收款單並 FIFO 沖 AR */
+async function postSettlementReceiptByMethod(
+  tx: Prisma.TransactionClient,
+  args: {
+    customerId: bigint;
+    salesOrderId: bigint;
+    amount: number;
+    paymentMethod: "cash" | "check";
+    paymentNote: string;
+    settledAt: Date;
+    orderNo: string;
+  },
+): Promise<void> {
+  if (!Number.isFinite(args.amount) || args.amount <= 0) return;
+  const receivedDec = new Prisma.Decimal(String(args.amount));
+
+  const voucher = await tx.receiptVoucher.create({
+    data: {
+      voucherNo: generateReceiptVoucherNo(),
+      customerId: args.customerId,
+      voucherType: "receipt",
+      paymentMethod: args.paymentMethod,
+      totalAmount: receivedDec,
+      unappliedAmount: receivedDec,
+      status: "posted",
+      paidAt: args.settledAt,
+      note: args.paymentNote,
+      createdByUserId: DEFAULT_CREATOR_USER_ID,
+      createdAt: args.settledAt,
+    },
+  });
+  await tx.payment.create({
+    data: {
+      customerId: args.customerId,
+      salesOrderId: args.salesOrderId,
+      amount: args.amount,
+      paymentMethod: args.paymentMethod,
+      note: args.paymentNote,
+      recordedByUserId: DEFAULT_CREATOR_USER_ID,
+      paidAt: args.settledAt,
+      createdAt: args.settledAt,
+      receiptVoucherId: voucher.id,
+    },
+  });
+
+  let remain = receivedDec;
+  const opens = await tx.arOpenItem.findMany({
+    where: { customerId: args.customerId, outstandingAmount: { gt: new Prisma.Decimal(0) } },
+    orderBy: [{ dueDate: "asc" }, { id: "asc" }],
+  });
+  const allocs: Array<{ openItemId: bigint; amount: Prisma.Decimal }> = [];
+  for (const open of opens) {
+    if (remain.lessThanOrEqualTo(0)) break;
+    const take = decMin(remain, new Prisma.Decimal(open.outstandingAmount));
+    if (take.lessThanOrEqualTo(0)) continue;
+    allocs.push({ openItemId: open.id, amount: take });
+    remain = remain.minus(take);
+  }
+  await applyAllocations(tx, { voucherId: voucher.id, openItemAmounts: allocs });
+  await tx.receiptVoucher.update({
+    where: { id: voucher.id },
+    data: {
+      unappliedAmount: remain.lessThanOrEqualTo(0) ? new Prisma.Decimal(0) : remain,
+      status: remain.lessThanOrEqualTo(0) ? "applied" : "partial",
+    },
+  });
+  if (remain.greaterThan(0)) {
+    const wallet = await ensurePrepaymentWallet(tx, args.customerId);
+    const nextBalance = new Prisma.Decimal(wallet.balanceAmount).plus(remain);
+    await tx.customerPrepaymentWallet.update({
+      where: { customerId: args.customerId },
+      data: { balanceAmount: nextBalance },
+    });
+    await tx.prepaymentTxn.create({
+      data: {
+        customerId: args.customerId,
+        receiptVoucherId: voucher.id,
+        txnType: "overpay_to_wallet",
+        amount: remain,
+        balanceAfter: nextBalance,
+        note: args.paymentMethod === "check" ? "司機支票多收轉預收款" : "司機多收轉預收款",
+      },
+    });
+    await tx.receiptVoucher.update({
+      where: { id: voucher.id },
+      data: { unappliedAmount: new Prisma.Decimal(0), status: "applied" },
+    });
+    await autoApplyPrepaymentToLatestOpenAr(tx, {
+      customerId: args.customerId,
+      note: args.paymentMethod === "check" ? "自動預收抵扣（支票多收轉預收）" : "自動預收抵扣（司機多收轉預收）",
+    });
+  }
+}
+
 /**
  * 司機／現場收款口徑：
  * - **建議收款** = 客戶名下所有未沖銷 AR（現金／月結等）合計 − 預收錢包餘額（不低於 0）。
@@ -1459,6 +1794,94 @@ function parseNonNegativeBarrelCount(raw: unknown, fieldLabel: string): number |
   const n = Math.floor(Number(raw ?? 0));
   if (!Number.isFinite(n) || n < 0) return "INVALID";
   return n;
+}
+
+/** 送貨樓層：null=未設定；0 為無效 */
+function parseOptionalDeliveryFloor(raw: unknown): number | null | "INVALID" {
+  if (raw === null || raw === undefined || raw === "") return null;
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n) || n === 0) return "INVALID";
+  return n;
+}
+
+/** 二樓以上或地下樓（B1=-1）計入搬運獎金 */
+function isFloorBonusEligible(floor: number): boolean {
+  return floor >= 2 || floor < 0;
+}
+
+type ParsedFloorBonusRecord = {
+  lineId: bigint;
+  floor: number;
+  qty: number;
+};
+
+function parseFloorBonusRecords(raw: unknown): ParsedFloorBonusRecord[] | "INVALID" {
+  const map = new Map<string, ParsedFloorBonusRecord>();
+  if (!Array.isArray(raw)) return [];
+  for (const item of raw) {
+    if (typeof item !== "object" || item === null) continue;
+    const lineId = toBigInt((item as { lineId?: unknown }).lineId);
+    const floor = Math.floor(Number((item as { floor?: unknown }).floor));
+    const qty = Math.floor(Number((item as { qty?: unknown }).qty ?? 0));
+    if (!lineId) continue;
+    if (!Number.isFinite(floor) || floor === 0 || !Number.isFinite(qty) || qty < 0) return "INVALID";
+    if (qty <= 0) continue;
+    if (!isFloorBonusEligible(floor)) return "INVALID";
+    const key = `${lineId.toString()}:${floor}`;
+    const existing = map.get(key);
+    map.set(key, {
+      lineId,
+      floor,
+      qty: (existing?.qty ?? 0) + qty,
+    });
+  }
+  return [...map.values()];
+}
+
+async function createFloorBonusRecords(
+  tx: Prisma.TransactionClient,
+  opts: {
+    assignment: { id: bigint; driverId: bigint; assignmentDate: Date };
+    order: {
+      id: bigint;
+      orderNo: string;
+      lines: Array<{
+        id: bigint;
+        productId: bigint;
+        linePurpose: string | null;
+        product: { name: string; consumesPrepaidBarrel: boolean } | null;
+      }>;
+    };
+    records: ParsedFloorBonusRecord[];
+  },
+): Promise<number> {
+  await tx.floorDeliveryBonusRecord.deleteMany({
+    where: { deliveryAssignmentId: opts.assignment.id },
+  });
+  let created = 0;
+  const lineMap = new Map(opts.order.lines.map((line) => [line.id, line]));
+  for (const record of opts.records) {
+    const line = lineMap.get(record.lineId);
+    if (!line) continue;
+    if ((line.linePurpose ?? "delivery") === "prepaid_barrel_topup") continue;
+    if (!line.product?.consumesPrepaidBarrel) continue;
+    await tx.floorDeliveryBonusRecord.create({
+      data: {
+        deliveryAssignmentId: opts.assignment.id,
+        salesOrderId: opts.order.id,
+        salesOrderLineId: line.id,
+        orderNo: opts.order.orderNo,
+        deliveryDate: opts.assignment.assignmentDate,
+        driverId: opts.assignment.driverId,
+        productId: line.productId,
+        productName: line.product.name,
+        qty: record.qty,
+        floor: record.floor,
+      },
+    });
+    created += 1;
+  }
+  return created;
 }
 
 function sumAddressBarrelsOnSite(addresses: Array<{ barrelsOnSite?: number }> | undefined): number {
@@ -2151,17 +2574,21 @@ app.get("/api/customers/:customerId", async (req, res) => {
     }
 
     row.salesOrders = salesOrders.map((o) => {
-      if (!orderHasMonthlyPortion(o)) return o;
+      const withBillable = {
+        ...o,
+        orderBillableAmount: orderBillableAmount(o).toString(),
+      };
+      if (!orderHasMonthlyPortion(o)) return withBillable;
       if (unpaidLegacyMonthlySet.has(String(o.id))) {
-        return { ...o, monthlyPeriodPaid: false };
+        return { ...withBillable, monthlyPeriodPaid: false };
       }
       const cap = orderMonthlyCap(o);
       const inStatementBatch = (o as { billingStatementOrder?: { id: bigint } | null }).billingStatementOrder != null;
       const awaitingStatementPost = o.status === "completed" && !inStatementBatch && cap.greaterThan(0);
       if (awaitingStatementPost) {
-        return { ...o, monthlyPeriodPaid: false };
+        return { ...withBillable, monthlyPeriodPaid: false };
       }
-      return o;
+      return withBillable;
     });
 
     res.json(enrichCustomerBarrels(row));
@@ -2559,6 +2986,7 @@ app.post("/api/customers/:customerId/prepaid-topup", async (req, res) => {
 type AddressInput = {
   label?: unknown;
   addressLine?: unknown;
+  deliveryFloor?: unknown;
   contactName?: unknown;
   contactPhone?: unknown;
   contactMobile?: unknown;
@@ -2569,6 +2997,7 @@ type AddressInput = {
 type AddressCreateRow = {
   label: string | null;
   addressLine: string;
+  deliveryFloor: number | null;
   contactName: string | null;
   contactPhone: string | null;
   contactMobile: string | null;
@@ -2576,7 +3005,7 @@ type AddressCreateRow = {
   barrelsOnSite: number;
 };
 
-const normalizeAddressCreates = (raw: unknown): AddressCreateRow[] | "INVALID_BARRELS" => {
+const normalizeAddressCreates = (raw: unknown): AddressCreateRow[] | "INVALID_BARRELS" | "INVALID_FLOOR" => {
   if (!Array.isArray(raw) || raw.length === 0) return [];
   const out: AddressCreateRow[] = [];
   let defaultSeen = false;
@@ -2587,6 +3016,8 @@ const normalizeAddressCreates = (raw: unknown): AddressCreateRow[] | "INVALID_BA
     if (!addressLine) continue;
     const barrelsParsed = parseNonNegativeBarrelCount(o.barrelsOnSite, "barrelsOnSite");
     if (barrelsParsed === "INVALID") return "INVALID_BARRELS";
+    const floorParsed = parseOptionalDeliveryFloor(o.deliveryFloor);
+    if (floorParsed === "INVALID") return "INVALID_FLOOR";
     const label = trimOptionalString(o.label);
     const contactName = trimOptionalString(o.contactName);
     const contactPhone = trimOptionalString(o.contactPhone);
@@ -2599,6 +3030,7 @@ const normalizeAddressCreates = (raw: unknown): AddressCreateRow[] | "INVALID_BA
     out.push({
       label,
       addressLine,
+      deliveryFloor: floorParsed,
       contactName,
       contactPhone,
       contactMobile,
@@ -2696,6 +3128,10 @@ app.post("/api/customers", async (req, res) => {
     const addressCreates = normalizeAddressCreates(body.addresses);
     if (addressCreates === "INVALID_BARRELS") {
       res.status(400).json({ ok: false, message: "各送貨點未收回空桶須為非負整數" });
+      return;
+    }
+    if (addressCreates === "INVALID_FLOOR") {
+      res.status(400).json({ ok: false, message: "送貨樓層須為非零整數（地下樓可填 -1、-2）或留空" });
       return;
     }
     if (addressCreates.length === 0) {
@@ -2931,6 +3367,11 @@ app.post("/api/customers/:customerId/addresses", async (req, res) => {
       res.status(400).json({ ok: false, message: "未收回空桶須為非負整數" });
       return;
     }
+    const deliveryFloorParsed = parseOptionalDeliveryFloor(body.deliveryFloor);
+    if (deliveryFloorParsed === "INVALID") {
+      res.status(400).json({ ok: false, message: "送貨樓層須為非零整數（地下樓可填 -1、-2）或留空" });
+      return;
+    }
 
     const created = await prisma.$transaction(async (tx) => {
       if (setDefault) {
@@ -2944,6 +3385,7 @@ app.post("/api/customers/:customerId/addresses", async (req, res) => {
           customerId,
           label,
           addressLine,
+          deliveryFloor: deliveryFloorParsed,
           contactName,
           contactPhone,
           contactMobile,
@@ -2981,6 +3423,7 @@ app.patch("/api/customers/:customerId/addresses/:addressId", async (req, res) =>
     const data: {
       label?: string | null;
       addressLine?: string;
+      deliveryFloor?: number | null;
       contactName?: string | null;
       contactPhone?: string | null;
       contactMobile?: string | null;
@@ -2998,6 +3441,14 @@ app.patch("/api/customers/:customerId/addresses/:addressId", async (req, res) =>
         return;
       }
       data.addressLine = line;
+    }
+    if (body.deliveryFloor !== undefined) {
+      const floorParsed = parseOptionalDeliveryFloor(body.deliveryFloor);
+      if (floorParsed === "INVALID") {
+        res.status(400).json({ ok: false, message: "送貨樓層須為非零整數（地下樓可填 -1、-2）或留空" });
+        return;
+      }
+      data.deliveryFloor = floorParsed;
     }
     if (body.contactName !== undefined) {
       data.contactName = trimOptionalString(body.contactName);
@@ -3899,6 +4350,9 @@ app.get("/api/settlements", async (_req, res) => {
         },
         driver: { include: { user: true } },
         vehicle: true,
+        floorBonusRecords: {
+          orderBy: [{ floor: "asc" }, { id: "asc" }],
+        },
         events: { orderBy: { id: "desc" }, take: 5 },
       },
       orderBy: { updatedAt: "desc" },
@@ -3911,12 +4365,15 @@ app.get("/api/settlements", async (_req, res) => {
           customerId: order.customerId,
           currentSalesOrderId: order.id,
         });
-        const received = new Prisma.Decimal(row.cashReceived ?? 0);
-        const variance = received.minus(calc.cashDue);
+        const collected = assignmentFieldCollectedTotal(row);
+        const expectedDec =
+          row.expectedAmount != null ? new Prisma.Decimal(row.expectedAmount) : calc.cashDue;
+        const variance = collected.minus(expectedDec);
         return {
           ...row,
-          expectedAmount: calc.cashDue,
+          expectedAmount: expectedDec,
           cashVariance: variance,
+          orderBillableAmount: orderBillableAmount(order),
         };
       }),
     );
@@ -3974,6 +4431,7 @@ app.post("/api/settlements/approve", async (req, res) => {
           include: {
             lines: { include: { product: true } },
             customer: true,
+            deliveryAddress: true,
           },
         },
       },
@@ -4011,6 +4469,9 @@ app.post("/api/settlements/approve", async (req, res) => {
             lockVersion: { increment: 1 },
           },
         });
+        await tx.floorDeliveryBonusRecord.deleteMany({
+          where: { deliveryAssignmentId: assignmentId },
+        });
 
         await tx.deliveryEvent.create({
           data: {
@@ -4034,6 +4495,7 @@ app.post("/api/settlements/approve", async (req, res) => {
             salesOrder: true,
             driver: { include: { user: true } },
             vehicle: true,
+            floorBonusRecords: { orderBy: [{ floor: "asc" }, { id: "asc" }] },
             events: { orderBy: { id: "asc" } },
           },
         });
@@ -4054,12 +4516,13 @@ app.post("/api/settlements/approve", async (req, res) => {
     }
 
     const cashReceived = Number(assignment.cashReceived);
-    const receivedDec = new Prisma.Decimal(String(cashReceived));
+    const checkReceived = Number(assignment.checkReceived ?? 0);
+    const receivedDec = assignmentFieldCollectedTotal(assignment);
 
     let barrelsDeliveredAll = 0;
-    let barrelsPrepaid = 0;
     let barrelsTopupCredit = 0;
     const prepaidConsumeByProduct = new Map<bigint, number>();
+    const prepaidTopupByProduct = new Map<bigint, number>();
     for (const line of order.lines) {
       const purpose = line.linePurpose ?? "delivery";
       const qty = effectiveLineDeliveryQty(line);
@@ -4070,16 +4533,22 @@ app.post("/api/settlements/approve", async (req, res) => {
       } | null;
       if (purpose === "prepaid_barrel_topup") {
         barrelsTopupCredit += line.qtyOrdered;
+        prepaidTopupByProduct.set(line.productId, (prepaidTopupByProduct.get(line.productId) ?? 0) + line.qtyOrdered);
         continue;
       }
       if (p?.countsDepositBarrel === true) {
         barrelsDeliveredAll += qty;
       }
       if (lineBillingType(line, order, customerRow) === "prepaid" && p?.consumesPrepaidBarrel === true) {
-        barrelsPrepaid += qty;
         prepaidConsumeByProduct.set(line.productId, (prepaidConsumeByProduct.get(line.productId) ?? 0) + qty);
       }
     }
+    const immediatePrepaidConsumeByProduct = new Map<bigint, number>();
+    for (const [productId, qty] of prepaidConsumeByProduct) {
+      if ((prepaidTopupByProduct.get(productId) ?? 0) > 0) continue;
+      immediatePrepaidConsumeByProduct.set(productId, qty);
+    }
+    const barrelsPrepaidImmediate = [...immediatePrepaidConsumeByProduct.values()].reduce((a, b) => a + b, 0);
 
     const effective = (order.billingTypeAtOrder ?? customerRow.billingType) as string;
     const expected = order.totalAmount;
@@ -4150,8 +4619,25 @@ app.post("/api/settlements/approve", async (req, res) => {
       const barrelNet = barrelsDeliveredAll - emptyReturned;
       const cust = await tx.customer.findUnique({ where: { id: customerId } });
       if (cust) {
+        if (!cust.allowPrepaidOverdraft && immediatePrepaidConsumeByProduct.size > 0) {
+          const pids = [...immediatePrepaidConsumeByProduct.keys()];
+          const balRows = await tx.customerPrepaidProductBalance.findMany({
+            where: { customerId, productId: { in: pids } },
+          });
+          const balMap = new Map(balRows.map((r) => [r.productId, r.balanceBarrels]));
+          for (const [pid, need] of immediatePrepaidConsumeByProduct) {
+            const avail = balMap.get(pid) ?? 0;
+            if (need > avail) {
+              const hitLine = order.lines.find((l) => l.productId === pid);
+              const pName = (hitLine?.product as { name?: string } | null)?.name ?? "商品";
+              throw new Error(`PREPAID_INSUFFICIENT:${pName}:${need}:${avail}`);
+            }
+          }
+        }
         const prepaidBarrelBalance =
-          barrelsPrepaid > 0 ? cust.prepaidBarrelBalance - barrelsPrepaid : cust.prepaidBarrelBalance;
+          barrelsPrepaidImmediate > 0
+            ? cust.prepaidBarrelBalance - barrelsPrepaidImmediate
+            : cust.prepaidBarrelBalance;
         if (barrelNet !== 0) {
           const addr = await tx.deliveryAddress.findFirst({
             where: { id: deliveryAddressId, customerId },
@@ -4164,23 +4650,15 @@ app.post("/api/settlements/approve", async (req, res) => {
             });
           }
         }
-        if (barrelsPrepaid > 0) {
+        if (barrelsPrepaidImmediate > 0) {
           await tx.customer.update({
             where: { id: customerId },
             data: { prepaidBarrelBalance },
           });
         }
       }
-      for (const [productId, qty] of prepaidConsumeByProduct) {
-        const hit = await tx.customerPrepaidProductBalance.updateMany({
-          where: { customerId, productId },
-          data: { balanceBarrels: { decrement: qty } },
-        });
-        if (hit.count === 0) {
-          await tx.customerPrepaidProductBalance.create({
-            data: { customerId, productId, balanceBarrels: -qty },
-          });
-        }
+      for (const [productId, qty] of immediatePrepaidConsumeByProduct) {
+        await adjustCustomerPrepaidProductBalance(tx, customerId, productId, -qty);
       }
 
       const collectCalc = await calcCashDueByUnifiedRule(tx, {
@@ -4190,14 +4668,16 @@ app.post("/api/settlements/approve", async (req, res) => {
       const cashDueResolved = collectCalc.collectDue;
       const varianceDisplayResolved = receivedDec.minus(cashDueResolved);
 
-      let paymentNote = "司機銷單收款";
+      let paymentNoteBase = "司機銷單收款";
       if (outcome === "delivered_cash_exact") {
-        paymentNote = "司機現金收款（足額）";
+        paymentNoteBase = "司機收款（足額）";
       } else if (outcome === "delivered_cash_short") {
-        paymentNote = `司機現金收款（少收，差額 ${varianceDisplayResolved.toString()}，應收現金 ${cashDueResolved.toString()}）`;
+        paymentNoteBase = `司機收款（少收，差額 ${varianceDisplayResolved.toString()}，應收現金 ${cashDueResolved.toString()}）`;
       } else if (outcome === "delivered_cash_over") {
-        paymentNote = `司機現金收款（多收，差額 +${varianceDisplayResolved.toString()}，應收現金 ${cashDueResolved.toString()}）`;
+        paymentNoteBase = `司機收款（多收，差額 +${varianceDisplayResolved.toString()}，應收現金 ${cashDueResolved.toString()}）`;
       }
+      const cashPaymentNote = cashReceived > 0 ? paymentNoteBase.replace("司機收款", "司機現金收款") : "";
+      const checkPaymentNote = checkReceived > 0 ? paymentNoteBase.replace("司機收款", "司機支票收款") : "";
 
       if (cashReceivablePortion.greaterThan(0)) {
         await postCashArAccrualAndFifoReceipt(tx, {
@@ -4212,95 +4692,39 @@ app.post("/api/settlements/approve", async (req, res) => {
       }
 
       if (cashReceived > 0) {
-        const voucher = await tx.receiptVoucher.create({
-          data: {
-            voucherNo: generateReceiptVoucherNo(),
-            customerId,
-            voucherType: "receipt",
-            paymentMethod: "cash",
-            totalAmount: receivedDec,
-            unappliedAmount: receivedDec,
-            status: "posted",
-            paidAt: settledAt,
-            note: paymentNote,
-            createdByUserId: DEFAULT_CREATOR_USER_ID,
-            createdAt: settledAt,
-          },
+        await postSettlementReceiptByMethod(tx, {
+          customerId,
+          salesOrderId: assignment.salesOrderId,
+          amount: cashReceived,
+          paymentMethod: "cash",
+          paymentNote: cashPaymentNote || "司機現金收款",
+          settledAt,
+          orderNo: order.orderNo,
         });
-        await tx.payment.create({
-          data: {
-            customerId: assignment.salesOrder.customerId,
-            salesOrderId: assignment.salesOrderId,
-            amount: cashReceived,
-            paymentMethod: "cash",
-            note: paymentNote,
-            recordedByUserId: DEFAULT_CREATOR_USER_ID,
-            paidAt: settledAt,
-            createdAt: settledAt,
-            receiptVoucherId: voucher.id,
-          },
+      }
+      if (checkReceived > 0) {
+        await postSettlementReceiptByMethod(tx, {
+          customerId,
+          salesOrderId: assignment.salesOrderId,
+          amount: checkReceived,
+          paymentMethod: "check",
+          paymentNote: checkPaymentNote || "司機支票收款",
+          settledAt,
+          orderNo: order.orderNo,
         });
-
-        let remain = receivedDec;
-        const opens = await tx.arOpenItem.findMany({
-          where: { customerId, outstandingAmount: { gt: new Prisma.Decimal(0) } },
-          orderBy: [{ dueDate: "asc" }, { id: "asc" }],
-        });
-        const allocs: Array<{ openItemId: bigint; amount: Prisma.Decimal }> = [];
-        for (const open of opens) {
-          if (remain.lessThanOrEqualTo(0)) break;
-          const take = decMin(remain, new Prisma.Decimal(open.outstandingAmount));
-          if (take.lessThanOrEqualTo(0)) continue;
-          allocs.push({ openItemId: open.id, amount: take });
-          remain = remain.minus(take);
-        }
-        await applyAllocations(tx, { voucherId: voucher.id, openItemAmounts: allocs });
-        await tx.receiptVoucher.update({
-          where: { id: voucher.id },
-          data: {
-            unappliedAmount: remain.lessThanOrEqualTo(0) ? new Prisma.Decimal(0) : remain,
-            status: remain.lessThanOrEqualTo(0) ? "applied" : "partial",
-          },
-        });
-        if (remain.greaterThan(0)) {
-          const wallet = await ensurePrepaymentWallet(tx, customerId);
-          const nextBalance = new Prisma.Decimal(wallet.balanceAmount).plus(remain);
-          await tx.customerPrepaymentWallet.update({
-            where: { customerId },
-            data: { balanceAmount: nextBalance },
-          });
-          await tx.prepaymentTxn.create({
-            data: {
-              customerId,
-              receiptVoucherId: voucher.id,
-              txnType: "overpay_to_wallet",
-              amount: remain,
-              balanceAfter: nextBalance,
-              note: "司機多收轉預收款",
-            },
-          });
-          await tx.receiptVoucher.update({
-            where: { id: voucher.id },
-            data: { unappliedAmount: new Prisma.Decimal(0), status: "applied" },
-          });
-          await autoApplyPrepaymentToLatestOpenAr(tx, {
-            customerId,
-            note: "自動預收抵扣（司機多收轉預收）",
-          });
-        }
       }
 
       /** 月結應收改於「結帳批次」立帳（R2），此處不再逐單寫 monthly_accrual */
 
-      if (barrelsPrepaid > 0) {
+      if (barrelsPrepaidImmediate > 0) {
         await tx.customerLedgerEntry.create({
           data: {
             customerId,
             entryType: "prepaid_consumption",
             amount: new Prisma.Decimal(0),
-            barrelDelta: -barrelsPrepaid,
+            barrelDelta: -barrelsPrepaidImmediate,
             salesOrderId: assignment.salesOrderId,
-            note: `預付扣桶 ${barrelsPrepaid}（訂單 ${order.orderNo}）`,
+            note: `預付扣桶 ${barrelsPrepaidImmediate}（訂單 ${order.orderNo}）`,
             createdByUserId: DEFAULT_CREATOR_USER_ID,
             createdAt: settledAt,
           },
@@ -4322,6 +4746,8 @@ app.post("/api/settlements/approve", async (req, res) => {
             prepaidBarrelTopupPendingQty: barrelsTopupCredit,
             barrelNetCustomer: barrelNet,
             cashReceived,
+            checkReceived,
+            collectedTotal: cashReceived + checkReceived,
             orderTotal: expected.toString(),
             orderCashAdjustment: String(order.orderCashAdjustment ?? 0),
             cashSettlementMode: effective === "cash" ? "fifo_cash_ar" : undefined,
@@ -4340,12 +4766,83 @@ app.post("/api/settlements/approve", async (req, res) => {
           salesOrder: true,
           driver: { include: { user: true } },
           vehicle: true,
+          floorBonusRecords: { orderBy: [{ floor: "asc" }, { id: "asc" }] },
           events: { orderBy: { id: "asc" } },
         },
       });
     });
 
     res.json({ ok: true, data: result });
+  } catch (e) {
+    const msg = String(e);
+    if (msg.includes("PREPAID_INSUFFICIENT:")) {
+      const [, pName, need, avail] = msg.split(":");
+      res.status(400).json({
+        ok: false,
+        message: `預付桶商品額度不足：${pName} 需 ${need} 桶、可用 ${avail} 桶。請先儲值同商品桶數後再核銷。`,
+      });
+      return;
+    }
+    res.status(500).json({ ok: false, message: msg });
+  }
+});
+
+/** 二樓以上搬運獎金紀錄查詢 */
+app.get("/api/floor-delivery-bonuses", async (req, res) => {
+  try {
+    const dateFromParam = typeof req.query.dateFrom === "string" ? req.query.dateFrom.trim() : "";
+    const dateToParam = typeof req.query.dateTo === "string" ? req.query.dateTo.trim() : "";
+    const driverId = toBigInt(req.query.driverId);
+    const q = typeof req.query.q === "string" ? req.query.q.trim().toLowerCase() : "";
+
+    const where: Prisma.FloorDeliveryBonusRecordWhereInput = {
+      deliveryAssignment: { is: { status: "completed" } },
+    };
+    if (driverId) {
+      where.driverId = driverId;
+    }
+    if (dateFromParam || dateToParam) {
+      const range: Prisma.DateTimeFilter = {};
+      if (dateFromParam) {
+        const parsedFrom = parseLocalYmdRange(dateFromParam);
+        if (!parsedFrom) {
+          res.status(400).json({ ok: false, message: "dateFrom 格式須為 YYYY-MM-DD" });
+          return;
+        }
+        range.gte = parsedFrom.start;
+      }
+      if (dateToParam) {
+        const parsedTo = parseLocalYmdRange(dateToParam);
+        if (!parsedTo) {
+          res.status(400).json({ ok: false, message: "dateTo 格式須為 YYYY-MM-DD" });
+          return;
+        }
+        range.lt = parsedTo.end;
+      }
+      where.deliveryDate = range;
+    }
+
+    const rows = await prisma.floorDeliveryBonusRecord.findMany({
+      where,
+      include: {
+        driver: { include: { user: true } },
+        product: { select: { id: true, name: true, unit: true } },
+      },
+      orderBy: [{ deliveryDate: "desc" }, { id: "desc" }],
+      take: 500,
+    });
+
+    const filtered = q
+      ? rows.filter((row) => {
+          const no = row.orderNo.toLowerCase();
+          const product = row.productName.toLowerCase();
+          const driverCode = String(row.driver?.user?.employeeCode ?? "").toLowerCase();
+          const driverName = String(row.driver?.user?.name ?? "").toLowerCase();
+          return no.includes(q) || product.includes(q) || driverCode.includes(q) || driverName.includes(q);
+        })
+      : rows;
+
+    res.json(filtered);
   } catch (e) {
     res.status(500).json({ ok: false, message: String(e) });
   }
@@ -4426,6 +4923,67 @@ app.get("/api/billing/monthly-orders", async (req, res) => {
         period,
         totalAmount: totalAmount.toString(),
         orders: monthlyOrders,
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+/** 月結待結：尚未開立批次的已完成月結訂單（不限截止日） */
+app.get("/api/billing/monthly-unsettled", async (req, res) => {
+  try {
+    const customerId = toBigInt(req.query.customerId);
+    if (!customerId) {
+      res.status(400).json({ ok: false, message: "請指定 customerId" });
+      return;
+    }
+    const orders = await prisma.salesOrder.findMany({
+      where: {
+        customerId,
+        status: "completed",
+        officeSettledAt: { not: null },
+        billingStatementOrder: { is: null },
+      },
+      include: {
+        lines: { include: { product: true } },
+        assignments: {
+          where: { status: { in: ["completed", "not_delivered"] } },
+          orderBy: [{ officeSettledAt: "desc" }, { completedAt: "desc" }, { id: "desc" }],
+          take: 1,
+        },
+      },
+      orderBy: [{ id: "asc" }],
+    });
+    const pending = orders
+      .filter((o) => orderHasMonthlyPortion(o))
+      .map((o) => {
+        const cap = orderMonthlyCap(o);
+        const received = new Prisma.Decimal(String(o.monthlyReceivedAmount ?? 0));
+        const outstanding = cap.minus(received);
+        const a = o.assignments?.[0];
+        const deliveryRaw = a?.driverReportedAt ?? a?.assignmentDate ?? o.scheduledDeliveryDate ?? null;
+        return {
+          id: o.id.toString(),
+          orderNo: o.orderNo,
+          deliveryDate: deliveryRaw ? toLocalYmd(new Date(deliveryRaw)) : null,
+          monthlyAmount: cap.toString(),
+          monthlyReceivedAmount: received.toString(),
+          outstandingAmount: outstanding.toString(),
+          monthlyPeriodPaid: o.monthlyPeriodPaid,
+        };
+      })
+      .filter((r) => new Prisma.Decimal(r.outstandingAmount).greaterThan(0));
+    const totalPending = pending.reduce(
+      (s, r) => s.add(new Prisma.Decimal(r.outstandingAmount)),
+      new Prisma.Decimal(0),
+    );
+    res.json({
+      ok: true,
+      data: {
+        orderCount: pending.length,
+        totalPending: totalPending.toString(),
+        orders: pending,
       },
     });
   } catch (e) {
@@ -4531,6 +5089,95 @@ app.get("/api/payments", async (_req, res) => {
   }
 });
 
+/** 解析營運指標／報表用的本地日期區間 */
+function resolveAccountingPeriodRange(
+  range: string,
+  startDate: string,
+  endDate: string,
+  now = new Date(),
+): { start: Date; end: Date } | { error: string } {
+  if (range === "month") {
+    const y = now.getFullYear();
+    const m = now.getMonth() + 1;
+    const monthStart = parseLocalYmdRange(`${y}-${String(m).padStart(2, "0")}-01`);
+    const nextM = m === 12 ? 1 : m + 1;
+    const nextY = m === 12 ? y + 1 : y;
+    const monthEnd = parseLocalYmdRange(`${nextY}-${String(nextM).padStart(2, "0")}-01`);
+    if (!monthStart || !monthEnd) return { error: "月份區間解析失敗" };
+    return { start: monthStart.start, end: monthEnd.start };
+  }
+  if (range === "custom") {
+    const customStart = parseLocalYmdRange(startDate);
+    const customEnd = parseLocalYmdRange(endDate);
+    if (!customStart || !customEnd) return { error: "custom 區間需要有效的 startDate / endDate (YYYY-MM-DD)" };
+    if (customStart.start >= customEnd.end) return { error: "日期區間錯誤：startDate 必須小於等於 endDate" };
+    return { start: customStart.start, end: customEnd.end };
+  }
+  const todayRange = parseLocalYmdRange(toLocalYmd(now));
+  if (!todayRange) return { error: "本日區間解析失敗" };
+  return { start: todayRange.start, end: todayRange.end };
+}
+
+async function buildAccountingPeriodSummary(start: Date, end: Date) {
+  const [todayCompleted, periodPayments] = await Promise.all([
+    prisma.deliveryAssignment.findMany({
+      where: {
+        status: "completed",
+        completedAt: { gte: start, lt: end },
+      },
+      include: {
+        salesOrder: true,
+      },
+    }),
+    prisma.payment.findMany({
+      where: {
+        paidAt: { gte: start, lt: end },
+        paymentMethod: { not: "prepayment" },
+      },
+    }),
+  ]);
+
+  const orderIds = [...new Set(todayCompleted.map((row) => row.salesOrderId))];
+  const periodOrderOutstandingAgg =
+    orderIds.length > 0
+      ? await prisma.arOpenItem.aggregate({
+          where: activeArOpenItemWhere({ salesOrderId: { in: orderIds } }),
+          _sum: { outstandingAmount: true },
+        })
+      : { _sum: { outstandingAmount: null } };
+
+  const periodRevenue = todayCompleted.reduce(
+    (sum, row) => sum + Number(orderBillableAmount(row.salesOrder)),
+    0,
+  );
+  const periodCollectedCash = periodPayments
+    .filter((row) => row.paymentMethod === "cash")
+    .reduce((sum, row) => sum + Number(row.amount), 0);
+  const periodCollectedTransfer = periodPayments
+    .filter((row) => row.paymentMethod === "transfer")
+    .reduce((sum, row) => sum + Number(row.amount), 0);
+  const periodCollectedOther = periodPayments
+    .filter((row) => row.paymentMethod !== "cash" && row.paymentMethod !== "transfer")
+    .reduce((sum, row) => sum + Number(row.amount), 0);
+  const periodCollected = periodCollectedCash + periodCollectedTransfer + periodCollectedOther;
+  const todayCompletedCount = todayCompleted.length;
+  const periodOrderOutstanding = Number(periodOrderOutstandingAgg._sum.outstandingAmount ?? 0);
+  const driverCashCollected = todayCompleted.reduce((sum, row) => sum + Number(row.cashReceived ?? 0), 0);
+
+  return {
+    periodRevenue,
+    periodCollected,
+    periodCollectedCash,
+    periodCollectedTransfer,
+    periodCollectedOther,
+    todayCompletedCount,
+    periodOrderOutstanding,
+    driverCashCollected,
+    todayCompleted,
+    periodPayments,
+  };
+}
+
 app.get("/api/accounting/summary", async (req, res) => {
   try {
     const now = new Date();
@@ -4538,72 +5185,267 @@ app.get("/api/accounting/summary", async (req, res) => {
     const startDate = typeof req.query.startDate === "string" ? req.query.startDate : "";
     const endDate = typeof req.query.endDate === "string" ? req.query.endDate : "";
 
-    let start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    let end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-
-    if (range === "month") {
-      start = new Date(now.getFullYear(), now.getMonth(), 1);
-      end = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const resolved = resolveAccountingPeriodRange(range, startDate, endDate, now);
+    if ("error" in resolved) {
+      res.status(400).json({ ok: false, message: resolved.error });
+      return;
     }
+    const { start, end } = resolved;
 
-    if (range === "custom") {
-      const customStart = startDate ? new Date(startDate) : null;
-      const customEnd = endDate ? new Date(endDate) : null;
-      if (!customStart || !customEnd || Number.isNaN(customStart.getTime()) || Number.isNaN(customEnd.getTime())) {
-        res.status(400).json({ ok: false, message: "custom 區間需要有效的 startDate / endDate (YYYY-MM-DD)" });
-        return;
-      }
-      start = new Date(customStart.getFullYear(), customStart.getMonth(), customStart.getDate());
-      end = new Date(customEnd.getFullYear(), customEnd.getMonth(), customEnd.getDate() + 1);
-      if (start >= end) {
-        res.status(400).json({ ok: false, message: "日期區間錯誤：startDate 必須小於等於 endDate" });
-        return;
-      }
-    }
-
-    const [todayCompleted, todayPayments, unpaidCompletedOrders] = await Promise.all([
-      prisma.deliveryAssignment.findMany({
-        where: {
-          status: "completed",
-          completedAt: { gte: start, lt: end },
-        },
-        include: {
-          salesOrder: true,
-        },
-      }),
-      prisma.payment.findMany({
-        where: {
-          paidAt: { gte: start, lt: end },
-        },
-      }),
-      prisma.salesOrder.findMany({
-        where: {
-          status: "completed",
-        },
-        include: {
-          payments: true,
-        },
-      }),
-    ]);
-
-    const todayRevenue = todayCompleted.reduce((sum, row) => sum + Number(row.salesOrder.totalAmount), 0);
-    const todayCashReceived = todayPayments
-      .filter((row) => row.paymentMethod === "cash")
-      .reduce((sum, row) => sum + Number(row.amount), 0);
-    const todayCompletedCount = todayCompleted.length;
-    const unpaidAmount = unpaidCompletedOrders.reduce((sum, order) => {
-      const paid = order.payments.reduce((p, row) => p + Number(row.amount), 0);
-      return sum + Math.max(0, Number(order.totalAmount) - paid);
-    }, 0);
+    const summary = await buildAccountingPeriodSummary(start, end);
 
     res.json({
       range,
       startDate: toLocalYmd(start),
       endDate: toLocalYmd(new Date(end.getTime() - 1)),
-      todayRevenue,
-      todayCashReceived,
-      todayCompletedCount,
-      unpaidAmount,
+      periodRevenue: summary.periodRevenue,
+      periodCollected: summary.periodCollected,
+      periodCollectedCash: summary.periodCollectedCash,
+      periodCollectedTransfer: summary.periodCollectedTransfer,
+      periodCollectedOther: summary.periodCollectedOther,
+      todayCompletedCount: summary.todayCompletedCount,
+      periodOrderOutstanding: summary.periodOrderOutstanding,
+      // 相容舊欄位名稱
+      todayRevenue: summary.periodRevenue,
+      todayCashReceived: summary.periodCollectedCash,
+      unpaidAmount: summary.periodOrderOutstanding,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+/** 日報／月報明細：區間內配送、收款與彙總（伺服器端篩選，不受列表筆數上限影響） */
+app.get("/api/reports/period-detail", async (req, res) => {
+  try {
+    const range = String(req.query.range ?? "today");
+    if (range !== "today" && range !== "month") {
+      res.status(400).json({ ok: false, message: "range 須為 today 或 month" });
+      return;
+    }
+    const resolved = resolveAccountingPeriodRange(range, "", "", new Date());
+    if ("error" in resolved) {
+      res.status(400).json({ ok: false, message: resolved.error });
+      return;
+    }
+    const { start, end } = resolved;
+
+    const summary = await buildAccountingPeriodSummary(start, end);
+
+    const deliveries = await prisma.deliveryAssignment.findMany({
+      where: {
+        status: "completed",
+        completedAt: { gte: start, lt: end },
+      },
+      include: {
+        salesOrder: { include: { customer: true } },
+        driver: { include: { user: true } },
+        vehicle: true,
+      },
+      orderBy: { completedAt: "desc" },
+    });
+
+    const payments = await prisma.payment.findMany({
+      where: {
+        paidAt: { gte: start, lt: end },
+        paymentMethod: { not: "prepayment" },
+      },
+      include: {
+        customer: true,
+        salesOrder: true,
+      },
+      orderBy: { paidAt: "desc" },
+    });
+
+    const enrichedDeliveries = deliveries.map((row) => ({
+      ...row,
+      salesOrder: row.salesOrder
+        ? {
+            ...row.salesOrder,
+            orderBillableAmount: orderBillableAmount(row.salesOrder).toString(),
+          }
+        : null,
+    }));
+
+    res.json({
+      ok: true,
+      data: {
+        range,
+        startDate: toLocalYmd(start),
+        endDate: toLocalYmd(new Date(end.getTime() - 1)),
+        summary: {
+          periodRevenue: summary.periodRevenue,
+          periodCollected: summary.periodCollected,
+          periodCollectedCash: summary.periodCollectedCash,
+          periodCollectedTransfer: summary.periodCollectedTransfer,
+          periodCollectedOther: summary.periodCollectedOther,
+          todayCompletedCount: summary.todayCompletedCount,
+          periodOrderOutstanding: summary.periodOrderOutstanding,
+          driverCashCollected: summary.driverCashCollected,
+        },
+        deliveries: enrichedDeliveries,
+        payments,
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+/** 司機日收款核對：指定司機、配送日之訂單明細與現金／支票回報 */
+app.get("/api/reports/driver-daily-collection", async (req, res) => {
+  try {
+    const driverId = toBigInt(req.query.driverId);
+    const dateRaw =
+      typeof req.query.date === "string" && req.query.date.trim()
+        ? req.query.date.trim()
+        : toLocalYmd(new Date());
+    const range = parseLocalYmdRange(dateRaw);
+    if (!driverId || !range) {
+      res.status(400).json({ ok: false, message: "參數錯誤：driverId、date（YYYY-MM-DD）必填" });
+      return;
+    }
+
+    const driver = await prisma.driver.findUnique({
+      where: { id: driverId },
+      include: { user: true, vehicle: true },
+    });
+    if (!driver) {
+      res.status(404).json({ ok: false, message: "找不到司機" });
+      return;
+    }
+
+    const assignments = await prisma.deliveryAssignment.findMany({
+      where: {
+        driverId,
+        assignmentDate: { gte: range.start, lt: range.end },
+        status: { not: "cancelled" },
+      },
+      include: {
+        salesOrder: {
+          include: {
+            customer: true,
+            deliveryAddress: true,
+            lines: { include: { product: true }, orderBy: { id: "asc" } },
+          },
+        },
+        floorBonusRecords: { orderBy: [{ floor: "asc" }, { id: "asc" }] },
+      },
+      orderBy: [{ driverReportedAt: "asc" }, { id: "asc" }],
+    });
+
+    const orders = await Promise.all(
+      assignments.map(async (asn) => {
+        const order = asn.salesOrder;
+        const calc = await calcCashDueByUnifiedRule(prisma, {
+          customerId: order.customerId,
+          currentSalesOrderId: order.id,
+        });
+        const expectedAmount = Number(asn.expectedAmount ?? calc.cashDue);
+        const cashReceived = Number(asn.cashReceived ?? 0);
+        const checkReceived = Number(asn.checkReceived ?? 0);
+        const collectedTotal = cashReceived + checkReceived;
+        const lines = order.lines
+          .filter((ln) => (ln.linePurpose ?? "delivery") !== "prepaid_barrel_topup" || ln.qtyOrdered > 0)
+          .map((ln) => {
+            const purpose = ln.linePurpose ?? "delivery";
+            const qty =
+              purpose === "delivery"
+                ? ln.qtyDelivered > 0
+                  ? ln.qtyDelivered
+                  : ln.qtyOrdered
+                : ln.qtyOrdered;
+            const productName = ln.product?.name?.trim() || "商品";
+            const unit = ln.product?.unit?.trim() || "桶";
+            const billing = ln.billingTypeAtLine ?? order.billingTypeAtOrder ?? order.customer.billingType;
+            return {
+              id: ln.id.toString(),
+              productName,
+              unit,
+              qty,
+              unitPrice: ln.unitPrice.toString(),
+              lineAmount: ln.lineAmount.toString(),
+              billingType: billing,
+              linePurpose: purpose,
+              label:
+                purpose === "prepaid_barrel_topup"
+                  ? `${productName} 儲值 ${qty} ${unit}`
+                  : `${productName} × ${qty} ${unit}`,
+            };
+          });
+
+        return {
+          assignmentId: asn.id.toString(),
+          orderNo: order.orderNo,
+          assignmentStatus: asn.status,
+          customerCode: order.customer.customerCode ?? "",
+          customerName: order.customer.name,
+          deliveryAddress: order.deliveryAddress?.addressLine ?? "",
+          lines,
+          lineSummary: lines.map((l) => l.label).join("；") || "—",
+          expectedAmount,
+          cashReceived,
+          checkReceived,
+          collectedTotal,
+          collectionVariance: collectedTotal - expectedAmount,
+          collectionStatus: driverCollectionStatusLabel({
+            status: asn.status,
+            settlementOutcome: asn.settlementOutcome,
+            failureReason: asn.failureReason,
+            expectedAmount,
+            collectedTotal,
+          }),
+          settlementOutcome: asn.settlementOutcome,
+          billableAmount: orderBillableAmount(order).toString(),
+          floorBonusRecords: asn.floorBonusRecords.map((r) => ({
+            id: r.id.toString(),
+            productName: r.productName,
+            qty: r.qty,
+            floor: r.floor,
+            floorLabel: r.floor < 0 ? `地下${Math.abs(r.floor)}樓` : `${r.floor}樓`,
+          })),
+          driverReportedAt: asn.driverReportedAt?.toISOString() ?? null,
+          officeSettledAt: asn.officeSettledAt?.toISOString() ?? null,
+        };
+      }),
+    );
+
+    const summary = orders.reduce(
+      (acc, row) => {
+        acc.orderCount += 1;
+        acc.totalExpected += row.expectedAmount;
+        acc.totalCash += row.cashReceived;
+        acc.totalCheck += row.checkReceived;
+        acc.totalCollected += row.collectedTotal;
+        if (row.collectionVariance !== 0 && row.expectedAmount > 0) acc.varianceOrderCount += 1;
+        return acc;
+      },
+      {
+        orderCount: 0,
+        totalExpected: 0,
+        totalCash: 0,
+        totalCheck: 0,
+        totalCollected: 0,
+        varianceOrderCount: 0,
+      },
+    );
+
+    res.json({
+      ok: true,
+      data: {
+        date: dateRaw,
+        driver: {
+          id: driver.id.toString(),
+          employeeCode: driver.user?.employeeCode ?? driver.employeeCode,
+          name: driver.user?.name ?? "",
+          vehiclePlate: driver.vehicle?.plateNo ?? null,
+        },
+        summary: {
+          ...summary,
+          totalVariance: summary.totalCollected - summary.totalExpected,
+        },
+        orders,
+      },
     });
   } catch (e) {
     res.status(500).json({ ok: false, message: String(e) });
@@ -4637,6 +5479,9 @@ app.get("/api/delivery-assignments/by-driver-date", async (req, res) => {
         },
         vehicle: true,
         driver: { include: { user: true } },
+        floorBonusRecords: {
+          orderBy: [{ floor: "asc" }, { id: "asc" }],
+        },
       },
       orderBy: [{ id: "asc" }],
     });
@@ -4905,6 +5750,9 @@ app.post("/api/sales-orders", async (req, res) => {
         return;
       }
     }
+    const prepaidTopupByProduct = sumPrepaidTopupByProduct(
+      linesInResolved.map((l) => ({ productId: l.productId, qty: l.qty, linePurpose: l.linePurpose })),
+    );
     const prepaidNeedByProduct = new Map<bigint, number>();
     for (const l of linesInResolved) {
       if (l.linePurpose !== "delivery" || l.billingType !== "prepaid") continue;
@@ -4921,12 +5769,15 @@ app.post("/api/sales-orders", async (req, res) => {
       const balMap = new Map(rows.map((r) => [r.productId, r.balanceBarrels]));
       for (const [pid, need] of prepaidNeedByProduct) {
         const avail = balMap.get(pid) ?? 0;
-        if (need > avail) {
+        const sameOrderTopup = prepaidTopupByProduct.get(pid) ?? 0;
+        if (need > avail + sameOrderTopup) {
           const p = productById.get(pid);
-          res.status(400).json({
-            ok: false,
-            message: `預付桶商品額度不足：${p?.name ?? "商品"} 需 ${need} 桶、可用 ${avail} 桶。請先儲值同商品桶數後再開單。`,
-          });
+          const shortfall = need - avail - sameOrderTopup;
+          const message =
+            sameOrderTopup > 0
+              ? `預付桶商品額度不足：${p?.name ?? "商品"} 需 ${need} 桶、目前 ${avail} 桶、本單儲值 ${sameOrderTopup} 桶後仍不足 ${shortfall} 桶。`
+              : `預付桶商品額度不足：${p?.name ?? "商品"} 需 ${need} 桶、可用 ${avail} 桶。請先儲值同商品桶數後再開單。`;
+          res.status(400).json({ ok: false, message });
           return;
         }
       }
@@ -4967,14 +5818,15 @@ app.post("/api/sales-orders", async (req, res) => {
       };
     });
 
-    const subtotal = lineCreates.reduce((acc, line) => acc.add(line.lineAmount), new Prisma.Decimal(0));
-
-    let cashSubtotal = new Prisma.Decimal(0);
-    let monthlySubtotal = new Prisma.Decimal(0);
-    for (const line of lineCreates) {
-      if (line.billingTypeAtLine === "cash") cashSubtotal = cashSubtotal.add(line.lineAmount);
-      else if (line.billingTypeAtLine === "monthly") monthlySubtotal = monthlySubtotal.add(line.lineAmount);
-    }
+    const totals = computeOrderTotalsFromLineAmounts(
+      lineCreates.map((l) => ({
+        lineAmount: l.lineAmount,
+        billingTypeAtLine: l.billingTypeAtLine,
+        linePurpose: l.linePurpose,
+        productId: l.productId,
+      })),
+    );
+    const { subtotal, cashSubtotal, monthlySubtotal } = totals;
 
     const created = await prisma.$transaction(async (tx) => {
       const so = await tx.salesOrder.create({
@@ -5011,7 +5863,7 @@ app.post("/api/sales-orders", async (req, res) => {
         createdByUserId: DEFAULT_CREATOR_USER_ID,
         cashInvoiceMode,
       });
-      await createCashTaxInvoiceIfNeeded(tx, {
+      await syncPlannedCashTaxInvoice(tx, {
         customerId,
         salesOrderId: so.id,
         cashInvoiceMode,
@@ -5118,7 +5970,7 @@ app.post("/api/driver/confirm-line-deliveries", async (req, res) => {
 
       let assignmentPatch: Prisma.DeliveryAssignmentUpdateInput = {};
       if (assignment.status === "pending_settlement") {
-        const receivedDec = new Prisma.Decimal(String(assignment.cashReceived ?? 0));
+        const receivedDec = assignmentFieldCollectedTotal(assignment);
         const variance = receivedDec.minus(cashDue);
         let settlementOutcome: string;
         if (receivedDec.isZero() && !cashDue.isZero()) {
@@ -5223,6 +6075,7 @@ app.post("/api/driver/complete", async (req, res) => {
       failureReason?: unknown;
       emptyBarrelsReturned?: unknown;
       cashReceived?: unknown;
+      checkReceived?: unknown;
       note?: unknown;
       /** 各明細實際配送桶數 */
       lines?: unknown;
@@ -5230,6 +6083,8 @@ app.post("/api/driver/complete", async (req, res) => {
       reportedAtYmd?: unknown;
       /** ISO 8601：若需指定時分秒可傳此欄（優先於 reportedAtYmd） */
       reportedAt?: unknown;
+      /** 二樓以上/地下樓搬運紀錄：可多筆（同商品不同樓層） */
+      floorBonusRecords?: unknown;
     };
 
     const assignmentId = toBigInt(body.assignmentId);
@@ -5237,6 +6092,7 @@ app.post("/api/driver/complete", async (req, res) => {
     const failureReason = typeof body.failureReason === "string" ? body.failureReason.trim() : "";
     const emptyBarrelsReturned = Number(body.emptyBarrelsReturned ?? 0);
     const cashReceived = Number(body.cashReceived ?? 0);
+    const checkReceived = Number(body.checkReceived ?? 0);
     const note = typeof body.note === "string" ? body.note.trim() : "";
 
     if (!assignmentId) {
@@ -5250,11 +6106,11 @@ app.post("/api/driver/complete", async (req, res) => {
         return;
       }
     } else {
-      if (!Number.isFinite(emptyBarrelsReturned) || !Number.isFinite(cashReceived)) {
-        res.status(400).json({ ok: false, message: "參數錯誤：emptyBarrelsReturned / cashReceived" });
+      if (!Number.isFinite(emptyBarrelsReturned) || !Number.isFinite(cashReceived) || !Number.isFinite(checkReceived)) {
+        res.status(400).json({ ok: false, message: "參數錯誤：emptyBarrelsReturned / cashReceived / checkReceived" });
         return;
       }
-      if (emptyBarrelsReturned < 0 || cashReceived < 0) {
+      if (emptyBarrelsReturned < 0 || cashReceived < 0 || checkReceived < 0) {
         res.status(400).json({ ok: false, message: "空桶回收與收款金額不可為負數" });
         return;
       }
@@ -5265,10 +6121,11 @@ app.post("/api/driver/complete", async (req, res) => {
       include: {
         salesOrder: {
           include: {
-            lines: true,
+            lines: { include: { product: true } },
             customer: true,
           },
         },
+        floorBonusRecords: true,
       },
     });
     if (!assignment) {
@@ -5349,16 +6206,27 @@ app.post("/api/driver/complete", async (req, res) => {
         parsedLineDeliveries = lineDeliveriesFromDb(order.lines);
       }
     }
+    const parsedFloorBonusRecords = delivered ? parseFloorBonusRecords(body.floorBonusRecords) : [];
+    if (parsedFloorBonusRecords === "INVALID") {
+      res.status(400).json({ ok: false, message: "搬運紀錄須包含有效樓層（2樓以上或地下樓）與非負整數桶數" });
+      return;
+    }
 
     const amendPrev =
       isAmendPending
         ? {
             emptyBarrelsReturned: assignment.emptyBarrelsReturned,
             cashReceived: assignment.cashReceived.toString(),
+            checkReceived: assignment.checkReceived.toString(),
             settlementOutcome: assignment.settlementOutcome,
             failureReason: assignment.failureReason,
             settlementNote: assignment.settlementNote,
             driverReportedAt: assignment.driverReportedAt?.toISOString() ?? null,
+            floorBonusRecords: assignment.floorBonusRecords.map((r) => ({
+              lineId: r.salesOrderLineId.toString(),
+              floor: r.floor,
+              qty: r.qty,
+            })),
           }
         : null;
 
@@ -5382,12 +6250,16 @@ app.post("/api/driver/complete", async (req, res) => {
             officeSettledAt: null,
             emptyBarrelsReturned: 0,
             cashReceived: 0,
+            checkReceived: 0,
             settlementOutcome: "not_delivered",
             failureReason,
             expectedAmount: cashDue,
             cashVariance: null,
             settlementNote: note || null,
           } as Prisma.DeliveryAssignmentUpdateInput,
+        });
+        await tx.floorDeliveryBonusRecord.deleteMany({
+          where: { deliveryAssignmentId: assignmentId },
         });
 
         await tx.deliveryEvent.create({
@@ -5438,7 +6310,7 @@ app.post("/api/driver/complete", async (req, res) => {
       });
       cashDue = collectCalc.collectDue;
 
-      const receivedDec = new Prisma.Decimal(String(cashReceived));
+      const receivedDec = assignmentFieldCollectedTotal({ cashReceived, checkReceived });
       const variance = receivedDec.minus(cashDue);
       let settlementOutcome: string;
       if (receivedDec.isZero() && !cashDue.isZero()) {
@@ -5460,12 +6332,18 @@ app.post("/api/driver/complete", async (req, res) => {
           officeSettledAt: null,
           emptyBarrelsReturned: Math.floor(emptyBarrelsReturned),
           cashReceived,
+          checkReceived,
           settlementOutcome,
           failureReason: null,
           expectedAmount: cashDue,
           cashVariance: variance,
           settlementNote: note || null,
         } as Prisma.DeliveryAssignmentUpdateInput,
+      });
+      const floorBonusCreated = await createFloorBonusRecords(tx, {
+        assignment,
+        order,
+        records: parsedFloorBonusRecords,
       });
 
       await tx.deliveryEvent.create({
@@ -5477,6 +6355,7 @@ app.post("/api/driver/complete", async (req, res) => {
             note: note || "司機回報送達",
             emptyBarrelsReturned: Math.floor(emptyBarrelsReturned),
             cashReceived,
+            checkReceived,
             orderTotal: orderTotal.toString(),
             orderCashAdjustment: String(orderAfter.orderCashAdjustment ?? 0),
             cashDue: cashDue.toString(),
@@ -5489,6 +6368,12 @@ app.post("/api/driver/complete", async (req, res) => {
               lineId: l.lineId.toString(),
               qtyDelivered: l.qtyDelivered,
             })),
+            floorBonusRecords: parsedFloorBonusRecords.map((r) => ({
+              lineId: r.lineId.toString(),
+              floor: r.floor,
+              qty: r.qty,
+            })),
+            floorBonusCreated,
             ...reportSourcePayload,
             ...(isAmendPending && amendPrev
               ? {
@@ -5574,6 +6459,9 @@ app.get("/api/driver/today", async (req, res) => {
           },
         },
         vehicle: true,
+        floorBonusRecords: {
+          orderBy: [{ floor: "asc" }, { id: "asc" }],
+        },
         events: {
           orderBy: { id: "asc" },
         },
@@ -5909,12 +6797,18 @@ app.post("/api/customers/:customerId/prepayment-topup-money", async (req, res) =
     const customerId = toBigInt(req.params.customerId);
     const amount = new Prisma.Decimal(Number(req.body?.amount ?? 0));
     const note = typeof req.body?.note === "string" ? req.body.note.trim() : "";
+    const invoiceModeRaw = req.body?.invoiceMode;
     if (!customerId || amount.lessThanOrEqualTo(0)) {
       res.status(400).json({ ok: false, message: "參數錯誤：customerId 與 amount(>0) 必填" });
       return;
     }
 
     const result = await prisma.$transaction(async (tx) => {
+      const cust = await tx.customer.findUnique({ where: { id: customerId } });
+      if (!cust) throw new Error("CUSTOMER_NOT_FOUND");
+      const invoiceMode = normalizeCashInvoiceMode(
+        typeof invoiceModeRaw === "string" ? invoiceModeRaw : (cust.defaultCashInvoiceMode ?? "none"),
+      );
       const wallet = await ensurePrepaymentWallet(tx, customerId);
       const voucher = await tx.receiptVoucher.create({
         data: {
@@ -5955,15 +6849,49 @@ app.post("/api/customers/:customerId/prepayment-topup-money", async (req, res) =
           note: note || "預收款儲值",
         },
       });
+      let taxInvoice = null;
+      if (invoiceMode !== "none") {
+        const br = breakdownCashTaxInvoice(amount, invoiceMode);
+        if (br) {
+          taxInvoice = await createTaxInvoicePlanned(tx, {
+            customerId,
+            basisType: "prepayment_topup",
+            receiptVoucherId: voucher.id,
+            invoiceMode,
+            untaxedAmount: br.untaxedAmount,
+            taxAmount: br.taxAmount,
+            totalAmount: br.totalWithTax,
+            note: note || "預收款儲值",
+          });
+        }
+      }
       await autoApplyPrepaymentToLatestOpenAr(tx, {
         customerId,
         note: "自動預收抵扣（儲值後）",
       });
-      return tx.customerPrepaymentWallet.findUnique({ where: { customerId } });
+      const walletAfter = await tx.customerPrepaymentWallet.findUnique({ where: { customerId } });
+      return { wallet: walletAfter, taxInvoice };
     });
-    res.status(201).json({ ok: true, data: result });
+    res.status(201).json({
+      ok: true,
+      data: {
+        wallet: result.wallet,
+        taxInvoice: result.taxInvoice
+          ? {
+              id: result.taxInvoice.id.toString(),
+              invoiceNo: result.taxInvoice.invoiceNo,
+              status: result.taxInvoice.status,
+            }
+          : null,
+      },
+    });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    const msg = String(e);
+    if (msg.includes("CUSTOMER_NOT_FOUND")) {
+      res.status(404).json({ ok: false, message: "找不到客戶" });
+      return;
+    }
+    res.status(500).json({ ok: false, message: msg });
   }
 });
 
@@ -6384,20 +7312,15 @@ app.post("/api/billing/statements/post", async (req, res) => {
 
       const taxInvoice =
         invoiceMode !== "none"
-          ? await tx.taxInvoice.create({
-              data: {
-                invoiceNo: generateTaxInvoiceNo(),
-                customerId,
-                basisType: "billing_statement",
-                billingStatementId: stmt.id,
-                salesOrderId: null,
-                invoiceMode,
-                untaxedAmount: untaxedTotal,
-                taxAmount,
-                totalAmount: totalWithTax,
-                taxRate,
-                status: "issued",
-              },
+          ? await createTaxInvoicePlanned(tx, {
+              customerId,
+              basisType: "billing_statement",
+              billingStatementId: stmt.id,
+              invoiceMode,
+              untaxedAmount: untaxedTotal,
+              taxAmount,
+              totalAmount: totalWithTax,
+              taxRate,
             })
           : null;
 
@@ -6413,6 +7336,184 @@ app.post("/api/billing/statements/post", async (req, res) => {
     });
 
     res.status(201).json({ ok: true, data: postedBundle });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+const taxInvoiceInclude = {
+  customer: { select: { id: true, name: true, taxId: true } },
+  salesOrder: { select: { id: true, orderNo: true } },
+  billingStatement: { select: { id: true, statementNo: true } },
+  receiptVoucher: { select: { id: true, voucherNo: true } },
+} satisfies Prisma.TaxInvoiceInclude;
+
+function serializeTaxInvoice(
+  ti: Prisma.TaxInvoiceGetPayload<{ include: typeof taxInvoiceInclude }>,
+) {
+  return {
+    id: ti.id.toString(),
+    invoiceNo: ti.invoiceNo,
+    externalInvoiceNo: ti.externalInvoiceNo,
+    customerId: ti.customerId.toString(),
+    customerName: ti.customer?.name ?? null,
+    basisType: ti.basisType,
+    salesOrderId: ti.salesOrderId?.toString() ?? null,
+    salesOrderNo: ti.salesOrder?.orderNo ?? null,
+    billingStatementId: ti.billingStatementId?.toString() ?? null,
+    billingStatementNo: ti.billingStatement?.statementNo ?? null,
+    receiptVoucherId: ti.receiptVoucherId?.toString() ?? null,
+    receiptVoucherNo: ti.receiptVoucher?.voucherNo ?? null,
+    invoiceMode: ti.invoiceMode,
+    untaxedAmount: ti.untaxedAmount.toString(),
+    taxAmount: ti.taxAmount.toString(),
+    totalAmount: ti.totalAmount.toString(),
+    taxRate: ti.taxRate.toString(),
+    status: ti.status,
+    buyerTaxId: ti.buyerTaxId,
+    buyerName: ti.buyerName,
+    note: ti.note,
+    issuedAt: ti.issuedAt.toISOString(),
+    createdAt: ti.createdAt.toISOString(),
+  };
+}
+
+/** 發票查詢：依日期、客戶、狀態、來源類型篩選 */
+app.get("/api/tax-invoices", async (req, res) => {
+  try {
+    const customerId = toBigInt(req.query.customerId);
+    const statusParam = typeof req.query.status === "string" ? req.query.status.trim() : "";
+    const basisTypeParam = typeof req.query.basisType === "string" ? req.query.basisType.trim() : "";
+    const dateFromParam = typeof req.query.dateFrom === "string" ? req.query.dateFrom.trim() : "";
+    const dateToParam = typeof req.query.dateTo === "string" ? req.query.dateTo.trim() : "";
+    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    const salesOrderId = toBigInt(req.query.salesOrderId);
+    const billingStatementId = toBigInt(req.query.billingStatementId);
+
+    const where: Prisma.TaxInvoiceWhereInput = {};
+    if (customerId) where.customerId = customerId;
+    if (statusParam === "planned" || statusParam === "issued" || statusParam === "voided") {
+      where.status = statusParam;
+    }
+    if (basisTypeParam === "sales_order" || basisTypeParam === "billing_statement" || basisTypeParam === "prepayment_topup") {
+      where.basisType = basisTypeParam;
+    }
+    if (salesOrderId) where.salesOrderId = salesOrderId;
+    if (billingStatementId) where.billingStatementId = billingStatementId;
+    if (dateFromParam || dateToParam) {
+      const range: Prisma.DateTimeFilter = {};
+      if (dateFromParam) {
+        const parsedFrom = parseLocalYmdRange(dateFromParam);
+        if (!parsedFrom) {
+          res.status(400).json({ ok: false, message: "dateFrom 格式須為 YYYY-MM-DD" });
+          return;
+        }
+        range.gte = parsedFrom.start;
+      }
+      if (dateToParam) {
+        const parsedTo = parseLocalYmdRange(dateToParam);
+        if (!parsedTo) {
+          res.status(400).json({ ok: false, message: "dateTo 格式須為 YYYY-MM-DD" });
+          return;
+        }
+        range.lt = parsedTo.end;
+      }
+      where.createdAt = range;
+    }
+    if (q) {
+      where.OR = [
+        { invoiceNo: { contains: q } },
+        { externalInvoiceNo: { contains: q } },
+        { buyerName: { contains: q } },
+        { buyerTaxId: { contains: q } },
+        { customer: { name: { contains: q } } },
+        { salesOrder: { orderNo: { contains: q } } },
+        { billingStatement: { statementNo: { contains: q } } },
+        { receiptVoucher: { voucherNo: { contains: q } } },
+      ];
+    }
+
+    const rows = await prisma.taxInvoice.findMany({
+      where,
+      include: taxInvoiceInclude,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: 500,
+    });
+    res.json({ ok: true, data: rows.map(serializeTaxInvoice) });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+/** 補登實際發票號碼／更新發票紀錄 */
+app.patch("/api/tax-invoices/:id", async (req, res) => {
+  try {
+    const id = toBigInt(req.params.id);
+    if (!id) {
+      res.status(400).json({ ok: false, message: "參數錯誤：id" });
+      return;
+    }
+    const body = req.body as {
+      externalInvoiceNo?: unknown;
+      note?: unknown;
+      buyerTaxId?: unknown;
+      buyerName?: unknown;
+      status?: unknown;
+    };
+    const existing = await prisma.taxInvoice.findUnique({ where: { id } });
+    if (!existing) {
+      res.status(404).json({ ok: false, message: "找不到發票紀錄" });
+      return;
+    }
+    if (existing.status === "voided") {
+      res.status(400).json({ ok: false, message: "已作廢的發票不可修改" });
+      return;
+    }
+
+    const patch: Prisma.TaxInvoiceUpdateInput = {};
+    if (typeof body.externalInvoiceNo === "string") {
+      const ext = body.externalInvoiceNo.trim();
+      patch.externalInvoiceNo = ext || null;
+      if (ext) {
+        patch.status = "issued";
+        patch.issuedAt = new Date();
+      }
+    }
+    if (typeof body.note === "string") patch.note = body.note.trim() || null;
+    if (typeof body.buyerTaxId === "string") patch.buyerTaxId = body.buyerTaxId.trim() || null;
+    if (typeof body.buyerName === "string") patch.buyerName = body.buyerName.trim() || null;
+    if (body.status === "voided") {
+      patch.status = "voided";
+    } else if (body.status === "planned" && existing.status !== "issued") {
+      patch.status = "planned";
+      patch.externalInvoiceNo = null;
+    }
+
+    if (Object.keys(patch).length === 0) {
+      res.status(400).json({ ok: false, message: "無有效更新欄位" });
+      return;
+    }
+
+    if (patch.externalInvoiceNo && typeof patch.externalInvoiceNo === "string") {
+      const dup = await prisma.taxInvoice.findFirst({
+        where: {
+          externalInvoiceNo: patch.externalInvoiceNo,
+          id: { not: id },
+          status: { not: "voided" },
+        },
+      });
+      if (dup) {
+        res.status(400).json({ ok: false, message: "此發票號碼已被其他紀錄使用" });
+        return;
+      }
+    }
+
+    const updated = await prisma.taxInvoice.update({
+      where: { id },
+      data: patch,
+      include: taxInvoiceInclude,
+    });
+    res.json({ ok: true, data: serializeTaxInvoice(updated) });
   } catch (e) {
     res.status(500).json({ ok: false, message: String(e) });
   }

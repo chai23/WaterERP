@@ -67,6 +67,7 @@ model Driver {
   vehicle     Vehicle?             @relation(fields: [vehicleId], references: [id])
   assignments DeliveryAssignment[]
   barrelPickups BarrelPickup[]
+  floorBonusRecords FloorDeliveryBonusRecord[]
 
   @@map("drivers")
 }
@@ -203,6 +204,8 @@ model DeliveryAddress {
   customerId    BigInt   @map("customer_id") @db.UnsignedBigInt
   label         String?  @db.VarChar(100)
   addressLine   String   @map("address_line") @db.VarChar(500)
+  /// 送貨樓層（1=一樓, 2=二樓, -1=地下一樓；null=未設定）
+  deliveryFloor Int?     @map("delivery_floor") @db.SmallInt
   contactName   String?  @map("contact_name") @db.VarChar(100)
   contactPhone  String?  @map("contact_phone") @db.VarChar(32)
   contactMobile String?  @map("contact_mobile") @db.VarChar(32)
@@ -243,6 +246,7 @@ model Product {
   stockMovements       StockMovement[]
   purchaseOrderLines   PurchaseOrderLine[]
   prepaidCustomerBalances CustomerPrepaidProductBalance[]
+  floorBonusRecords       FloorDeliveryBonusRecord[]
 
   @@map("products")
 }
@@ -294,6 +298,7 @@ model SalesOrder {
   creditNotes     CreditNote[]
   billingStatementOrder BillingStatementOrder?
   taxInvoices          TaxInvoice[]
+  floorBonusRecords    FloorDeliveryBonusRecord[]
 
   @@index([customerId, officeSettledAt])
   @@map("sales_orders")
@@ -344,6 +349,7 @@ model SalesOrderLine {
 
   salesOrder SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
   product    Product    @relation(fields: [productId], references: [id])
+  floorBonusRecords FloorDeliveryBonusRecord[]
 
   @@map("sales_order_lines")
 }
@@ -470,6 +476,7 @@ model DeliveryAssignment {
   driverReportedAt     DateTime? @map("driver_reported_at") @db.DateTime(3)
   emptyBarrelsReturned Int       @default(0) @map("empty_barrels_returned")
   cashReceived         Decimal   @default(0) @map("cash_received") @db.Decimal(14, 2)
+  checkReceived        Decimal   @default(0) @map("check_received") @db.Decimal(14, 2)
   /// 核銷結果：not_delivered | delivered_cash_exact | delivered_cash_short | delivered_cash_over | delivered_no_cash（舊資料為 null）
   settlementOutcome    String?   @map("settlement_outcome") @db.VarChar(40)
   failureReason        String?   @map("failure_reason") @db.Text
@@ -486,8 +493,35 @@ model DeliveryAssignment {
   vehicle      Vehicle?          @relation(fields: [vehicleId], references: [id])
   assignedBy   User?             @relation("AssignmentAssigner", fields: [assignedByUserId], references: [id])
   events       DeliveryEvent[]
+  floorBonusRecords FloorDeliveryBonusRecord[]
 
   @@map("delivery_assignments")
+}
+
+model FloorDeliveryBonusRecord {
+  id                   BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  deliveryAssignmentId BigInt   @map("delivery_assignment_id") @db.UnsignedBigInt
+  salesOrderId         BigInt   @map("sales_order_id") @db.UnsignedBigInt
+  salesOrderLineId     BigInt   @map("sales_order_line_id") @db.UnsignedBigInt
+  orderNo              String   @map("order_no") @db.VarChar(40)
+  deliveryDate         DateTime @map("delivery_date") @db.Date
+  driverId             BigInt   @map("driver_id") @db.UnsignedBigInt
+  productId            BigInt   @map("product_id") @db.UnsignedBigInt
+  productName          String   @map("product_name") @db.VarChar(200)
+  qty                  Int      @db.UnsignedInt
+  floor                Int      @db.SmallInt
+  createdAt            DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  deliveryAssignment DeliveryAssignment @relation(fields: [deliveryAssignmentId], references: [id])
+  salesOrder         SalesOrder         @relation(fields: [salesOrderId], references: [id])
+  salesOrderLine     SalesOrderLine     @relation(fields: [salesOrderLineId], references: [id])
+  driver             Driver             @relation(fields: [driverId], references: [id])
+  product            Product            @relation(fields: [productId], references: [id])
+
+  @@index([deliveryAssignmentId, salesOrderLineId, floor], map: "idx_floor_bonus_line_assignment_floor")
+  @@index([deliveryDate], map: "idx_floor_bonus_delivery_date")
+  @@index([driverId, deliveryDate], map: "idx_floor_bonus_driver_date")
+  @@map("floor_delivery_bonus_records")
 }
 
 model DeliveryEvent {
@@ -591,26 +625,38 @@ model BillingStatementOrder {
 model TaxInvoice {
   id                   BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
   invoiceNo            String    @unique @map("invoice_no") @db.VarChar(40)
+  /// 實際發票號碼（財務系統開出後補登）
+  externalInvoiceNo    String?   @map("external_invoice_no") @db.VarChar(20)
   customerId           BigInt    @map("customer_id") @db.UnsignedBigInt
+  /// billing_statement | sales_order | prepayment_topup
   basisType            String    @map("basis_type") @db.VarChar(24)
   billingStatementId   BigInt?   @map("billing_statement_id") @db.UnsignedBigInt
   salesOrderId         BigInt?   @map("sales_order_id") @db.UnsignedBigInt
+  receiptVoucherId     BigInt?   @map("receipt_voucher_id") @db.UnsignedBigInt
   invoiceMode          String    @default("tax_exclusive") @map("invoice_mode") @db.VarChar(32)
   untaxedAmount        Decimal   @default(0) @map("untaxed_amount") @db.Decimal(14, 2)
   taxAmount            Decimal   @default(0) @map("tax_amount") @db.Decimal(14, 2)
   totalAmount          Decimal   @default(0) @map("total_amount") @db.Decimal(14, 2)
+  buyerTaxId           String?   @map("buyer_tax_id") @db.VarChar(16)
+  buyerName            String?   @map("buyer_name") @db.VarChar(120)
+  note                 String?   @db.Text
   taxRate              Decimal   @default(0.05) @map("tax_rate") @db.Decimal(8, 6)
-  status               String    @default("issued") @map("status") @db.VarChar(24)
+  /// planned | issued | voided
+  status               String    @default("planned") @map("status") @db.VarChar(24)
   issuedAt             DateTime  @default(now()) @map("issued_at") @db.DateTime(3)
   createdAt            DateTime  @default(now()) @map("created_at") @db.DateTime(3)
 
   customer         Customer          @relation(fields: [customerId], references: [id])
   billingStatement BillingStatement? @relation(fields: [billingStatementId], references: [id], onDelete: SetNull)
   salesOrder       SalesOrder?       @relation(fields: [salesOrderId], references: [id], onDelete: SetNull)
+  receiptVoucher   ReceiptVoucher?   @relation(fields: [receiptVoucherId], references: [id], onDelete: SetNull)
 
   @@index([customerId, issuedAt])
   @@index([billingStatementId])
   @@index([salesOrderId])
+  @@index([receiptVoucherId])
+  @@index([externalInvoiceNo])
+  @@index([status])
   @@map("tax_invoices")
 }
 
@@ -658,6 +704,7 @@ model ReceiptVoucher {
   payment     Payment?
   ledgerEntries CustomerLedgerEntry[]
   prepaymentTxns PrepaymentTxn[]
+  taxInvoices TaxInvoice[]
 
   @@index([customerId, paidAt])
   @@map("receipt_vouchers")

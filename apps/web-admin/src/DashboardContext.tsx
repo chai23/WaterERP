@@ -8,36 +8,55 @@ type SummaryState = {
   range: string;
   startDate: string;
   endDate: string;
-  todayRevenue: number;
-  todayCashReceived: number;
+  periodRevenue: number;
+  periodCollected: number;
+  periodCollectedCash: number;
+  periodCollectedTransfer: number;
+  periodCollectedOther: number;
   todayCompletedCount: number;
-  unpaidAmount: number;
+  periodOrderOutstanding: number;
 };
 
 const defaultSummaryState = (today = todayLocalYmd()): SummaryState => ({
   range: "today",
   startDate: today,
   endDate: today,
-  todayRevenue: 0,
-  todayCashReceived: 0,
+  periodRevenue: 0,
+  periodCollected: 0,
+  periodCollectedCash: 0,
+  periodCollectedTransfer: 0,
+  periodCollectedOther: 0,
   todayCompletedCount: 0,
-  unpaidAmount: 0,
+  periodOrderOutstanding: 0,
 });
 
 const asArray = <T,>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
 
 const asSummaryState = (value: unknown, today: string): SummaryState => {
   if (!value || typeof value !== "object") return defaultSummaryState(today);
-  const row = value as Partial<Record<keyof SummaryState, unknown>>;
+  const row = value as Partial<SummaryState> & {
+    todayRevenue?: unknown;
+    todayCashReceived?: unknown;
+    unpaidAmount?: unknown;
+  };
+  const periodCollectedCash = Number(row.periodCollectedCash ?? row.todayCashReceived ?? 0);
+  const periodCollectedTransfer = Number(row.periodCollectedTransfer ?? 0);
+  const periodCollectedOther = Number(row.periodCollectedOther ?? 0);
+  const periodCollected = Number(
+    row.periodCollected ?? periodCollectedCash + periodCollectedTransfer + periodCollectedOther,
+  );
   return {
     ...defaultSummaryState(today),
     range: typeof row.range === "string" ? row.range : "today",
     startDate: typeof row.startDate === "string" ? row.startDate : today,
     endDate: typeof row.endDate === "string" ? row.endDate : today,
-    todayRevenue: Number(row.todayRevenue ?? 0),
-    todayCashReceived: Number(row.todayCashReceived ?? 0),
+    periodRevenue: Number(row.periodRevenue ?? row.todayRevenue ?? 0),
+    periodCollected,
+    periodCollectedCash,
+    periodCollectedTransfer,
+    periodCollectedOther,
     todayCompletedCount: Number(row.todayCompletedCount ?? 0),
-    unpaidAmount: Number(row.unpaidAmount ?? 0),
+    periodOrderOutstanding: Number(row.periodOrderOutstanding ?? row.unpaidAmount ?? 0),
   };
 };
 

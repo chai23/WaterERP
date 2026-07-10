@@ -9,7 +9,7 @@ export default function AccountingStatsSection({ mode }: { mode: Mode }) {
 
   return (
     <section className="card">
-      <h2 className="card__title">
+      <h2 className="card__title card__title--stacked">
         {mode === "overview" && "營運指標"}
         {mode === "daily" && "日報表 · 營運指標"}
         {mode === "monthly" && "月報表 · 營運指標"}
@@ -68,7 +68,7 @@ export default function AccountingStatsSection({ mode }: { mode: Mode }) {
             onChange={(e) => setSummaryFilter((prev) => ({ ...prev, endDate: e.target.value }))}
             disabled={summaryFilter.range !== "custom"}
           />
-          <span className="stats-range-hint">四張卡片套用同一區間 · 變更後會自動重新載入資料</span>
+          <span className="stats-range-hint">前三張依區間統計；待收為本區間完成訂單之應收未清 · 變更後會自動重新載入</span>
         </div>
       ) : (
         <div className="form-actions stats-refresh-actions">
@@ -78,22 +78,40 @@ export default function AccountingStatsSection({ mode }: { mode: Mode }) {
         </div>
       )}
 
-      <div className="stats-grid">
+      <div className="stats-grid stats-grid--metrics">
         <article className="stat-card stat-card--revenue">
           <div className="stat-card__label">區間營收</div>
-          <div className="stat-card__value">{summary.todayRevenue.toLocaleString()}</div>
+          <div className="stat-card__value">{summary.periodRevenue.toLocaleString()}</div>
+          <p className="stat-card__hint">本區間完成訂單應收合計（含稅現金＋月結）</p>
         </article>
         <article className="stat-card stat-card--cash">
-          <div className="stat-card__label">區間現收</div>
-          <div className="stat-card__value">{summary.todayCashReceived.toLocaleString()}</div>
+          <div className="stat-card__label">區間收款</div>
+          <div className="stat-card__value">{summary.periodCollected.toLocaleString()}</div>
+          <p className="stat-card__hint">
+            現金 {summary.periodCollectedCash.toLocaleString()}
+            {summary.periodCollectedTransfer > 0 ? (
+              <>
+                <br />
+                匯款 {summary.periodCollectedTransfer.toLocaleString()}
+              </>
+            ) : null}
+            {summary.periodCollectedOther > 0 ? (
+              <>
+                <br />
+                其他 {summary.periodCollectedOther.toLocaleString()}
+              </>
+            ) : null}
+          </p>
         </article>
         <article className="stat-card stat-card--count">
           <div className="stat-card__label">已完成單數</div>
           <div className="stat-card__value">{summary.todayCompletedCount}</div>
+          <p className="stat-card__hint">本區間配送完成筆數</p>
         </article>
         <article className="stat-card stat-card--unpaid">
-          <div className="stat-card__label">未收款金額</div>
-          <div className="stat-card__value">{summary.unpaidAmount.toLocaleString()}</div>
+          <div className="stat-card__label">區間待收</div>
+          <div className="stat-card__value">{summary.periodOrderOutstanding.toLocaleString()}</div>
+          <p className="stat-card__hint">本區間完成訂單之應收未清（AR）</p>
         </article>
       </div>
     </section>
