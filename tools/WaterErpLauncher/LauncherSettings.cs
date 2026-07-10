@@ -9,6 +9,7 @@ internal sealed class LauncherSettings
     public string ApiBaseUrl { get; set; } = "http://125.228.16.160";
     public string AdminUrl { get; set; } = "http://125.228.16.160/";
     public string DriverUrl { get; set; } = "http://125.228.16.160/driver/";
+    public string GitBranch { get; set; } = "main";
 
     /// <summary>正式部署：啟動 Nginx，前端走 build 後的靜態檔。</summary>
     public bool UseProductionMode { get; set; } = true;

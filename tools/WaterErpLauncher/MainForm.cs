@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net.Http;
 using System.Text;
+using System.Text.Json;
 
 namespace WaterErpLauncher;
 
@@ -39,9 +40,14 @@ internal sealed class MainForm : Form
     private readonly Button _btnBrowseNginx = new() { Text = "瀏覽…" };
     private readonly Button _btnStart = new() { Text = "啟動服務" };
     private readonly Button _btnStop = new() { Text = "停止全部", Enabled = false };
+    private readonly Button _btnGitPull = new() { Text = "Git 拉取最新" };
+    private readonly Button _btnDeployUpdate = new() { Text = "更新並部署" };
     private readonly Button _btnBuild = new() { Text = "建置專案 (npm run build)" };
     private readonly Button _btnPrisma = new() { Text = "Prisma generate" };
     private readonly Button _btnResetData = new() { Text = "清空業務資料" };
+    private readonly Button _btnCheckSchema = new() { Text = "檢查結構" };
+    private readonly Button _btnApplySchema = new() { Text = "升級結構" };
+    private readonly Label _schemaStatusLabel = new() { AutoSize = true, Text = "結構：尚未檢查", ForeColor = SystemColors.GrayText };
     private readonly Button _btnMigrateZones = new() { Text = "轉換地址分區" };
     private readonly Button _btnMigrateCompanies = new() { Text = "轉換隸屬公司" };
     private readonly Button _btnMigrateCustomers = new() { Text = "轉換客戶資料" };
@@ -59,22 +65,24 @@ internal sealed class MainForm : Form
     private Process? _driverDevProcess;
     private bool _nginxStartedByLauncher;
     private bool _uiBusy;
+    private string _gitBranch = "main";
     private readonly FlowLayoutPanel _devOpts;
 
     public MainForm()
     {
-        Text = "WaterERP 伺服器啟動器 v1.3.4";
-        MinimumSize = new Size(720, 620);
-        Size = new Size(900, 680);
+        Text = "WaterERP 伺服器啟動器 v1.5";
+        MinimumSize = new Size(720, 660);
+        Size = new Size(900, 720);
         StartPosition = FormStartPosition.CenterScreen;
 
         var root = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 5,
+            RowCount = 7,
             Padding = new Padding(10)
         };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -141,11 +149,59 @@ internal sealed class MainForm : Form
         };
         buttons.Controls.Add(_btnStart);
         buttons.Controls.Add(_btnStop);
+        buttons.Controls.Add(_btnGitPull);
+        buttons.Controls.Add(_btnDeployUpdate);
         buttons.Controls.Add(_btnBuild);
         buttons.Controls.Add(_btnPrisma);
         buttons.Controls.Add(_btnResetData);
         buttons.Controls.Add(_btnOpenAdmin);
         buttons.Controls.Add(_btnOpenDriver);
+
+        var deployHint = new Label
+        {
+            Text = "從 GitHub 更新：「Git 拉取最新」只下載程式；「更新並部署」= 停止 → 拉取 → 建置 → 啟動",
+            AutoSize = true,
+            MaximumSize = new Size(860, 0),
+            ForeColor = SystemColors.GrayText
+        };
+        var deployPanel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            AutoSize = true,
+            RowCount = 1
+        };
+        deployPanel.Controls.Add(deployHint, 0, 0);
+
+        var schemaLabel = new Label
+        {
+            Text = "資料庫結構（water_erp 欄位／資料表升級）",
+            AutoSize = true,
+            Anchor = AnchorStyles.Left | AnchorStyles.Top
+        };
+        var schemaButtons = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            WrapContents = false,
+            FlowDirection = FlowDirection.LeftToRight
+        };
+        schemaButtons.Controls.Add(_btnCheckSchema);
+        schemaButtons.Controls.Add(_btnApplySchema);
+
+        var schemaPanel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            AutoSize = true,
+            RowCount = 3
+        };
+        schemaPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        schemaPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        schemaPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        schemaPanel.Controls.Add(schemaLabel, 0, 0);
+        schemaPanel.Controls.Add(schemaButtons, 0, 1);
+        schemaPanel.Controls.Add(_schemaStatusLabel, 0, 2);
 
         var migrateLabel = new Label
         {
@@ -200,9 +256,11 @@ internal sealed class MainForm : Form
 
         root.Controls.Add(formPanel, 0, 0);
         root.Controls.Add(buttons, 0, 1);
-        root.Controls.Add(migratePanel, 0, 2);
-        root.Controls.Add(statusPanel, 0, 3);
-        root.Controls.Add(_log, 0, 4);
+        root.Controls.Add(deployPanel, 0, 2);
+        root.Controls.Add(schemaPanel, 0, 3);
+        root.Controls.Add(migratePanel, 0, 4);
+        root.Controls.Add(statusPanel, 0, 5);
+        root.Controls.Add(_log, 0, 6);
 
         Controls.Add(root);
 
@@ -211,9 +269,13 @@ internal sealed class MainForm : Form
         _chkProductionMode.CheckedChanged += (_, _) => SyncDeploymentModeUi();
         _btnStart.Click += async (_, _) => await StartAllAsync().ConfigureAwait(true);
         _btnStop.Click += async (_, _) => await StopAllAsync().ConfigureAwait(true);
+        _btnGitPull.Click += async (_, _) => await GitPullAsync().ConfigureAwait(true);
+        _btnDeployUpdate.Click += async (_, _) => await PullAndDeployAsync().ConfigureAwait(true);
         _btnBuild.Click += async (_, _) => await RunRootNpmCommandAsync("run build").ConfigureAwait(true);
         _btnPrisma.Click += async (_, _) => await RunRootNpmCommandAsync("run db:generate").ConfigureAwait(true);
         _btnResetData.Click += async (_, _) => await ResetDataAsync().ConfigureAwait(true);
+        _btnCheckSchema.Click += async (_, _) => await CheckSchemaAsync().ConfigureAwait(true);
+        _btnApplySchema.Click += async (_, _) => await ApplySchemaAsync().ConfigureAwait(true);
         _btnMigrateZones.Click += async (_, _) => await MigrateLegacyAsync("run db:migrate-zones", "轉換地址分區", MigrateZonesConfirmText()).ConfigureAwait(true);
         _btnMigrateCompanies.Click += async (_, _) => await MigrateLegacyAsync("run db:migrate-companies", "轉換隸屬公司", MigrateCompaniesConfirmText()).ConfigureAwait(true);
         _btnMigrateCustomers.Click += async (_, _) => await MigrateLegacyAsync("run db:migrate-customers", "轉換客戶資料", MigrateCustomersConfirmText()).ConfigureAwait(true);
@@ -260,6 +322,7 @@ internal sealed class MainForm : Form
         _apiBaseUrl.Text = string.IsNullOrWhiteSpace(s.ApiBaseUrl) ? "http://125.228.16.160" : s.ApiBaseUrl;
         _adminUrl.Text = string.IsNullOrWhiteSpace(s.AdminUrl) ? "http://125.228.16.160/" : s.AdminUrl;
         _driverUrl.Text = string.IsNullOrWhiteSpace(s.DriverUrl) ? "http://125.228.16.160/driver/" : s.DriverUrl;
+        _gitBranch = string.IsNullOrWhiteSpace(s.GitBranch) ? "main" : s.GitBranch.Trim();
         _chkProductionMode.Checked = s.UseProductionMode;
         _chkAdminDev.Checked = s.StartAdminDevWithApi;
         _chkDriverDev.Checked = s.StartDriverDevWithApi;
@@ -270,6 +333,7 @@ internal sealed class MainForm : Form
 
         _healthTimer.Start();
         AppendLog("就緒。正式部署請勾選「Nginx + 靜態前端」，按「啟動服務」會啟動 API 與 Nginx。");
+        _ = CheckSchemaQuietlyOnLoadAsync();
     }
 
     private static string MigrateZonesConfirmText() =>
@@ -335,6 +399,7 @@ internal sealed class MainForm : Form
             AdminUrl = _adminUrl.Text.Trim(),
             DriverUrl = _driverUrl.Text.Trim(),
             UseProductionMode = _chkProductionMode.Checked,
+            GitBranch = _gitBranch,
             StartAdminDevWithApi = _chkAdminDev.Checked,
             StartDriverDevWithApi = _chkDriverDev.Checked
         };
@@ -1178,11 +1243,95 @@ internal sealed class MainForm : Form
         }
     }
 
-    private async Task RunRootNpmCommandAsync(string npmArguments)
+    private static string? FindGitExe()
+    {
+        var pathEnv = Environment.GetEnvironmentVariable("PATH");
+        if (string.IsNullOrEmpty(pathEnv))
+            return null;
+        foreach (var dir in pathEnv.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var candidate = Path.Combine(dir.Trim().Trim('"'), "git.exe");
+            if (File.Exists(candidate))
+                return candidate;
+        }
+        return null;
+    }
+
+    private void ValidateGitRepo()
+    {
+        var root = _projectRoot.Text.Trim();
+        if (!Directory.Exists(Path.Combine(root, ".git")))
+            throw new InvalidOperationException("此資料夾不是 Git 倉庫。請確認專案根目錄是否正確。");
+    }
+
+    private async Task<int?> RunGitCommandCoreAsync(string workingDirectory, string arguments)
+    {
+        var git = FindGitExe();
+        if (string.IsNullOrEmpty(git))
+        {
+            AppendLog("找不到 git.exe，請確認已安裝 Git 並加入 PATH。");
+            return null;
+        }
+
+        AppendLog($"> \"{workingDirectory}\" git {arguments}");
+        var exitCode = -1;
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = git,
+                Arguments = arguments,
+                WorkingDirectory = workingDirectory,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8
+            };
+
+            using var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
+            var stdout = new StringBuilder();
+            var stderr = new StringBuilder();
+            proc.OutputDataReceived += (_, e) =>
+            {
+                if (e.Data != null)
+                    stdout.AppendLine(e.Data);
+            };
+            proc.ErrorDataReceived += (_, e) =>
+            {
+                if (e.Data != null)
+                    stderr.AppendLine(e.Data);
+            };
+
+            proc.Start();
+            proc.BeginOutputReadLine();
+            proc.BeginErrorReadLine();
+            await proc.WaitForExitAsync().ConfigureAwait(true);
+            exitCode = proc.ExitCode;
+
+            if (stdout.Length > 0)
+                AppendLog(stdout.ToString().TrimEnd());
+            if (stderr.Length > 0)
+                AppendLog(stderr.ToString().TrimEnd());
+
+            AppendLog(exitCode == 0 ? "Git 命令完成（成功）。" : $"Git 命令結束，結束代碼 {exitCode}。");
+        }
+        catch (Exception ex)
+        {
+            AppendLog("Git 執行錯誤：" + ex.Message);
+            return null;
+        }
+
+        return exitCode;
+    }
+
+    private async Task GitPullAsync()
     {
         try
         {
             ValidateProjectRoot();
+            ValidateGitRepo();
         }
         catch (InvalidOperationException ex)
         {
@@ -1190,28 +1339,194 @@ internal sealed class MainForm : Form
             return;
         }
 
-        await RunNpmCommandAsync(_projectRoot.Text.Trim(), npmArguments).ConfigureAwait(true);
+        if (IsAnyServiceRunning())
+        {
+            var stopFirst = MessageBox.Show(
+                this,
+                "目前有服務在執行中。建議先停止服務再拉取程式，是否現在停止全部？",
+                Text,
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question,
+                MessageBoxDefaultButton.Button1);
+            if (stopFirst == DialogResult.Yes)
+                await StopAllAsync().ConfigureAwait(true);
+        }
+
+        SetBusy(true);
+        try
+        {
+            var root = _projectRoot.Text.Trim();
+            var exitCode = await RunGitCommandCoreAsync(root, $"pull origin {_gitBranch}").ConfigureAwait(true);
+            if (exitCode == 0)
+            {
+                MessageBox.Show(
+                    this,
+                    $"已從 GitHub 拉取最新程式（分支 {_gitBranch}）。\n\n若要在正式環境生效，請按「建置專案」後再「啟動服務」，或直接按「更新並部署」。",
+                    Text,
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+            else if (exitCode != null)
+            {
+                MessageBox.Show(
+                    this,
+                    $"Git 拉取失敗（結束代碼 {exitCode}）。\n請查看下方日誌。",
+                    Text,
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+        }
+        finally
+        {
+            SetBusy(false);
+        }
     }
 
-    private async Task<int?> RunNpmCommandAsync(string workingDirectory, string npmArguments)
+    private async Task<bool> BuildProductionCoreAsync(string projectRoot)
+    {
+        var steps = new (string Args, string Label)[]
+        {
+            ("install", "安裝依賴"),
+            ("run db:generate", "Prisma generate"),
+            ("run build", "建置 API / 後台 / 司機端")
+        };
+
+        foreach (var (args, label) in steps)
+        {
+            AppendLog($"==> {label}…");
+            var exitCode = await RunNpmCommandCoreAsync(projectRoot, args).ConfigureAwait(true);
+            if (exitCode != 0)
+            {
+                AppendLog($"建置中斷：{label} 失敗（結束代碼 {exitCode}）。");
+                return false;
+            }
+        }
+
+        var apiDist = Path.Combine(projectRoot, "apps", "api", "dist", "index.js");
+        var adminDist = Path.Combine(projectRoot, "apps", "web-admin", "dist", "index.html");
+        var driverDist = Path.Combine(projectRoot, "apps", "web-driver", "dist", "index.html");
+        foreach (var path in new[] { apiDist, adminDist, driverDist })
+        {
+            if (!File.Exists(path))
+            {
+                AppendLog($"建置失敗，缺少檔案：{path}");
+                return false;
+            }
+        }
+
+        await GenerateNginxConfigAsync(projectRoot).ConfigureAwait(true);
+        AppendLog("建置完成。");
+        return true;
+    }
+
+    private async Task PullAndDeployAsync()
+    {
+        try
+        {
+            ValidateProjectRoot();
+            ValidateGitRepo();
+        }
+        catch (InvalidOperationException ex)
+        {
+            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        if (!_chkProductionMode.Checked)
+        {
+            MessageBox.Show(
+                this,
+                "「更新並部署」請在正式部署模式下使用（勾選 Nginx + 靜態前端）。",
+                Text,
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            this,
+            "將執行以下步驟：\n"
+            + "1. 停止全部服務\n"
+            + $"2. git pull origin {_gitBranch}\n"
+            + "3. npm install → db:generate → build\n"
+            + "4. 更新 Nginx 設定\n"
+            + "5. 重新啟動服務\n\n"
+            + "不會覆蓋 apps\\api\\.env 與資料庫資料。\n\n"
+            + "確定要繼續嗎？",
+            "更新並部署",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Question,
+            MessageBoxDefaultButton.Button1);
+        if (confirm != DialogResult.Yes)
+            return;
+
+        SetBusy(true);
+        try
+        {
+            AppendLog("=== 開始更新並部署 ===");
+
+            if (IsAnyServiceRunning())
+            {
+                AppendLog("正在停止服務…");
+                await StopAllAsync().ConfigureAwait(true);
+            }
+
+            var root = _projectRoot.Text.Trim();
+            AppendLog($"=> Git 拉取 origin/{_gitBranch}…");
+            var pullCode = await RunGitCommandCoreAsync(root, $"pull origin {_gitBranch}").ConfigureAwait(true);
+            if (pullCode != 0)
+            {
+                MessageBox.Show(this, "Git 拉取失敗，部署已中止。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (!await BuildProductionCoreAsync(root).ConfigureAwait(true))
+            {
+                MessageBox.Show(this, "建置失敗，部署已中止。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            AppendLog("=> 重新啟動服務…");
+            await StartAllAsync().ConfigureAwait(true);
+
+            MessageBox.Show(
+                this,
+                "更新並部署完成。\n\n"
+                + $"後台：{_adminUrl.Text.Trim()}\n"
+                + $"司機端：{_driverUrl.Text.Trim()}\n"
+                + $"健康檢查：{_apiBaseUrl.Text.Trim().TrimEnd('/')}/api/health",
+                Text,
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            AppendLog("更新並部署錯誤：" + ex.Message);
+            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            SetBusy(false);
+        }
+    }
+
+    private async Task<int?> RunNpmCommandCoreAsync(string workingDirectory, string npmArguments)
     {
         var node = FindNodeExe();
         if (string.IsNullOrEmpty(node))
         {
-            MessageBox.Show(this, "找不到 node.exe。", Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            AppendLog("找不到 node.exe。");
             return null;
         }
 
         var npmCmd = Path.Combine(Path.GetDirectoryName(node)!, "npm.cmd");
         if (!File.Exists(npmCmd))
         {
-            MessageBox.Show(this, "找不到 npm.cmd。", Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            AppendLog("找不到 npm.cmd。");
             return null;
         }
 
-        SetBusy(true);
         AppendLog($"> \"{workingDirectory}\" npm {npmArguments}");
-
         var exitCode = -1;
         try
         {
@@ -1252,7 +1567,51 @@ internal sealed class MainForm : Form
                 AppendLog(stdout.ToString().TrimEnd());
             if (stderr.Length > 0)
                 AppendLog(stderr.ToString().TrimEnd());
+        }
+        catch (Exception ex)
+        {
+            AppendLog("執行錯誤：" + ex.Message);
+            return null;
+        }
 
+        return exitCode;
+    }
+
+    private async Task RunRootNpmCommandAsync(string npmArguments)
+    {
+        try
+        {
+            ValidateProjectRoot();
+        }
+        catch (InvalidOperationException ex)
+        {
+            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        await RunNpmCommandAsync(_projectRoot.Text.Trim(), npmArguments).ConfigureAwait(true);
+    }
+
+    private async Task<int?> RunNpmCommandAsync(string workingDirectory, string npmArguments)
+    {
+        var node = FindNodeExe();
+        if (string.IsNullOrEmpty(node))
+        {
+            MessageBox.Show(this, "找不到 node.exe。", Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return null;
+        }
+
+        var npmCmd = Path.Combine(Path.GetDirectoryName(node)!, "npm.cmd");
+        if (!File.Exists(npmCmd))
+        {
+            MessageBox.Show(this, "找不到 npm.cmd。", Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return null;
+        }
+
+        SetBusy(true);
+        try
+        {
+            var exitCode = await RunNpmCommandCoreAsync(workingDirectory, npmArguments).ConfigureAwait(true) ?? -1;
             AppendLog(exitCode == 0 ? "命令完成（成功）。" : $"命令結束，結束代碼 {exitCode}。");
 
             if (exitCode != 0)
@@ -1264,6 +1623,8 @@ internal sealed class MainForm : Form
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
             }
+
+            return exitCode;
         }
         catch (Exception ex)
         {
@@ -1275,8 +1636,325 @@ internal sealed class MainForm : Form
         {
             SetBusy(false);
         }
+    }
 
-        return exitCode;
+    private async Task CheckSchemaQuietlyOnLoadAsync()
+    {
+        try
+        {
+            var root = _projectRoot.Text.Trim();
+            if (string.IsNullOrEmpty(root))
+                return;
+            if (!File.Exists(Path.Combine(root, "apps", "api", ".env")))
+            {
+                _schemaStatusLabel.Text = "結構：尚未設定 DATABASE_URL";
+                return;
+            }
+
+            var status = await FetchSchemaStatusAsync(root, logToUi: false).ConfigureAwait(true);
+            if (status is null)
+                return;
+
+            UpdateSchemaStatusLabel(status);
+            if (status.ok && status.pending.Length > 0)
+                AppendLogWarning("資料庫結構落後，請按「檢查結構」或「升級結構」。");
+        }
+        catch
+        {
+            // 啟動時靜默檢查，略過錯誤
+        }
+    }
+
+    private async Task CheckSchemaAsync()
+    {
+        try
+        {
+            ValidateProjectRoot();
+        }
+        catch (InvalidOperationException ex)
+        {
+            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var root = _projectRoot.Text.Trim();
+        if (!ValidateApiEnvExists())
+            return;
+
+        SetBusy(true);
+        try
+        {
+            await RefreshSchemaStatusAsync(root, showDialog: true).ConfigureAwait(true);
+        }
+        finally
+        {
+            SetBusy(false);
+        }
+    }
+
+    private async Task ApplySchemaAsync()
+    {
+        try
+        {
+            ValidateProjectRoot();
+        }
+        catch (InvalidOperationException ex)
+        {
+            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var root = _projectRoot.Text.Trim();
+        if (!ValidateApiEnvExists())
+            return;
+
+        var status = await FetchSchemaStatusAsync(root, logToUi: false).ConfigureAwait(true);
+        if (status is null)
+        {
+            MessageBox.Show(this, "無法讀取資料庫結構狀態，請查看日誌。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        if (!status.ok)
+        {
+            MessageBox.Show(this, status.message ?? "檢查資料庫結構失敗。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        UpdateSchemaStatusLabel(status);
+        if (status.pending.Length == 0)
+        {
+            MessageBox.Show(this, "資料庫結構已是最新，無需升級。", "升級資料庫結構", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var listText = string.Join("\n", status.pending);
+        var confirm = MessageBox.Show(
+            this,
+            "將套用以下 migration 至本機 water_erp：\n"
+            + listText
+            + "\n\n建議先備份資料庫（mysqldump）。\n升級前會建議停止 API。\n\n確定繼續？",
+            "升級資料庫結構",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2);
+        if (confirm != DialogResult.Yes)
+            return;
+
+        if (IsAnyServiceRunning())
+        {
+            var stopFirst = MessageBox.Show(
+                this,
+                "目前有服務在執行中。升級結構前建議先停止 API，是否現在停止全部服務？",
+                Text,
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question,
+                MessageBoxDefaultButton.Button1);
+            if (stopFirst == DialogResult.Yes)
+                await StopAllAsync().ConfigureAwait(true);
+        }
+
+        SetBusy(true);
+        try
+        {
+            AppendLog("開始升級資料庫結構…");
+            var applyCode = await RunNpmCommandCoreAsync(root, "run db:schema-apply").ConfigureAwait(true);
+            if (applyCode != 0)
+            {
+                MessageBox.Show(this, $"升級失敗（結束代碼 {applyCode}）。\n請查看下方日誌。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            AppendLog("升級完成，正在 Prisma generate…");
+            var genCode = await RunNpmCommandCoreAsync(root, "run db:generate").ConfigureAwait(true);
+            if (genCode != 0)
+            {
+                MessageBox.Show(this, $"Prisma generate 失敗（結束代碼 {genCode}）。\n請查看下方日誌。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            await RefreshSchemaStatusAsync(root, showDialog: true).ConfigureAwait(true);
+            AppendLogWarning("資料庫結構已升級。若 API 正在執行，請重啟 API。");
+            MessageBox.Show(
+                this,
+                "資料庫結構已升級完成。\n\n若 API 正在執行，請按「停止全部」後再「啟動服務」。",
+                "升級完成",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+        finally
+        {
+            SetBusy(false);
+        }
+    }
+
+    private bool ValidateApiEnvExists()
+    {
+        var root = _projectRoot.Text.Trim();
+        var apiEnv = Path.Combine(root, "apps", "api", ".env");
+        if (File.Exists(apiEnv))
+            return true;
+
+        MessageBox.Show(
+            this,
+            "找不到 apps\\api\\.env，無法連線資料庫。\n請先設定 DATABASE_URL 後再試。",
+            Text,
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Warning);
+        return false;
+    }
+
+    private async Task RefreshSchemaStatusAsync(string projectRoot, bool showDialog)
+    {
+        var status = await FetchSchemaStatusAsync(projectRoot, logToUi: showDialog).ConfigureAwait(true);
+        if (status is null)
+        {
+            _schemaStatusLabel.Text = "結構：無法讀取狀態";
+            _schemaStatusLabel.ForeColor = Color.DarkRed;
+            if (showDialog)
+                MessageBox.Show(this, "無法解析 db:schema-status 輸出，請查看日誌。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        if (!status.ok)
+        {
+            _schemaStatusLabel.Text = "結構：檢查失敗";
+            _schemaStatusLabel.ForeColor = Color.DarkRed;
+            if (showDialog)
+                MessageBox.Show(this, status.message ?? "檢查資料庫結構失敗。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        UpdateSchemaStatusLabel(status);
+        if (!showDialog)
+            return;
+
+        var message = $"已套用 {status.applied.Length} 支 migration。";
+        if (status.pending.Length == 0)
+            message += "\n\n資料庫結構已最新。";
+        else
+            message += $"\n\n待升級 {status.pending.Length} 支：\n{string.Join("\n", status.pending)}";
+
+        MessageBox.Show(
+            this,
+            message,
+            "資料庫結構檢查",
+            MessageBoxButtons.OK,
+            status.pending.Length == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+    }
+
+    private void UpdateSchemaStatusLabel(SchemaMigrationStatus status)
+    {
+        _schemaStatusLabel.Text = FormatSchemaSummary(status);
+        _schemaStatusLabel.ForeColor = status.pending.Length == 0 ? Color.DarkGreen : Color.DarkOrange;
+    }
+
+    private static string FormatSchemaSummary(SchemaMigrationStatus status)
+    {
+        if (!status.ok)
+            return status.message ?? "結構：檢查失敗";
+        if (status.pending.Length == 0)
+            return $"結構：已最新（已套用 {status.applied.Length} 支）";
+
+        var preview = status.pending.Length <= 2
+            ? string.Join(", ", status.pending)
+            : $"{status.pending[0]}, … 共 {status.pending.Length} 支";
+        return $"結構：待升級 {status.pending.Length} 支（{preview}）";
+    }
+
+    private async Task<SchemaMigrationStatus?> FetchSchemaStatusAsync(string projectRoot, bool logToUi)
+    {
+        if (logToUi)
+            AppendLog("正在檢查資料庫結構…");
+
+        var (exitCode, stdout, stderr) = await RunNpmCommandCaptureAsync(projectRoot, "run db:schema-status").ConfigureAwait(true);
+        if (logToUi)
+        {
+            if (!string.IsNullOrWhiteSpace(stdout))
+                AppendLog(stdout.TrimEnd());
+            if (!string.IsNullOrWhiteSpace(stderr))
+                AppendLog(stderr.TrimEnd());
+        }
+
+        if (exitCode != 0)
+            return null;
+
+        return ParseSchemaStatus(stdout + "\n" + stderr);
+    }
+
+    private static SchemaMigrationStatus? ParseSchemaStatus(string output)
+    {
+        var lines = output
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .Reverse();
+
+        foreach (var line in lines)
+        {
+            if (!line.StartsWith('{'))
+                continue;
+            try
+            {
+                return JsonSerializer.Deserialize<SchemaMigrationStatus>(line);
+            }
+            catch (JsonException)
+            {
+                // try previous line
+            }
+        }
+
+        return null;
+    }
+
+    private async Task<(int? ExitCode, string Stdout, string Stderr)> RunNpmCommandCaptureAsync(string workingDirectory, string npmArguments)
+    {
+        var node = FindNodeExe();
+        if (string.IsNullOrEmpty(node))
+            return (null, "", "找不到 node.exe");
+
+        var npmCmd = Path.Combine(Path.GetDirectoryName(node)!, "npm.cmd");
+        if (!File.Exists(npmCmd))
+            return (null, "", "找不到 npm.cmd");
+
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = npmCmd,
+                Arguments = npmArguments,
+                WorkingDirectory = workingDirectory,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8
+            };
+
+            using var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
+            var stdout = new StringBuilder();
+            var stderr = new StringBuilder();
+            proc.OutputDataReceived += (_, e) =>
+            {
+                if (e.Data != null)
+                    stdout.AppendLine(e.Data);
+            };
+            proc.ErrorDataReceived += (_, e) =>
+            {
+                if (e.Data != null)
+                    stderr.AppendLine(e.Data);
+            };
+
+            proc.Start();
+            proc.BeginOutputReadLine();
+            proc.BeginErrorReadLine();
+            await proc.WaitForExitAsync().ConfigureAwait(true);
+            return (proc.ExitCode, stdout.ToString(), stderr.ToString());
+        }
+        catch (Exception ex)
+        {
+            return (null, "", ex.Message);
+        }
     }
 
     private async Task MigrateLegacyAsync(string npmArguments, string title, string confirmMessage)
@@ -1409,8 +2087,12 @@ internal sealed class MainForm : Form
     {
         _uiBusy = busy;
         _btnBuild.Enabled = !busy;
+        _btnGitPull.Enabled = !busy;
+        _btnDeployUpdate.Enabled = !busy;
         _btnPrisma.Enabled = !busy;
         _btnResetData.Enabled = !busy;
+        _btnCheckSchema.Enabled = !busy;
+        _btnApplySchema.Enabled = !busy;
         _btnMigrateZones.Enabled = !busy;
         _btnMigrateCompanies.Enabled = !busy;
         _btnMigrateCustomers.Enabled = !busy;
@@ -1472,16 +2154,31 @@ internal sealed class MainForm : Form
 
     private void AppendLog(string line)
     {
+        AppendColoredLog(line, null);
+    }
+
+    private void AppendLogWarning(string line)
+    {
+        AppendColoredLog(line, Color.DarkGoldenrod);
+    }
+
+    private void AppendColoredLog(string line, Color? color)
+    {
         if (IsDisposed)
             return;
         if (InvokeRequired)
         {
-            BeginInvoke(() => AppendLog(line));
+            BeginInvoke(() => AppendColoredLog(line, color));
             return;
         }
 
         var stamp = DateTime.Now.ToString("HH:mm:ss");
+        var defaultColor = _log.ForeColor;
+        if (color.HasValue)
+            _log.SelectionColor = color.Value;
         _log.AppendText($"[{stamp}] {line}\n");
+        if (color.HasValue)
+            _log.SelectionColor = defaultColor;
         _log.SelectionStart = _log.TextLength;
         _log.ScrollToCaret();
     }
@@ -1495,5 +2192,15 @@ internal sealed class MainForm : Form
             BeginInvoke(action);
         else
             action();
+    }
+
+    private sealed class SchemaMigrationStatus
+    {
+        public bool ok { get; set; }
+        public string[] applied { get; set; } = [];
+        public string[] pending { get; set; } = [];
+        public string? latest { get; set; }
+        public string? message { get; set; }
+        public string[]? appliedNow { get; set; }
     }
 }

@@ -22,10 +22,10 @@ npm run db:generate        # 升級後更新 Prisma Client
 3. 清空資料的腳本（`004_reset_*`、`008_clear_*` 等）不會被自動升級執行
 4. 若資料庫是用 `schema.sql` 建的，腳本會自動偵測既有結構並寫入 `schema_migrations` 追蹤表，避免重複執行
 
-## Mac 啟動器
+## 啟動器操作
 
-「舊庫轉換」分頁上方有 **檢查結構**／**升級結構** 按鈕。
+Mac 與 Windows 啟動器在「舊庫轉換」區塊**上方**皆有 **檢查結構**／**升級結構** 按鈕，共用上述 npm 指令。
 
-## Windows 啟動器
-
-請依 `docs/WINDOWS_LAUNCHER_SCHEMA_MIGRATE_PROMPT.md` 在 Cursor 中實作相同 UI（共用上述 npm 指令）。
+1. 按 **檢查結構** 查看已套用與待升級的 migration
+2. 若有待升級項目，先 `mysqldump` 備份後按 **升級結構**
+3. 升級完成後啟動器會執行 `db:generate`；若 API 已在跑，請重啟 API

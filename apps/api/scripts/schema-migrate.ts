@@ -156,6 +156,7 @@ function runMigrationFile(filename: string): void {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       env: process.env,
+      shell: process.platform === "win32",
     },
   );
   if (result.status !== 0) {
