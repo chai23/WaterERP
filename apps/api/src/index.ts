@@ -5,6 +5,13 @@ import express from "express";
 import { randomBytes } from "crypto";
 import jwt, { type JwtPayload, type Secret, type SignOptions } from "jsonwebtoken";
 import { Prisma, PrismaClient } from "@prisma/client";
+import {
+  applyPromotions,
+  serializeDispenserGiftRule,
+  serializePromotionRule,
+  validatePrepaidTopupBonusConfig,
+  type DraftOrderLine,
+} from "./promotions.js";
 
 const prisma = new PrismaClient();
 const app = express();
@@ -2786,6 +2793,270 @@ app.delete("/api/order-announcements/:announcementId", async (req, res) => {
   }
 });
 
+app.get("/api/promotion-rules", async (_req, res) => {
+  try {
+    const rows = await prisma.promotionRule.findMany({ orderBy: [{ sortOrder: "asc" }, { id: "asc" }] });
+    res.json(rows.map(serializePromotionRule));
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+app.patch("/api/promotion-rules/:ruleKey", async (req, res) => {
+  if (!requireRole(req, res, ["admin"])) return;
+  try {
+    const ruleKey = typeof req.params.ruleKey === "string" ? req.params.ruleKey.trim() : "";
+    if (!ruleKey) {
+      res.status(400).json({ ok: false, message: "參數錯誤：ruleKey" });
+      return;
+    }
+    const existing = await prisma.promotionRule.findUnique({ where: { ruleKey } });
+    if (!existing) {
+      res.status(404).json({ ok: false, message: "找不到優惠規則" });
+      return;
+    }
+    const body = req.body as { isEnabled?: unknown; config?: unknown };
+    const data: Prisma.PromotionRuleUpdateInput = {};
+    if (body.isEnabled !== undefined) {
+      data.isEnabled = Boolean(body.isEnabled);
+    }
+    if (body.config !== undefined) {
+      if (ruleKey === "prepaid_topup_bonus") {
+        const v = validatePrepaidTopupBonusConfig(body.config);
+        if (!v.ok) {
+          res.status(400).json({ ok: false, message: v.message });
+          return;
+        }
+        data.config = v.data;
+      } else {
+        data.config = body.config && typeof body.config === "object" ? body.config : {};
+      }
+    }
+    const row = await prisma.promotionRule.update({ where: { ruleKey }, data });
+    res.json({ ok: true, data: serializePromotionRule(row) });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+app.get("/api/promotion-dispenser-gift-rules", async (req, res) => {
+  try {
+    const all = req.query.all === "1" || req.query.all === "true";
+    const rows = await prisma.promotionDispenserGiftRule.findMany({
+      where: all ? undefined : { isActive: true },
+      include: { triggerProduct: true, giftProduct: true },
+      orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
+    });
+    res.json(rows.map(serializeDispenserGiftRule));
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+app.post("/api/promotion-dispenser-gift-rules", async (req, res) => {
+  if (!requireRole(req, res, ["admin"])) return;
+  try {
+    const body = req.body as {
+      triggerProductId?: unknown;
+      giftProductId?: unknown;
+      giftQtyPerUnit?: unknown;
+      sortOrder?: unknown;
+    };
+    const triggerProductId = toBigInt(body.triggerProductId);
+    const giftProductId = toBigInt(body.giftProductId);
+    const giftQtyPerUnit = Math.floor(Number(body.giftQtyPerUnit ?? 0));
+    if (!triggerProductId || !giftProductId) {
+      res.status(400).json({ ok: false, message: "請選擇飲水機商品與贈送商品" });
+      return;
+    }
+    if (!Number.isFinite(giftQtyPerUnit) || giftQtyPerUnit <= 0) {
+      res.status(400).json({ ok: false, message: "每台贈送桶數須為正整數" });
+      return;
+    }
+    if (triggerProductId === giftProductId) {
+      res.status(400).json({ ok: false, message: "贈送商品不可與飲水機商品相同" });
+      return;
+    }
+    const [triggerProduct, giftProduct] = await Promise.all([
+      prisma.product.findUnique({ where: { id: triggerProductId } }),
+      prisma.product.findUnique({ where: { id: giftProductId } }),
+    ]);
+    if (!triggerProduct || !triggerProduct.isActive) {
+      res.status(400).json({ ok: false, message: "飲水機商品不存在或已停用" });
+      return;
+    }
+    if (!giftProduct || !giftProduct.isActive) {
+      res.status(400).json({ ok: false, message: "贈送商品不存在或已停用" });
+      return;
+    }
+    const sortOrder = Math.floor(Number(body.sortOrder ?? 0));
+    const row = await prisma.promotionDispenserGiftRule.create({
+      data: {
+        triggerProductId,
+        giftProductId,
+        giftQtyPerUnit,
+        sortOrder: Number.isFinite(sortOrder) ? sortOrder : 0,
+      },
+      include: { triggerProduct: true, giftProduct: true },
+    });
+    res.status(201).json({ ok: true, data: serializeDispenserGiftRule(row) });
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+      res.status(400).json({ ok: false, message: "此飲水機商品已有贈品規則" });
+      return;
+    }
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+app.patch("/api/promotion-dispenser-gift-rules/:ruleId", async (req, res) => {
+  if (!requireRole(req, res, ["admin"])) return;
+  try {
+    const ruleId = toBigInt(req.params.ruleId);
+    if (!ruleId) {
+      res.status(400).json({ ok: false, message: "參數錯誤：ruleId" });
+      return;
+    }
+    const existing = await prisma.promotionDispenserGiftRule.findUnique({ where: { id: ruleId } });
+    if (!existing) {
+      res.status(404).json({ ok: false, message: "找不到規則" });
+      return;
+    }
+    const body = req.body as {
+      triggerProductId?: unknown;
+      giftProductId?: unknown;
+      giftQtyPerUnit?: unknown;
+      sortOrder?: unknown;
+      isActive?: unknown;
+    };
+    const data: Prisma.PromotionDispenserGiftRuleUpdateInput = {};
+    if (body.triggerProductId !== undefined) {
+      const triggerProductId = toBigInt(body.triggerProductId);
+      if (!triggerProductId) {
+        res.status(400).json({ ok: false, message: "飲水機商品無效" });
+        return;
+      }
+      const triggerProduct = await prisma.product.findUnique({ where: { id: triggerProductId } });
+      if (!triggerProduct || !triggerProduct.isActive) {
+        res.status(400).json({ ok: false, message: "飲水機商品不存在或已停用" });
+        return;
+      }
+      data.triggerProduct = { connect: { id: triggerProductId } };
+    }
+    if (body.giftProductId !== undefined) {
+      const giftProductId = toBigInt(body.giftProductId);
+      if (!giftProductId) {
+        res.status(400).json({ ok: false, message: "贈送商品無效" });
+        return;
+      }
+      const giftProduct = await prisma.product.findUnique({ where: { id: giftProductId } });
+      if (!giftProduct || !giftProduct.isActive) {
+        res.status(400).json({ ok: false, message: "贈送商品不存在或已停用" });
+        return;
+      }
+      data.giftProduct = { connect: { id: giftProductId } };
+    }
+    if (body.giftQtyPerUnit !== undefined) {
+      const giftQtyPerUnit = Math.floor(Number(body.giftQtyPerUnit));
+      if (!Number.isFinite(giftQtyPerUnit) || giftQtyPerUnit <= 0) {
+        res.status(400).json({ ok: false, message: "每台贈送桶數須為正整數" });
+        return;
+      }
+      data.giftQtyPerUnit = giftQtyPerUnit;
+    }
+    if (body.sortOrder !== undefined) {
+      const sortOrder = Math.floor(Number(body.sortOrder));
+      data.sortOrder = Number.isFinite(sortOrder) ? sortOrder : 0;
+    }
+    if (body.isActive !== undefined) {
+      data.isActive = Boolean(body.isActive);
+    }
+    const nextTriggerId =
+      body.triggerProductId !== undefined ? toBigInt(body.triggerProductId) : existing.triggerProductId;
+    const nextGiftId = body.giftProductId !== undefined ? toBigInt(body.giftProductId) : existing.giftProductId;
+    if (nextTriggerId && nextGiftId && nextTriggerId === nextGiftId) {
+      res.status(400).json({ ok: false, message: "贈送商品不可與飲水機商品相同" });
+      return;
+    }
+    const row = await prisma.promotionDispenserGiftRule.update({
+      where: { id: ruleId },
+      data,
+      include: { triggerProduct: true, giftProduct: true },
+    });
+    res.json({ ok: true, data: serializeDispenserGiftRule(row) });
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+      res.status(400).json({ ok: false, message: "此飲水機商品已有贈品規則" });
+      return;
+    }
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+app.delete("/api/promotion-dispenser-gift-rules/:ruleId", async (req, res) => {
+  if (!requireRole(req, res, ["admin"])) return;
+  try {
+    const ruleId = toBigInt(req.params.ruleId);
+    if (!ruleId) {
+      res.status(400).json({ ok: false, message: "參數錯誤：ruleId" });
+      return;
+    }
+    await prisma.promotionDispenserGiftRule.delete({ where: { id: ruleId } });
+    res.json({ ok: true });
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2025") {
+      res.status(404).json({ ok: false, message: "找不到規則" });
+      return;
+    }
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+app.post("/api/promotion-rules/preview", async (req, res) => {
+  try {
+    const body = req.body as { lines?: unknown };
+    if (!Array.isArray(body.lines) || body.lines.length === 0) {
+      res.json({ ok: true, data: { messages: [], giftLines: [] } });
+      return;
+    }
+    const draftLines: DraftOrderLine[] = [];
+    for (const row of body.lines) {
+      if (typeof row !== "object" || row === null) continue;
+      const r = row as {
+        productId?: unknown;
+        qty?: unknown;
+        billingType?: unknown;
+        linePurpose?: unknown;
+        invoiceMode?: unknown;
+      };
+      const pid = toBigInt(r.productId);
+      const q = Number(r.qty);
+      if (!pid || !Number.isInteger(q) || q < 0) continue;
+      draftLines.push({
+        productId: pid,
+        qty: q,
+        unitPrice: null,
+        billingType: normalizeLineBillingType(r.billingType, "cash"),
+        linePurpose: normalizeLinePurpose(r.linePurpose),
+        invoiceMode: normalizeLineInvoiceMode(r.invoiceMode),
+      });
+    }
+    const { lines, messages } = await applyPromotions(prisma, draftLines);
+    const giftLines = lines
+      .filter((l) => l.isPromotionGift)
+      .map((l) => ({
+        productId: l.productId.toString(),
+        qty: l.qty,
+        linePurpose: l.linePurpose,
+        promotionRuleKey: l.promotionRuleKey ?? null,
+        promotionNote: l.promotionNote ?? null,
+      }));
+    res.json({ ok: true, data: { messages, giftLines } });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
 app.get("/api/customers", async (_req, res) => {
   try {
     const rows = await prisma.customer.findMany({
@@ -4537,7 +4808,12 @@ app.get("/api/sales-orders", async (_req, res) => {
       orderBy: { id: "desc" },
       take: 100,
     });
-    res.json(rows);
+    res.json(
+      rows.map((o) => ({
+        ...o,
+        orderBillableAmount: orderBillableAmount(o).toString(),
+      })),
+    );
   } catch (e) {
     res.status(500).json({ ok: false, message: String(e) });
   }
@@ -5953,6 +6229,9 @@ app.post("/api/sales-orders", async (req, res) => {
       billingType: string;
       linePurpose: "delivery" | "prepaid_barrel_topup";
       invoiceMode: string | null;
+      isPromotionGift?: boolean;
+      promotionRuleKey?: string | null;
+      promotionNote?: string | null;
     };
     const linesIn: LineIn[] = [];
 
@@ -6018,7 +6297,9 @@ app.post("/api/sales-orders", async (req, res) => {
       return;
     }
 
-    const linesInResolved: LineIn[] = linesIn.map((l) => {
+    const linesInResolved: LineIn[] = linesIn
+      .filter((l) => !l.isPromotionGift)
+      .map((l) => {
       const billingType =
         l.linePurpose === "prepaid_barrel_topup"
           ? "cash"
@@ -6027,7 +6308,10 @@ app.post("/api/sales-orders", async (req, res) => {
       return { ...l, billingType, invoiceMode };
     });
 
-    for (const l of linesInResolved) {
+    const promotionApplied = await applyPromotions(prisma, linesInResolved);
+    const linesAfterPromotions = promotionApplied.lines as LineIn[];
+
+    for (const l of linesAfterPromotions) {
       if (l.linePurpose === "prepaid_barrel_topup") {
         if (l.billingType !== "cash") {
           res.status(400).json({ ok: false, message: "預付桶儲值明細須為現金列（司機收款／匯款）" });
@@ -6036,7 +6320,7 @@ app.post("/api/sales-orders", async (req, res) => {
       }
     }
 
-    const distinctLineBillings = new Set(linesInResolved.map((l) => l.billingType));
+    const distinctLineBillings = new Set(linesAfterPromotions.map((l) => l.billingType));
     const billingTypeAtOrder =
       distinctLineBillings.size === 1 ? [...distinctLineBillings][0]! : "mixed";
     let orderCashAdjustment = new Prisma.Decimal(0);
@@ -6049,11 +6333,11 @@ app.post("/api/sales-orders", async (req, res) => {
       orderCashAdjustment = adj;
     }
 
-    const uniqueIds = [...new Set(linesInResolved.map((l) => l.productId))];
+    const uniqueIds = [...new Set(linesAfterPromotions.map((l) => l.productId))];
     const products = await prisma.product.findMany({ where: { id: { in: uniqueIds } } });
     const productById = new Map(products.map((p) => [p.id, p]));
 
-    for (const l of linesInResolved) {
+    for (const l of linesAfterPromotions) {
       const p = productById.get(l.productId);
       if (!p || !p.isActive) {
         res.status(400).json({ ok: false, message: "商品不存在或已停用" });
@@ -6061,10 +6345,10 @@ app.post("/api/sales-orders", async (req, res) => {
       }
     }
     const prepaidTopupByProduct = sumPrepaidTopupByProduct(
-      linesInResolved.map((l) => ({ productId: l.productId, qty: l.qty, linePurpose: l.linePurpose })),
+      linesAfterPromotions.map((l) => ({ productId: l.productId, qty: l.qty, linePurpose: l.linePurpose })),
     );
     const prepaidNeedByProduct = new Map<bigint, number>();
-    for (const l of linesInResolved) {
+    for (const l of linesAfterPromotions) {
       if (l.linePurpose !== "delivery" || l.billingType !== "prepaid") continue;
       const p = productById.get(l.productId);
       if (p?.consumesPrepaidBarrel === true) {
@@ -6112,9 +6396,9 @@ app.post("/api/sales-orders", async (req, res) => {
 
     const cashInvoiceMode = normalizeCashInvoiceMode(body.cashInvoiceMode);
 
-    const lineCreates = linesInResolved.map((l) => {
+    const lineCreates = linesAfterPromotions.map((l) => {
       const product = productById.get(l.productId)!;
-      const unitPrice = l.unitPrice ?? product.salePrice;
+      const unitPrice = l.isPromotionGift ? new Prisma.Decimal(0) : (l.unitPrice ?? product.salePrice);
       const lineAmount = unitPrice.mul(l.qty);
       return {
         productId: l.productId,
@@ -6125,6 +6409,9 @@ app.post("/api/sales-orders", async (req, res) => {
         billingTypeAtLine: l.billingType,
         linePurpose: l.linePurpose,
         invoiceMode: l.invoiceMode,
+        isPromotionGift: Boolean(l.isPromotionGift),
+        promotionRuleKey: l.promotionRuleKey ?? null,
+        promotionNote: l.promotionNote ?? null,
       };
     });
 

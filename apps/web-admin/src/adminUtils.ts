@@ -148,6 +148,9 @@ export type CustomerSalesOrderLine = {
   billingTypeAtLine?: string | null;
   /** delivery | prepaid_barrel_topup */
   linePurpose?: string | null;
+  isPromotionGift?: boolean;
+  promotionRuleKey?: string | null;
+  promotionNote?: string | null;
   product?: { id: string; name: string; unit?: string | null };
 };
 
@@ -510,7 +513,8 @@ export function orderStatusLabel(status: string | null | undefined): string {
   }
 }
 
-export function linePurposeLabel(purpose: string | null | undefined): string {
+export function linePurposeLabel(purpose: string | null | undefined, isPromotionGift?: boolean): string {
+  if (isPromotionGift) return "贈品";
   return purpose === "prepaid_barrel_topup" ? "預付桶儲值" : "一般出貨";
 }
 

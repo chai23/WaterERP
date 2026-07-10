@@ -59,6 +59,9 @@ export type OrderRecord = Record<string, unknown> & {
     lineAmount?: unknown;
     billingTypeAtLine?: string | null;
     linePurpose?: string | null;
+    isPromotionGift?: boolean;
+    promotionRuleKey?: string | null;
+    promotionNote?: string | null;
     product?: { name?: string; sku?: string | null; unit?: string | null };
   }>;
   assignments?: Array<{
@@ -383,13 +386,19 @@ export function OrderDetailModal({ order, onClose }: { order: OrderRecord; onClo
                             {line.product?.sku ?? "—"} · {line.product?.unit ?? "—"}
                           </div>
                         </td>
-                        <td>{linePurposeLabel(line.linePurpose)}</td>
+                        <td>
+                          {linePurposeLabel(line.linePurpose, Boolean(line.isPromotionGift))}
+                          {line.promotionNote ? (
+                            <div className="order-detail__line-note">{String(line.promotionNote)}</div>
+                          ) : null}
+                        </td>
                         <td>{lineBillingTypeLabel(line.billingTypeAtLine)}</td>
                         <td className="num">{line.qtyOrdered != null ? String(line.qtyOrdered) : "—"}</td>
                         <td className="num">{line.qtyDelivered != null ? String(line.qtyDelivered) : "—"}</td>
                         <td className="num">{moneyText(line.unitPrice)}</td>
                         <td className="num">
                           {moneyText(line.lineAmount)}
+                          {line.isPromotionGift ? <div className="order-detail__line-note">贈品</div> : null}
                           {excluded ? <div className="order-detail__line-note">含於儲值</div> : null}
                         </td>
                       </tr>

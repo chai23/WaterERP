@@ -41,8 +41,13 @@ function lineProductLabel(line: SlipLine): string {
   const name = line.product?.name?.trim() || "（商品）";
   const unit = line.product?.unit?.trim();
   const u = unit ? `（${unit}）` : "";
-  const top = line.linePurpose === "prepaid_barrel_topup" ? " · 預付桶儲值" : "";
-  return `${name}${u}${top}`;
+  const top = line.isPromotionGift
+    ? " · 贈品"
+    : line.linePurpose === "prepaid_barrel_topup"
+      ? " · 預付桶儲值"
+      : "";
+  const promo = line.promotionNote?.trim() ? ` · ${line.promotionNote.trim()}` : "";
+  return `${name}${u}${top}${promo}`;
 }
 
 function billingLineLabel(line: SlipLine): string {

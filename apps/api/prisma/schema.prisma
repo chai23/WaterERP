@@ -252,8 +252,43 @@ model Product {
   purchaseOrderLines   PurchaseOrderLine[]
   prepaidCustomerBalances CustomerPrepaidProductBalance[]
   floorBonusRecords       FloorDeliveryBonusRecord[]
+  dispenserGiftRulesAsTrigger PromotionDispenserGiftRule[] @relation("DispenserGiftTrigger")
+  dispenserGiftRulesAsGift    PromotionDispenserGiftRule[] @relation("DispenserGiftProduct")
 
   @@map("products")
+}
+
+/// 優惠活動主檔（各類型開關與參數）
+model PromotionRule {
+  id          BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  ruleKey     String   @unique @map("rule_key") @db.VarChar(50)
+  displayName String   @map("display_name") @db.VarChar(100)
+  description String?  @db.Text
+  isEnabled   Boolean  @default(false) @map("is_enabled")
+  config      Json
+  sortOrder   Int      @default(0) @map("sort_order")
+  createdAt   DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  @@map("promotion_rules")
+}
+
+/// 購買飲水機贈商品：每種飲水機一筆規則
+model PromotionDispenserGiftRule {
+  id               BigInt  @id @default(autoincrement()) @db.UnsignedBigInt
+  triggerProductId BigInt  @map("trigger_product_id") @db.UnsignedBigInt
+  giftProductId    BigInt  @map("gift_product_id") @db.UnsignedBigInt
+  giftQtyPerUnit   Int     @default(1) @map("gift_qty_per_unit")
+  isActive         Boolean @default(true) @map("is_active")
+  sortOrder        Int     @default(0) @map("sort_order")
+  createdAt        DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  triggerProduct Product @relation("DispenserGiftTrigger", fields: [triggerProductId], references: [id])
+  giftProduct    Product @relation("DispenserGiftProduct", fields: [giftProductId], references: [id])
+
+  @@unique([triggerProductId], map: "uk_dispenser_gift_trigger")
+  @@map("promotion_dispenser_gift_rules")
 }
 
 model SalesOrder {
@@ -350,6 +385,9 @@ model SalesOrderLine {
   linePurpose            String    @default("delivery") @map("line_purpose") @db.VarChar(32)
   /// 發票模式（現金/儲值列）；null = 依訂單 cash_invoice_mode 或視為不開票
   invoiceMode            String?   @map("invoice_mode") @db.VarChar(32)
+  isPromotionGift        Boolean   @default(false) @map("is_promotion_gift")
+  promotionRuleKey       String?   @map("promotion_rule_key") @db.VarChar(50)
+  promotionNote          String?   @map("promotion_note") @db.VarChar(200)
   createdAt    DateTime @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt    DateTime @updatedAt @map("updated_at") @db.DateTime(3)
 

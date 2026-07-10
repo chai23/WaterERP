@@ -116,6 +116,7 @@ type IncompleteOrder = {
   lines?: Array<{
     qtyOrdered: number;
     linePurpose?: string | null;
+    isPromotionGift?: boolean;
     product?: { name?: string | null; unit?: string | null } | null;
   }>;
   assignments?: Array<{
@@ -131,7 +132,11 @@ function lineSummary(line: NonNullable<IncompleteOrder["lines"]>[number]): strin
   const name = line.product?.name?.trim() || "（商品）";
   const unit = line.product?.unit?.trim();
   const qty = line.qtyOrdered;
-  const suffix = line.linePurpose === "prepaid_barrel_topup" ? " · 預付桶儲值" : "";
+  const suffix = line.isPromotionGift
+    ? " · 贈品"
+    : line.linePurpose === "prepaid_barrel_topup"
+      ? " · 預付桶儲值"
+      : "";
   const u = unit ? `${unit}` : "";
   return `${name}${u ? `（${u}）` : ""} × ${qty}${suffix}`;
 }
@@ -140,6 +145,7 @@ function goodsSummaryFromLines(lines: IncompleteOrder["lines"] | undefined, maxL
   const parts = (lines ?? []).map((ln) => {
     let t = lineSummary(ln);
     if (t.includes("預付桶儲值")) t = t.replace(" · 預付桶儲值", "（儲值）");
+    if (t.includes("贈品")) t = t.replace(" · 贈品", "（贈）");
     return t;
   });
   const s = parts.join("；");

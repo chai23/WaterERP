@@ -401,6 +401,37 @@ CREATE TABLE `sales_orders` (
   CONSTRAINT `fk_so_creator` FOREIGN KEY (`created_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE `promotion_rules` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `rule_key` VARCHAR(50) NOT NULL COMMENT '唯一代碼',
+  `display_name` VARCHAR(100) NOT NULL,
+  `description` TEXT NULL,
+  `is_enabled` TINYINT(1) NOT NULL DEFAULT 0,
+  `config` JSON NOT NULL,
+  `sort_order` INT NOT NULL DEFAULT 0,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_promotion_rules_rule_key` (`rule_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `promotion_dispenser_gift_rules` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `trigger_product_id` BIGINT UNSIGNED NOT NULL COMMENT '飲水機商品',
+  `gift_product_id` BIGINT UNSIGNED NOT NULL COMMENT '贈送商品',
+  `gift_qty_per_unit` INT NOT NULL DEFAULT 1 COMMENT '每台贈送桶數',
+  `is_active` TINYINT(1) NOT NULL DEFAULT 1,
+  `sort_order` INT NOT NULL DEFAULT 0,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_dispenser_gift_trigger` (`trigger_product_id`),
+  KEY `fk_dispenser_gift_trigger` (`trigger_product_id`),
+  KEY `fk_dispenser_gift_gift` (`gift_product_id`),
+  CONSTRAINT `fk_dispenser_gift_trigger` FOREIGN KEY (`trigger_product_id`) REFERENCES `products` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_dispenser_gift_gift` FOREIGN KEY (`gift_product_id`) REFERENCES `products` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE `sales_order_lines` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `sales_order_id` BIGINT UNSIGNED NOT NULL,
@@ -412,6 +443,9 @@ CREATE TABLE `sales_order_lines` (
   `billing_type_at_line` VARCHAR(32) NULL DEFAULT NULL COMMENT 'cash|monthly|prepaid',
   `line_purpose` VARCHAR(32) NOT NULL DEFAULT 'delivery' COMMENT 'delivery|prepaid_barrel_topup',
   `invoice_mode` VARCHAR(32) NULL DEFAULT NULL COMMENT 'none | tax_inclusive | tax_exclusive（現金/儲值列）',
+  `is_promotion_gift` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否為優惠贈品列',
+  `promotion_rule_key` VARCHAR(50) NULL DEFAULT NULL COMMENT '套用優惠規則代碼',
+  `promotion_note` VARCHAR(200) NULL DEFAULT NULL COMMENT '贈品說明',
   `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (`id`),

@@ -1,8 +1,9 @@
 import { useCallback, useMemo, useState } from "react";
-import { fmtLocalYmd, orderStatusBadgeClass } from "../adminUtils";
+import { fmtLocalYmd, moneyText, orderStatusBadgeClass } from "../adminUtils";
 import { OrderDetailModal, type OrderRecord } from "../components/OrderDetailModal";
 import { useDashboard } from "../DashboardContext";
 import { openOrderPrintWindow, slipFromDashboardOrderWithAnnouncement } from "../orderPrint";
+import { breakdownCashTaxInvoicePreview } from "../taxDisplay";
 
 function canCancelOrderStatus(status: unknown): boolean {
   const s = String(status ?? "");
@@ -25,6 +26,27 @@ function deliveryDateLabel(order: OrderRecord): string {
     return getActualDeliveryYmd(order) ?? fmtLocalYmd(order.scheduledDeliveryDate);
   }
   return fmtLocalYmd(order.scheduledDeliveryDate);
+}
+
+/** 本單應收（現金含稅＋月結份額）；與報表、訂單詳情一致 */
+function orderTaxInclusiveAmount(order: OrderRecord): string {
+  if (order.orderBillableAmount != null && String(order.orderBillableAmount).trim() !== "") {
+    return moneyText(order.orderBillableAmount);
+  }
+  const lines = Array.isArray(order.lines) ? order.lines : [];
+  let cashUntaxed = 0;
+  let monthly = 0;
+  for (const line of lines) {
+    const amt = Number(line.lineAmount ?? 0);
+    if (!Number.isFinite(amt)) continue;
+    const bt = line.billingTypeAtLine ?? "";
+    if (bt === "cash") cashUntaxed += amt;
+    else if (bt === "monthly") monthly += amt;
+  }
+  const cashInvoiceMode = order.cashInvoiceMode != null ? String(order.cashInvoiceMode) : "none";
+  const taxPreview = breakdownCashTaxInvoicePreview(cashUntaxed, cashInvoiceMode);
+  const billableCash = taxPreview?.totalWithTax ?? cashUntaxed;
+  return moneyText(billableCash + monthly);
 }
 
 export { OrderDetailModal, type OrderRecord };
@@ -68,7 +90,7 @@ export default function OrderQueryPage() {
               <th>客戶</th>
               <th>狀態</th>
               <th>配送日</th>
-              <th className="num">金額</th>
+              <th className="num">金額（含稅）</th>
               <th>明細</th>
               <th>套印</th>
               <th>操作</th>
@@ -92,7 +114,7 @@ export default function OrderQueryPage() {
                     <span className={orderStatusBadgeClass(o.status)}>{o.status}</span>
                   </td>
                   <td>{deliveryDateLabel(o as OrderRecord)}</td>
-                  <td className="num">{o.totalAmount}</td>
+                  <td className="num">{orderTaxInclusiveAmount(o as OrderRecord)}</td>
                   <td>
                     <div className="order-detail-cell">
                       <span className="order-detail-cell__count" title="商品明細筆數">

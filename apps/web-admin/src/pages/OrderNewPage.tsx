@@ -217,6 +217,7 @@ export default function OrderNewPage() {
   const [customerKeyword, setCustomerKeyword] = useState("");
   const [matchHint, setMatchHint] = useState("");
   const [lineProductCodes, setLineProductCodes] = useState<Record<string, string>>({});
+  const [promotionPreview, setPromotionPreview] = useState<string[]>([]);
   const lineFieldRefs = useRef<Record<string, HTMLElement | null>>({});
   const pendingLineFocus = useRef<{ rowId: string; field: OrderLineField } | null>(null);
 
@@ -487,6 +488,53 @@ export default function OrderNewPage() {
     const set = new Set(form.lines.map((l) => l.billingType));
     return set.size > 1;
   }, [form.lines]);
+
+  const promotionPreviewSig = useMemo(
+    () =>
+      form.lines
+        .filter((l) => l.productId && l.qty > 0)
+        .map((l) => `${l.productId}:${l.qty}:${l.linePurpose}:${l.billingType}`)
+        .join("|"),
+    [form.lines],
+  );
+
+  useEffect(() => {
+    const filled = form.lines.filter((l) => l.productId && l.qty > 0);
+    if (filled.length === 0) {
+      setPromotionPreview([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void fetch("/api/promotion-rules/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lines: filled.map((l) => ({
+            productId: l.productId,
+            qty: l.qty,
+            billingType: l.billingType,
+            linePurpose: l.linePurpose,
+          })),
+        }),
+      })
+        .then((r) => r.json())
+        .then((j) => {
+          if (cancelled) return;
+          const messages = Array.isArray(j?.data?.messages)
+            ? (j.data.messages as Array<{ message?: string }>).map((m) => String(m.message ?? "")).filter(Boolean)
+            : [];
+          setPromotionPreview(messages);
+        })
+        .catch(() => {
+          if (!cancelled) setPromotionPreview([]);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [promotionPreviewSig]);
 
   const lineIdsSig = useMemo(() => form.lines.map((r) => r.id).join("|"), [form.lines]);
 
@@ -1145,6 +1193,16 @@ export default function OrderNewPage() {
               ) : null}
             </div>
           </div>
+          {promotionPreview.length > 0 ? (
+            <div className="order-new__promotion-preview">
+              <strong>優惠預覽（開單後自動加入贈品列）：</strong>
+              <ul>
+                {promotionPreview.map((m) => (
+                  <li key={m}>{m}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
             </div>
           </div>
         </section>
