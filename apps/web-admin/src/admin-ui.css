@@ -7261,6 +7261,234 @@ body,
   background: linear-gradient(135deg, #21c7b1, #73b7ff);
 }
 
+/* Dark mode — components still using light hardcoded surfaces */
+:root[data-theme="dark"] .report-flow__step,
+:root[data-theme="dark"] .report-flow-note--net,
+:root[data-theme="dark"] .report-method-chip {
+  background: linear-gradient(180deg, #111b24 0%, #0f1821 100%) !important;
+  border-color: rgba(96, 132, 150, 0.28);
+}
+
+:root[data-theme="dark"] .data-table__foot td {
+  background: #13212b;
+  border-top-color: rgba(96, 132, 150, 0.28);
+}
+
+:root[data-theme="dark"] .modal-dialog__header {
+  background: linear-gradient(180deg, #13212b 0%, #111b24 100%) !important;
+  border-bottom-color: rgba(96, 132, 150, 0.22);
+}
+
+:root[data-theme="dark"] .modal-dialog__close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+:root[data-theme="dark"] .modal-dialog__empty {
+  background: #0f1821;
+  border: 1px solid rgba(96, 132, 150, 0.22);
+}
+
+:root[data-theme="dark"] .modal-dialog__footer {
+  background: #0f1821;
+  border-top-color: rgba(96, 132, 150, 0.22);
+}
+
+:root[data-theme="dark"] .order-detail__stat {
+  background: linear-gradient(180deg, #111b24 0%, #0f1821 100%);
+  border-color: rgba(96, 132, 150, 0.28);
+}
+
+:root[data-theme="dark"] .order-detail__panel {
+  background: #111b24;
+  border-color: rgba(96, 132, 150, 0.28);
+}
+
+:root[data-theme="dark"] .order-detail__row + .order-detail__row {
+  border-top-color: rgba(96, 132, 150, 0.16);
+}
+
+:root[data-theme="dark"] .order-detail__meta-strip {
+  background: #0f1821;
+  border-color: rgba(96, 132, 150, 0.28);
+}
+
+:root[data-theme="dark"] .order-detail__invoice-history {
+  background: #0b131a;
+  border-color: rgba(96, 132, 150, 0.28);
+}
+
+:root[data-theme="dark"] .data-table tbody tr.order-row--clickable:hover td {
+  background: linear-gradient(90deg, rgba(33, 199, 177, 0.16) 0%, rgba(33, 199, 177, 0.08) 40%, rgba(17, 27, 36, 0.95) 100%);
+}
+
+:root[data-theme="dark"] .data-table tbody tr.order-row--clickable:hover .order-detail-cell .btn {
+  border-color: rgba(33, 199, 177, 0.35);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.28);
+}
+
+:root[data-theme="dark"] .badge--cancelled {
+  background: rgba(142, 161, 174, 0.16);
+  color: var(--text-muted);
+}
+
+:root[data-theme="dark"] .perm-mark--off {
+  background: #0f1821;
+  border-color: rgba(96, 132, 150, 0.28);
+  color: var(--text-muted);
+}
+
+:root[data-theme="dark"] .permission-role--admin {
+  background: rgba(167, 128, 255, 0.12);
+  border-color: rgba(167, 128, 255, 0.28);
+}
+
+:root[data-theme="dark"] .permission-role--dispatcher {
+  background: rgba(33, 199, 177, 0.1);
+  border-color: rgba(33, 199, 177, 0.28);
+}
+
+:root[data-theme="dark"] .permission-role--warehouse {
+  background: rgba(115, 183, 255, 0.1);
+  border-color: rgba(115, 183, 255, 0.28);
+}
+
+:root[data-theme="dark"] .permission-role--driver {
+  background: rgba(255, 198, 109, 0.1);
+  border-color: rgba(255, 198, 109, 0.28);
+}
+
+:root[data-theme="dark"] .btn--danger {
+  background: rgba(255, 129, 120, 0.1);
+  border-color: rgba(255, 129, 120, 0.28);
+  color: var(--danger);
+}
+
+:root[data-theme="dark"] .btn--danger:hover:not(:disabled) {
+  background: rgba(255, 129, 120, 0.18);
+}
+
+:root[data-theme="dark"] .customer-tabs__btn:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+:root[data-theme="dark"] .customer-tabs__btn--active {
+  color: var(--brand-hover);
+  background: rgba(33, 199, 177, 0.12);
+  border-color: rgba(33, 199, 177, 0.35);
+}
+
+:root[data-theme="dark"] .customer-hub__tab-count,
+:root[data-theme="dark"] .ar-workspace__tab-count {
+  background: rgba(33, 199, 177, 0.16);
+  color: var(--brand-hover);
+}
+
+:root[data-theme="dark"] .customer-billing-meta-bar,
+:root[data-theme="dark"] .billing-ledger-summary,
+:root[data-theme="dark"] .billing-help-list {
+  background: #0f1821;
+  border-color: rgba(96, 132, 150, 0.28);
+}
+
+:root[data-theme="dark"] .customer-payment-card,
+:root[data-theme="dark"] .customer-order-card {
+  background: #111b24;
+  border-color: rgba(96, 132, 150, 0.28);
+}
+
+:root[data-theme="dark"] .customer-edit-address-card {
+  background: #111b24;
+  border-color: rgba(96, 132, 150, 0.28);
+}
+
+:root[data-theme="dark"] .customer-edit-address-card--editing {
+  background: rgba(33, 199, 177, 0.1);
+  border-color: rgba(33, 199, 177, 0.4);
+}
+
+:root[data-theme="dark"] .ar-workspace__kpi {
+  background: #111b24;
+  border-color: rgba(96, 132, 150, 0.28);
+}
+
+:root[data-theme="dark"] .ar-workspace__kpi--highlight {
+  background: rgba(33, 199, 177, 0.1);
+  border-color: rgba(33, 199, 177, 0.28);
+}
+
+:root[data-theme="dark"] .ar-workspace__tab {
+  background: #111b24;
+  border-color: rgba(96, 132, 150, 0.28);
+}
+
+:root[data-theme="dark"] .ar-workspace__tab--active {
+  background: rgba(33, 199, 177, 0.12);
+  border-color: rgba(33, 199, 177, 0.4);
+  box-shadow: inset 0 0 0 1px rgba(33, 199, 177, 0.18);
+}
+
+:root[data-theme="dark"] .ar-panel-block {
+  background: #111b24;
+  border-color: rgba(96, 132, 150, 0.28);
+}
+
+:root[data-theme="dark"] .ar-panel-block--actions {
+  background: #0f1821;
+}
+
+:root[data-theme="dark"] .ar-customer-search__selected {
+  background: rgba(33, 199, 177, 0.08);
+  border-color: rgba(96, 132, 150, 0.28);
+}
+
+:root[data-theme="dark"] .ar-customer-search__results {
+  background: #111b24;
+  border-color: rgba(96, 132, 150, 0.32);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.42);
+}
+
+:root[data-theme="dark"] .ar-customer-search__result:hover,
+:root[data-theme="dark"] .ar-customer-search__result:focus-visible {
+  background: rgba(33, 199, 177, 0.12);
+}
+
+:root[data-theme="dark"] .ar-step-awaiting {
+  background: rgba(33, 199, 177, 0.06);
+  border-color: rgba(96, 132, 150, 0.32);
+}
+
+:root[data-theme="dark"] .order-new__intro,
+:root[data-theme="dark"] .order-new__cash-policy {
+  background: linear-gradient(135deg, rgba(33, 199, 177, 0.08) 0%, #111b24 100%);
+  border-color: rgba(96, 132, 150, 0.28);
+}
+
+:root[data-theme="dark"] .order-new__cash-policy {
+  background: linear-gradient(135deg, rgba(128, 189, 255, 0.1) 0%, #111b24 100%);
+  border-color: rgba(128, 189, 255, 0.24);
+}
+
+:root[data-theme="dark"] .order-new__section {
+  background: linear-gradient(180deg, #111b24 0%, #0f1821 100%) !important;
+  border-color: rgba(96, 132, 150, 0.28);
+}
+
+:root[data-theme="dark"] .order-new__history-list {
+  background: #0f1821;
+  border-color: rgba(96, 132, 150, 0.28);
+}
+
+:root[data-theme="dark"] .order-print-preview-shell {
+  background: #0b131a;
+  border: 1px solid rgba(96, 132, 150, 0.24);
+}
+
+:root[data-theme="dark"] .order-print-preview-iframe {
+  border-color: rgba(96, 132, 150, 0.45);
+}
+
 @media (max-width: 768px) {
   .theme-switch {
     order: -1;

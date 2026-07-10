@@ -6,5 +6,9 @@ html {
 }
 body {
   margin: 0;
-  background: #f1f5f9;
+  background: var(--bg-app, #f1f5f9);
+}
+
+:root[data-theme="dark"] body {
+  background: var(--bg-app);
 }
