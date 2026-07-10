@@ -109,6 +109,8 @@ const MIGRATION_PROBES: Record<string, MigrationProbe> = {
   "029_tax_invoices_extended.sql": (p) => columnExists(p, "tax_invoices", "external_invoice_no"),
   "030_floor_delivery_bonus.sql": (p) => tableExists(p, "floor_delivery_bonus_records"),
   "031_floor_bonus_multiple_records.sql": (p) => indexExists(p, "floor_delivery_bonus_records", "idx_floor_bonus_line_assignment_floor"),
+  "032_delivery_check_received.sql": (p) => columnExists(p, "delivery_assignments", "check_received"),
+  "033_barrel_movements.sql": (p) => tableExists(p, "barrel_movements"),
 };
 
 async function bootstrapFromExistingDb(prisma: PrismaClient): Promise<void> {

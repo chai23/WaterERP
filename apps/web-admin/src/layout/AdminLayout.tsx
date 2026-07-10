@@ -7,15 +7,14 @@ import { useTheme, type AdminTheme } from "../ThemeContext";
 const navGroups: { id: string; title: string; items: { to: string; label: string }[] }[] = [
   {
     id: "orders",
-    title: "訂單資料",
+    title: "訂單作業",
     items: [
       { to: "/orders/new", label: "新增訂單" },
       { to: "/orders/assign", label: "分配訂單" },
       { to: "/orders/proxy-report", label: "代登配送回報" },
       { to: "/orders/complete", label: "核銷訂單" },
-      { to: "/orders/floor-bonus", label: "搬運獎金查詢" },
-      { to: "/orders/query", label: "查詢訂單" },
       { to: "/orders/edit", label: "修改訂單" },
+      { to: "/orders/query", label: "查詢訂單" },
     ],
   },
   {
@@ -24,18 +23,30 @@ const navGroups: { id: string; title: string; items: { to: string; label: string
     items: [
       { to: "/orders/barrel-pickup/new", label: "建立收空桶" },
       { to: "/orders/barrel-pickup/settle", label: "核銷收空桶" },
-      { to: "/orders/barrel-pickup/query", label: "查詢收空桶" },
+      { to: "/orders/barrel-pickup/query", label: "查詢空桶回收" },
     ],
   },
   {
     id: "data",
-    title: "資料庫",
+    title: "主檔資料",
     items: [
       { to: "/data/customers", label: "客戶資料" },
       { to: "/data/drivers", label: "司機資料" },
       { to: "/data/products", label: "商品資料" },
       { to: "/data/vehicles", label: "車輛資料" },
       { to: "/data/users", label: "使用者資料" },
+    ],
+  },
+  {
+    id: "reports",
+    title: "收入與報表",
+    items: [
+      { to: "/reports/daily", label: "日報表" },
+      { to: "/reports/monthly", label: "月報表" },
+      { to: "/reports/driver-daily", label: "司機日收款核對" },
+      { to: "/orders/floor-bonus", label: "搬運獎金查詢" },
+      { to: "/reports/billing-ar", label: "AR 沖帳與稽核" },
+      { to: "/reports/tax-invoices", label: "發票查詢與補登" },
     ],
   },
   {
@@ -50,14 +61,12 @@ const navGroups: { id: string; title: string; items: { to: string; label: string
     ],
   },
   {
-    id: "reports",
-    title: "會計報表",
+    id: "print",
+    title: "列印與公告",
     items: [
-      { to: "/reports/daily", label: "日報表" },
-      { to: "/reports/monthly", label: "月報表" },
-      { to: "/reports/driver-daily", label: "司機日收款核對" },
-      { to: "/reports/billing-ar", label: "AR 沖帳與稽核" },
-      { to: "/reports/tax-invoices", label: "發票查詢與補登" },
+      { to: "/settings/order-print", label: "訂單列印版面" },
+      { to: "/settings/print-slogans", label: "套印標語" },
+      { to: "/settings/order-announcements", label: "訂單公告" },
     ],
   },
   {
@@ -65,22 +74,23 @@ const navGroups: { id: string; title: string; items: { to: string; label: string
     title: "系統設定",
     items: [
       { to: "/settings/promotions", label: "優惠活動設定" },
-      { to: "/settings/permissions", label: "權限設定" },
-      { to: "/settings/order-print", label: "訂單列印版面" },
-      { to: "/settings/order-announcements", label: "訂單公告" },
-      { to: "/settings/print-slogans", label: "套印標語" },
       { to: "/settings/customer-masters", label: "地址分區與隸屬公司" },
       { to: "/settings/expense-categories", label: "支出類別設定" },
+      { to: "/settings/permissions", label: "權限設定" },
     ],
   },
 ];
 
+const PRINT_SETTING_PATHS = ["/settings/order-print", "/settings/print-slogans", "/settings/order-announcements"];
+
 function groupIdFromPath(pathname: string): string | null {
   if (pathname.startsWith("/orders/barrel-pickup")) return "barrel-pickup";
+  if (pathname.startsWith("/orders/floor-bonus")) return "reports";
   if (pathname.startsWith("/orders")) return "orders";
-  if (pathname.startsWith("/expenses")) return "expenses";
   if (pathname.startsWith("/data")) return "data";
   if (pathname.startsWith("/reports")) return "reports";
+  if (pathname.startsWith("/expenses")) return "expenses";
+  if (PRINT_SETTING_PATHS.some((p) => pathname.startsWith(p))) return "print";
   if (pathname.startsWith("/settings")) return "settings";
   return null;
 }
@@ -120,7 +130,7 @@ export default function AdminLayout() {
         <div className="admin-header__inner">
           <div>
             <h1 className="admin-brand">WaterERP</h1>
-            <p className="admin-tagline">營運後台 · 訂單、資料庫、會計報表與系統設定</p>
+            <p className="admin-tagline">營運後台 · 訂單作業、主檔資料、收入報表與系統設定</p>
           </div>
           <div className="admin-header__meta">
             <div className="theme-switch" role="group" aria-label="配色版本">
@@ -146,7 +156,6 @@ export default function AdminLayout() {
 
       <div className="admin-shell">
         <nav className="admin-nav" aria-label="後台主要選單">
-          <p className="admin-nav__section">功能選單</p>
           <div className="admin-nav__inner">
             <NavLink to="/overview" end className={({ isActive }) => navLinkClass(isActive, false)}>
               總覽

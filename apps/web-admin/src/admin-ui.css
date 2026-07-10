@@ -441,6 +441,11 @@
   background: linear-gradient(145deg, rgba(109, 40, 217, 0.2) 0%, rgba(15, 23, 42, 0.65) 100%);
 }
 
+.admin-nav__accordion--print {
+  border-color: rgba(56, 189, 248, 0.22);
+  background: linear-gradient(145deg, rgba(14, 116, 144, 0.22) 0%, rgba(15, 23, 42, 0.65) 100%);
+}
+
 .admin-nav__accordion-head {
   width: 100%;
   display: flex;
@@ -521,6 +526,11 @@
   color: #c4b5fd;
 }
 
+.admin-nav__accordion--print .admin-nav__accordion-head--route-active,
+.admin-nav__accordion--print .admin-nav__accordion-head--open {
+  color: #7dd3fc;
+}
+
 .admin-nav__accordion-title {
   font-size: 1rem;
   font-weight: 800;
@@ -559,6 +569,10 @@
 
 .admin-nav__accordion--settings .admin-nav__chevron--open {
   color: #c4b5fd;
+}
+
+.admin-nav__accordion--print .admin-nav__chevron--open {
+  color: #7dd3fc;
 }
 
 /* 高度展開動畫（grid 0fr → 1fr） */
@@ -614,6 +628,11 @@
 .admin-nav__accordion--settings .admin-nav__sublist {
   background: linear-gradient(180deg, rgba(109, 40, 217, 0.14) 0%, rgba(15, 23, 42, 0.85) 100%);
   border-top-color: rgba(167, 139, 250, 0.22);
+}
+
+.admin-nav__accordion--print .admin-nav__sublist {
+  background: linear-gradient(180deg, rgba(14, 116, 144, 0.14) 0%, rgba(15, 23, 42, 0.85) 100%);
+  border-top-color: rgba(56, 189, 248, 0.22);
 }
 
 .admin-nav__sublink {
@@ -701,6 +720,13 @@
   color: #c4b5fd;
   border-left-color: #a78bfa;
   background: linear-gradient(90deg, rgba(139, 92, 246, 0.2) 0%, rgba(15, 23, 42, 0.4) 100%);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+
+.admin-nav__accordion--print .admin-nav__sublink--active {
+  color: #7dd3fc;
+  border-left-color: #38bdf8;
+  background: linear-gradient(90deg, rgba(14, 165, 233, 0.2) 0%, rgba(15, 23, 42, 0.4) 100%);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
 }
 
@@ -5542,7 +5568,8 @@ body {
 .admin-nav__accordion--data,
 .admin-nav__accordion--expenses,
 .admin-nav__accordion--reports,
-.admin-nav__accordion--settings {
+.admin-nav__accordion--settings,
+.admin-nav__accordion--print {
   border: 0;
   background: transparent;
   box-shadow: none;
@@ -5580,7 +5607,8 @@ body {
 .admin-nav__accordion--data .admin-nav__sublist,
 .admin-nav__accordion--expenses .admin-nav__sublist,
 .admin-nav__accordion--reports .admin-nav__sublist,
-.admin-nav__accordion--settings .admin-nav__sublist {
+.admin-nav__accordion--settings .admin-nav__sublist,
+.admin-nav__accordion--print .admin-nav__sublist {
   padding: 0;
   border-top: 0;
   background: transparent;
@@ -5599,7 +5627,8 @@ body {
 .admin-nav__accordion--data .admin-nav__sublink--active,
 .admin-nav__accordion--expenses .admin-nav__sublink--active,
 .admin-nav__accordion--reports .admin-nav__sublink--active,
-.admin-nav__accordion--settings .admin-nav__sublink--active {
+.admin-nav__accordion--settings .admin-nav__sublink--active,
+.admin-nav__accordion--print .admin-nav__sublink--active {
   color: var(--brand);
   border-left: 0;
   background: var(--brand-soft);
@@ -6019,6 +6048,12 @@ body,
   border-color: rgba(118, 80, 184, 0.18);
 }
 
+.admin-nav__accordion--print .admin-nav__accordion-head {
+  color: var(--nav-barrel) !important;
+  background: var(--nav-barrel-bg) !important;
+  border-color: rgba(14, 127, 160, 0.18);
+}
+
 .admin-nav__accordion--orders .admin-nav__accordion-head:hover,
 .admin-nav__accordion--orders .admin-nav__accordion-head--open,
 .admin-nav__accordion--orders .admin-nav__accordion-head--route-active {
@@ -6061,6 +6096,13 @@ body,
   box-shadow: inset 0 0 0 1px rgba(118, 80, 184, 0.12);
 }
 
+.admin-nav__accordion--print .admin-nav__accordion-head:hover,
+.admin-nav__accordion--print .admin-nav__accordion-head--open,
+.admin-nav__accordion--print .admin-nav__accordion-head--route-active {
+  background: #cfeaf5 !important;
+  box-shadow: inset 0 0 0 1px rgba(14, 127, 160, 0.12);
+}
+
 .admin-nav__sublink:hover {
   background: #eef7f5;
 }
@@ -6099,6 +6141,12 @@ body,
   color: var(--nav-settings);
   background: var(--nav-settings-bg);
   box-shadow: inset 4px 0 0 var(--nav-settings);
+}
+
+.admin-nav__accordion--print .admin-nav__sublink--active {
+  color: var(--nav-barrel);
+  background: var(--nav-barrel-bg);
+  box-shadow: inset 4px 0 0 var(--nav-barrel);
 }
 
 .admin-main {
@@ -6614,6 +6662,12 @@ body,
   box-shadow: inset 4px 0 0 var(--nav-settings);
 }
 
+:root[data-theme="dark"] .admin-nav__accordion--print .admin-nav__sublink--active {
+  color: var(--nav-barrel);
+  background: var(--nav-barrel-bg);
+  box-shadow: inset 4px 0 0 var(--nav-barrel);
+}
+
 :root[data-theme="dark"] .admin-nav__accordion--orders .admin-nav__accordion-head {
   color: var(--nav-orders) !important;
   background: var(--nav-orders-bg) !important;
@@ -6644,12 +6698,18 @@ body,
   background: var(--nav-settings-bg) !important;
 }
 
+:root[data-theme="dark"] .admin-nav__accordion--print .admin-nav__accordion-head {
+  color: var(--nav-barrel) !important;
+  background: var(--nav-barrel-bg) !important;
+}
+
 :root[data-theme="dark"] .admin-nav__accordion--orders .admin-nav__accordion-head,
 :root[data-theme="dark"] .admin-nav__accordion--barrel-pickup .admin-nav__accordion-head,
 :root[data-theme="dark"] .admin-nav__accordion--data .admin-nav__accordion-head,
 :root[data-theme="dark"] .admin-nav__accordion--expenses .admin-nav__accordion-head,
 :root[data-theme="dark"] .admin-nav__accordion--reports .admin-nav__accordion-head,
-:root[data-theme="dark"] .admin-nav__accordion--settings .admin-nav__accordion-head {
+:root[data-theme="dark"] .admin-nav__accordion--settings .admin-nav__accordion-head,
+:root[data-theme="dark"] .admin-nav__accordion--print .admin-nav__accordion-head {
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 

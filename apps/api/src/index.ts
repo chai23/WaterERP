@@ -157,6 +157,289 @@ const barrelPickupInclude = {
   events: { orderBy: { id: "asc" as const } },
 } as const;
 
+const deliveryBarrelCollectionInclude = {
+  salesOrder: {
+    include: {
+      customer: true,
+      deliveryAddress: true,
+      lines: { include: { product: { select: { countsDepositBarrel: true } } } },
+    },
+  },
+  driver: { include: { user: true } },
+  vehicle: true,
+} as const;
+
+function countDepositBarrelsDelivered(
+  lines: Array<{
+    qtyOrdered: number;
+    qtyDelivered: number;
+    linePurpose?: string | null;
+    product?: { countsDepositBarrel?: boolean } | null;
+  }>,
+): number {
+  let total = 0;
+  for (const line of lines) {
+    const purpose = line.linePurpose ?? "delivery";
+    if (purpose === "prepaid_barrel_topup") continue;
+    if (line.product?.countsDepositBarrel === true) {
+      total += effectiveLineDeliveryQty(line);
+    }
+  }
+  return total;
+}
+
+function mapAssignmentStatusForCollection(status: string): string {
+  if (status === "delivering") return "assigned";
+  return status;
+}
+
+function collectionDateFromAssignment(a: { driverReportedAt: Date | null; assignmentDate: Date }): string {
+  if (a.driverReportedAt) return toLocalYmd(a.driverReportedAt);
+  return toLocalYmd(a.assignmentDate);
+}
+
+function collectionDateInRange(collectionDate: string, dateFrom: string, dateTo: string): boolean {
+  if (dateFrom && collectionDate < dateFrom) return false;
+  if (dateTo && collectionDate > dateTo) return false;
+  return true;
+}
+
+function barrelCollectionHaystack(row: {
+  refNo: string;
+  customer?: { name?: string | null; customerCode?: string | null } | null;
+  deliveryAddress?: { addressLine?: string | null; label?: string | null } | null;
+  driver?: { user?: { employeeCode?: string | null; name?: string | null } | null } | null;
+}): string {
+  return [
+    row.refNo,
+    row.customer?.name,
+    row.customer?.customerCode,
+    row.deliveryAddress?.addressLine,
+    row.deliveryAddress?.label,
+    row.driver?.user?.employeeCode,
+    row.driver?.user?.name,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+async function recordBarrelMovement(
+  tx: Prisma.TransactionClient,
+  args: {
+    sourceType: "pickup" | "delivery";
+    sourceRefId: bigint;
+    refNo: string;
+    movementDate: Date;
+    occurredAt: Date;
+    customerId: bigint;
+    deliveryAddressId: bigint;
+    barrelsReturned: number;
+    barrelsDelivered: number;
+    barrelDelta: number;
+    barrelsOnSiteBefore: number;
+    barrelsOnSiteAfter: number;
+    driverId?: bigint | null;
+    vehicleId?: bigint | null;
+    salesOrderId?: bigint | null;
+    barrelPickupId?: bigint | null;
+    deliveryAssignmentId?: bigint | null;
+    note?: string | null;
+    createdByUserId?: bigint | null;
+  },
+): Promise<void> {
+  const localYmd = toLocalYmd(args.movementDate);
+  const parsed = parseLocalYmdRange(localYmd);
+  const movementDate = parsed?.start ?? args.movementDate;
+  await tx.barrelMovement.upsert({
+    where: {
+      sourceType_sourceRefId: {
+        sourceType: args.sourceType,
+        sourceRefId: args.sourceRefId,
+      },
+    },
+    create: {
+      movementDate,
+      occurredAt: args.occurredAt,
+      sourceType: args.sourceType,
+      sourceRefId: args.sourceRefId,
+      refNo: args.refNo,
+      customerId: args.customerId,
+      deliveryAddressId: args.deliveryAddressId,
+      barrelsReturned: args.barrelsReturned,
+      barrelsDelivered: args.barrelsDelivered,
+      barrelDelta: args.barrelDelta,
+      barrelsOnSiteBefore: args.barrelsOnSiteBefore,
+      barrelsOnSiteAfter: args.barrelsOnSiteAfter,
+      driverId: args.driverId ?? null,
+      vehicleId: args.vehicleId ?? null,
+      salesOrderId: args.salesOrderId ?? null,
+      barrelPickupId: args.barrelPickupId ?? null,
+      deliveryAssignmentId: args.deliveryAssignmentId ?? null,
+      note: args.note ?? null,
+      createdByUserId: args.createdByUserId ?? null,
+    },
+    update: {
+      movementDate,
+      occurredAt: args.occurredAt,
+      refNo: args.refNo,
+      barrelsReturned: args.barrelsReturned,
+      barrelsDelivered: args.barrelsDelivered,
+      barrelDelta: args.barrelDelta,
+      barrelsOnSiteBefore: args.barrelsOnSiteBefore,
+      barrelsOnSiteAfter: args.barrelsOnSiteAfter,
+      note: args.note ?? null,
+    },
+  });
+}
+
+const salesOrderDetailInclude = {
+  customer: true,
+  deliveryAddress: true,
+  lines: { include: { product: true } },
+  taxInvoices: { orderBy: { id: "asc" as const } },
+  assignments: {
+    include: {
+      driver: { include: { user: true } },
+      vehicle: true,
+    },
+    orderBy: { id: "desc" as const },
+  },
+} as const;
+
+const barrelMovementListInclude = {
+  customer: true,
+  deliveryAddress: true,
+  driver: { include: { user: true } },
+  vehicle: true,
+} as const;
+
+function formatBarrelSiteChangeSummary(row: {
+  sourceType?: string | null;
+  status?: string | null;
+  barrelsOnSiteBefore?: number | null;
+  barrelsDelivered?: number | null;
+  barrelsReturned?: number | null;
+  barrelsOnSiteAfter?: number | null;
+  barrelSitePreview?: boolean;
+}): string | null {
+  if (row.barrelsOnSiteBefore == null || row.barrelsOnSiteAfter == null) return null;
+  const before = row.barrelsOnSiteBefore;
+  const delivered = Math.max(0, Number(row.barrelsDelivered ?? 0));
+  const returned = Math.max(0, Number(row.barrelsReturned ?? 0));
+  const after = row.barrelsOnSiteAfter;
+  const pending = row.status === "pending_settlement" || row.barrelSitePreview;
+  const suffix = pending ? "（待核銷）" : "";
+  if (row.sourceType === "delivery" && delivered > 0) {
+    return `原 ${before} → 送 ${delivered} 收 ${returned} → 餘 ${after}${suffix}`;
+  }
+  if (returned > 0) {
+    return `原 ${before} → 收 ${returned} → 餘 ${after}${suffix}`;
+  }
+  return `原 ${before} → 餘 ${after}${suffix}`;
+}
+
+function reconcileAddressBarrelBalances(
+  movements: Array<{ id: bigint; barrelDelta: number }>,
+  currentOnSite: number,
+): Map<string, { before: number; after: number }> {
+  const result = new Map<string, { before: number; after: number }>();
+  if (movements.length === 0) return result;
+  const totalDelta = movements.reduce((sum, row) => sum + row.barrelDelta, 0);
+  let balance = currentOnSite - totalDelta;
+  for (const movement of movements) {
+    const before = balance;
+    const after = before + movement.barrelDelta;
+    result.set(movement.id.toString(), { before, after });
+    balance = after;
+  }
+  return result;
+}
+
+async function attachBarrelSiteBalances(
+  rows: Array<Record<string, unknown>>,
+  db: PrismaClient | Prisma.TransactionClient,
+): Promise<void> {
+  if (rows.length === 0) return;
+
+  const addressIds = new Set<bigint>();
+  for (const row of rows) {
+    const addr = row.deliveryAddress as { id?: string } | null | undefined;
+    if (addr?.id) addressIds.add(BigInt(String(addr.id)));
+  }
+  if (addressIds.size === 0) return;
+
+  const addresses = await db.deliveryAddress.findMany({
+    where: { id: { in: [...addressIds] } },
+    select: { id: true, barrelsOnSite: true },
+  });
+  const onSiteMap = new Map(addresses.map((a) => [a.id.toString(), a.barrelsOnSite]));
+
+  const allMovements = await db.barrelMovement.findMany({
+    where: { deliveryAddressId: { in: [...addressIds] } },
+    orderBy: [{ occurredAt: "asc" }, { id: "asc" }],
+    select: { id: true, sourceType: true, sourceRefId: true, deliveryAddressId: true, barrelDelta: true },
+  });
+
+  const movementsByAddress = new Map<string, Array<{ id: bigint; barrelDelta: number }>>();
+  const movementRefKey = new Map<string, string>();
+  for (const movement of allMovements) {
+    const addrId = movement.deliveryAddressId.toString();
+    if (!movementsByAddress.has(addrId)) movementsByAddress.set(addrId, []);
+    movementsByAddress.get(addrId)!.push({ id: movement.id, barrelDelta: movement.barrelDelta });
+    movementRefKey.set(`${movement.sourceType}:${movement.sourceRefId.toString()}`, movement.id.toString());
+  }
+
+  const reconciledByMovementId = new Map<string, { before: number; after: number }>();
+  for (const [addrId, movements] of movementsByAddress) {
+    const current = onSiteMap.get(addrId) ?? 0;
+    const reconciled = reconcileAddressBarrelBalances(movements, current);
+    for (const [id, value] of reconciled) reconciledByMovementId.set(id, value);
+  }
+
+  for (const row of rows) {
+    const status = String(row.status ?? "");
+    const sourceType = String(row.sourceType ?? "");
+    const addr = row.deliveryAddress as { id?: string; barrelsOnSite?: number } | null | undefined;
+    const addrId = addr?.id ? String(addr.id) : "";
+
+    if (status === "completed") {
+      const movementId =
+        row.ledgerId != null
+          ? String(row.ledgerId)
+          : movementRefKey.get(`${sourceType}:${String(row.id)}`);
+      if (movementId && reconciledByMovementId.has(movementId)) {
+        const site = reconciledByMovementId.get(movementId)!;
+        row.barrelsOnSiteBefore = site.before;
+        row.barrelsOnSiteAfter = site.after;
+      }
+    } else if (status === "pending_settlement") {
+      const current = addrId ? (onSiteMap.get(addrId) ?? 0) : 0;
+      const returned = Math.max(0, Number(row.barrelsReturned ?? 0));
+      const delivered = Math.max(0, Number(row.barrelsDelivered ?? 0));
+      const delta =
+        sourceType === "delivery"
+          ? row.barrelNet != null
+            ? Number(row.barrelNet)
+            : delivered - returned
+          : -returned;
+      row.barrelsOnSiteBefore = current;
+      row.barrelsOnSiteAfter = Math.max(0, current + delta);
+      row.barrelSitePreview = true;
+    }
+
+    row.barrelSiteChangeSummary = formatBarrelSiteChangeSummary({
+      sourceType,
+      status,
+      barrelsOnSiteBefore: row.barrelsOnSiteBefore as number | null | undefined,
+      barrelsDelivered: row.barrelsDelivered as number | null | undefined,
+      barrelsReturned: row.barrelsReturned as number | null | undefined,
+      barrelsOnSiteAfter: row.barrelsOnSiteAfter as number | null | undefined,
+      barrelSitePreview: row.barrelSitePreview as boolean | undefined,
+    });
+  }
+}
+
 /** 稅外加：未稅為本位；四捨五入至小數點後 2 位 */
 function computeTaxFromUntaxed(untaxed: Prisma.Decimal, rate: Prisma.Decimal): { taxAmount: Prisma.Decimal; totalWithTax: Prisma.Decimal } {
   const taxAmount = untaxed.mul(rate).toDecimalPlaces(2);
@@ -4250,28 +4533,32 @@ app.patch("/api/drivers/:driverId", async (req, res) => {
 app.get("/api/sales-orders", async (_req, res) => {
   try {
     const rows = await prisma.salesOrder.findMany({
-      include: {
-        customer: true,
-        deliveryAddress: true,
-        lines: {
-          include: { product: true },
-        },
-        taxInvoices: { orderBy: { id: "asc" } },
-        assignments: {
-          include: {
-            driver: {
-              include: {
-                user: true,
-              },
-            },
-            vehicle: true,
-          },
-        },
-      },
+      include: salesOrderDetailInclude,
       orderBy: { id: "desc" },
       take: 100,
     });
     res.json(rows);
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+app.get("/api/sales-orders/:salesOrderId", async (req, res) => {
+  try {
+    const salesOrderId = toBigInt(req.params.salesOrderId);
+    if (!salesOrderId) {
+      res.status(400).json({ ok: false, message: "參數錯誤" });
+      return;
+    }
+    const row = await prisma.salesOrder.findUnique({
+      where: { id: salesOrderId },
+      include: salesOrderDetailInclude,
+    });
+    if (!row) {
+      res.status(404).json({ ok: false, message: "找不到訂單" });
+      return;
+    }
+    res.json(row);
   } catch (e) {
     res.status(500).json({ ok: false, message: String(e) });
   }
@@ -4638,15 +4925,38 @@ app.post("/api/settlements/approve", async (req, res) => {
           barrelsPrepaidImmediate > 0
             ? cust.prepaidBarrelBalance - barrelsPrepaidImmediate
             : cust.prepaidBarrelBalance;
-        if (barrelNet !== 0) {
+        if (emptyReturned > 0 || barrelsDeliveredAll > 0) {
           const addr = await tx.deliveryAddress.findFirst({
             where: { id: deliveryAddressId, customerId },
           });
           if (addr) {
-            const newAddrBarrels = Math.max(0, addr.barrelsOnSite + barrelNet);
-            await tx.deliveryAddress.update({
-              where: { id: deliveryAddressId },
-              data: { barrelsOnSite: newAddrBarrels },
+            const barrelsOnSiteBefore = addr.barrelsOnSite;
+            const barrelsOnSiteAfter = Math.max(0, barrelsOnSiteBefore + barrelNet);
+            if (barrelNet !== 0) {
+              await tx.deliveryAddress.update({
+                where: { id: deliveryAddressId },
+                data: { barrelsOnSite: barrelsOnSiteAfter },
+              });
+            }
+            await recordBarrelMovement(tx, {
+              sourceType: "delivery",
+              sourceRefId: assignmentId,
+              refNo: order.orderNo,
+              movementDate: settledAt,
+              occurredAt: settledAt,
+              customerId,
+              deliveryAddressId,
+              barrelsReturned: emptyReturned,
+              barrelsDelivered: barrelsDeliveredAll,
+              barrelDelta: barrelNet,
+              barrelsOnSiteBefore,
+              barrelsOnSiteAfter,
+              driverId: assignment.driverId,
+              vehicleId: assignment.vehicleId,
+              salesOrderId: assignment.salesOrderId,
+              deliveryAssignmentId: assignmentId,
+              note: assignment.settlementNote,
+              createdByUserId: DEFAULT_CREATOR_USER_ID,
             });
           }
         }
@@ -7654,6 +7964,298 @@ app.get("/api/billing/statements", async (req, res) => {
   }
 });
 
+/** 空桶回收統一查詢（純收空桶任務 + 配送順便回收） */
+app.get("/api/barrel-collections", async (req, res) => {
+  try {
+    const statusParam = typeof req.query.status === "string" ? req.query.status.trim() : "";
+    const dateFromParam = typeof req.query.dateFrom === "string" ? req.query.dateFrom.trim() : "";
+    const dateToParam = typeof req.query.dateTo === "string" ? req.query.dateTo.trim() : "";
+    const q = typeof req.query.q === "string" ? req.query.q.trim().toLowerCase() : "";
+    const sourceParam = typeof req.query.source === "string" ? req.query.source.trim().toLowerCase() : "all";
+    const customerId = toBigInt(req.query.customerId);
+    const deliveryAddressId = toBigInt(req.query.deliveryAddressId);
+
+    const includePickup = sourceParam === "all" || sourceParam === "pickup";
+    const includeDelivery = sourceParam === "all" || sourceParam === "delivery";
+
+    const pickupWhere: Prisma.BarrelPickupWhereInput = {};
+    if (statusParam) {
+      pickupWhere.status = statusParam;
+    } else {
+      pickupWhere.status = { in: ["assigned", "pending_settlement", "completed", "cancelled"] };
+    }
+    if (customerId) pickupWhere.customerId = customerId;
+    if (deliveryAddressId) pickupWhere.deliveryAddressId = deliveryAddressId;
+
+    const deliveryWhere: Prisma.DeliveryAssignmentWhereInput = {
+      emptyBarrelsReturned: { gt: 0 },
+      NOT: { settlementOutcome: "not_delivered" },
+    };
+    if (statusParam === "assigned") {
+      deliveryWhere.status = { in: ["assigned", "delivering"] };
+    } else if (statusParam) {
+      deliveryWhere.status = statusParam;
+    } else {
+      deliveryWhere.status = { in: ["pending_settlement", "completed"] };
+    }
+    if (customerId || deliveryAddressId) {
+      deliveryWhere.salesOrder = {};
+      if (customerId) deliveryWhere.salesOrder.customerId = customerId;
+      if (deliveryAddressId) deliveryWhere.salesOrder.deliveryAddressId = deliveryAddressId;
+    }
+
+    const [pickupRows, deliveryRows] = await Promise.all([
+      includePickup
+        ? prisma.barrelPickup.findMany({
+            where: pickupWhere,
+            include: barrelPickupInclude,
+            orderBy: { updatedAt: "desc" },
+            take: 400,
+          })
+        : Promise.resolve([]),
+      includeDelivery
+        ? prisma.deliveryAssignment.findMany({
+            where: deliveryWhere,
+            include: deliveryBarrelCollectionInclude,
+            orderBy: { updatedAt: "desc" },
+            take: 400,
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const mapped: Array<Record<string, unknown>> = [];
+
+    for (const row of pickupRows) {
+      const collectionDate = toLocalYmd(row.pickupDate);
+      if (!collectionDateInRange(collectionDate, dateFromParam, dateToParam)) continue;
+      mapped.push({
+        id: row.id.toString(),
+        sourceType: "pickup",
+        refNo: row.pickupNo,
+        refId: row.id.toString(),
+        status: row.status,
+        collectionDate,
+        barrelsReturned: row.barrelsReturned ?? 0,
+        barrelsExpected: row.barrelsExpected,
+        barrelsDelivered: null,
+        barrelNet: null,
+        customer: row.customer
+          ? {
+              id: row.customer.id.toString(),
+              customerCode: row.customer.customerCode,
+              name: row.customer.name,
+            }
+          : null,
+        deliveryAddress: row.deliveryAddress
+          ? {
+              id: row.deliveryAddress.id.toString(),
+              label: row.deliveryAddress.label,
+              addressLine: row.deliveryAddress.addressLine,
+              barrelsOnSite: row.deliveryAddress.barrelsOnSite,
+            }
+          : null,
+        driver: row.driver?.user
+          ? {
+              employeeCode: row.driver.user.employeeCode,
+              name: row.driver.user.name,
+            }
+          : null,
+        vehicle: row.vehicle ? { plateNo: row.vehicle.plateNo } : null,
+        driverReportedAt: row.driverReportedAt,
+        officeSettledAt: row.officeSettledAt,
+        note: row.driverNote || row.remark || null,
+      });
+    }
+
+    for (const row of deliveryRows) {
+      const order = row.salesOrder;
+      const collectionDate = collectionDateFromAssignment(row);
+      if (!collectionDateInRange(collectionDate, dateFromParam, dateToParam)) continue;
+      const barrelsDelivered = countDepositBarrelsDelivered(order.lines);
+      const barrelsReturned = row.emptyBarrelsReturned;
+      mapped.push({
+        id: row.id.toString(),
+        sourceType: "delivery",
+        refNo: order.orderNo,
+        refId: order.id.toString(),
+        status: mapAssignmentStatusForCollection(row.status),
+        collectionDate,
+        barrelsReturned,
+        barrelsExpected: null,
+        barrelsDelivered,
+        barrelNet: barrelsDelivered - barrelsReturned,
+        customer: order.customer
+          ? {
+              id: order.customer.id.toString(),
+              customerCode: order.customer.customerCode,
+              name: order.customer.name,
+            }
+          : null,
+        deliveryAddress: order.deliveryAddress
+          ? {
+              id: order.deliveryAddress.id.toString(),
+              label: order.deliveryAddress.label,
+              addressLine: order.deliveryAddress.addressLine,
+              barrelsOnSite: order.deliveryAddress.barrelsOnSite,
+            }
+          : null,
+        driver: row.driver?.user
+          ? {
+              employeeCode: row.driver.user.employeeCode,
+              name: row.driver.user.name,
+            }
+          : null,
+        vehicle: row.vehicle ? { plateNo: row.vehicle.plateNo } : null,
+        driverReportedAt: row.driverReportedAt,
+        officeSettledAt: row.officeSettledAt,
+        note: row.settlementNote || null,
+      });
+    }
+
+    const filtered = q ? mapped.filter((row) => barrelCollectionHaystack(row as Parameters<typeof barrelCollectionHaystack>[0]).includes(q)) : mapped;
+
+    filtered.sort((a, b) => {
+      const da = String(a.collectionDate ?? "");
+      const db = String(b.collectionDate ?? "");
+      if (da !== db) return db.localeCompare(da);
+      return String(b.id ?? "").localeCompare(String(a.id ?? ""));
+    });
+
+    const sliced = filtered.slice(0, 300);
+    const completedRows = sliced.filter((row) => row.status === "completed");
+    if (completedRows.length > 0) {
+      const movements = await prisma.barrelMovement.findMany({
+        where: {
+          OR: completedRows.map((row) => ({
+            sourceType: String(row.sourceType),
+            sourceRefId: BigInt(String(row.id)),
+          })),
+        },
+      });
+      const movementMap = new Map(movements.map((m) => [`${m.sourceType}:${m.sourceRefId.toString()}`, m]));
+      for (const row of sliced) {
+        const movement = movementMap.get(`${String(row.sourceType)}:${String(row.id)}`);
+        if (movement) {
+          row.ledgerId = movement.id.toString();
+          row.barrelsOnSiteBefore = movement.barrelsOnSiteBefore;
+          row.barrelsOnSiteAfter = movement.barrelsOnSiteAfter;
+        }
+      }
+    }
+
+    await attachBarrelSiteBalances(sliced, prisma);
+
+    res.json(sliced);
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+/** 空桶回收稽核流水 */
+app.get("/api/barrel-movements", async (req, res) => {
+  try {
+    const dateFromParam = typeof req.query.dateFrom === "string" ? req.query.dateFrom.trim() : "";
+    const dateToParam = typeof req.query.dateTo === "string" ? req.query.dateTo.trim() : "";
+    const q = typeof req.query.q === "string" ? req.query.q.trim().toLowerCase() : "";
+    const sourceParam = typeof req.query.source === "string" ? req.query.source.trim().toLowerCase() : "all";
+    const customerId = toBigInt(req.query.customerId);
+    const deliveryAddressId = toBigInt(req.query.deliveryAddressId);
+
+    const where: Prisma.BarrelMovementWhereInput = {};
+    if (sourceParam === "pickup" || sourceParam === "delivery") {
+      where.sourceType = sourceParam;
+    }
+    if (customerId) where.customerId = customerId;
+    if (deliveryAddressId) where.deliveryAddressId = deliveryAddressId;
+    if (dateFromParam || dateToParam) {
+      const range: Prisma.DateTimeFilter = {};
+      if (dateFromParam) {
+        const parsedFrom = parseLocalYmdRange(dateFromParam);
+        if (!parsedFrom) {
+          res.status(400).json({ ok: false, message: "dateFrom 格式須為 YYYY-MM-DD" });
+          return;
+        }
+        range.gte = parsedFrom.start;
+      }
+      if (dateToParam) {
+        const parsedTo = parseLocalYmdRange(dateToParam);
+        if (!parsedTo) {
+          res.status(400).json({ ok: false, message: "dateTo 格式須為 YYYY-MM-DD" });
+          return;
+        }
+        range.lt = parsedTo.end;
+      }
+      where.movementDate = range;
+    }
+
+    const rows = await prisma.barrelMovement.findMany({
+      where,
+      include: barrelMovementListInclude,
+      orderBy: [{ movementDate: "desc" }, { id: "desc" }],
+      take: 400,
+    });
+
+    const mapped = rows.map((row) => ({
+      id: row.id.toString(),
+      sourceType: row.sourceType,
+      refNo: row.refNo,
+      refId:
+        row.sourceType === "delivery" && row.salesOrderId
+          ? row.salesOrderId.toString()
+          : row.barrelPickupId
+            ? row.barrelPickupId.toString()
+            : row.sourceRefId.toString(),
+      movementDate: toLocalYmd(row.movementDate),
+      occurredAt: row.occurredAt,
+      barrelsReturned: row.barrelsReturned,
+      barrelsDelivered: row.barrelsDelivered,
+      barrelDelta: row.barrelDelta,
+      barrelsOnSiteBefore: row.barrelsOnSiteBefore,
+      barrelsOnSiteAfter: row.barrelsOnSiteAfter,
+      customer: row.customer
+        ? {
+            id: row.customer.id.toString(),
+            customerCode: row.customer.customerCode,
+            name: row.customer.name,
+          }
+        : null,
+      deliveryAddress: row.deliveryAddress
+        ? {
+            id: row.deliveryAddress.id.toString(),
+            label: row.deliveryAddress.label,
+            addressLine: row.deliveryAddress.addressLine,
+            barrelsOnSite: row.deliveryAddress.barrelsOnSite,
+          }
+        : null,
+      driver: row.driver?.user
+        ? {
+            employeeCode: row.driver.user.employeeCode,
+            name: row.driver.user.name,
+          }
+        : null,
+      vehicle: row.vehicle ? { plateNo: row.vehicle.plateNo } : null,
+      note: row.note,
+    }));
+
+    const filtered = q
+      ? mapped.filter((row) => barrelCollectionHaystack(row as Parameters<typeof barrelCollectionHaystack>[0]).includes(q))
+      : mapped;
+
+    const sliced = filtered.slice(0, 300) as Array<Record<string, unknown>>;
+    for (const row of sliced) {
+      row.status = "completed";
+      row.ledgerId = row.id;
+      row.barrelNet = row.barrelDelta;
+      row.collectionDate = row.movementDate;
+    }
+    await attachBarrelSiteBalances(sliced, prisma);
+
+    res.json(sliced);
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
 /** 收空桶任務列表（後台） */
 app.get("/api/barrel-pickups", async (req, res) => {
   try {
@@ -8074,6 +8676,26 @@ app.post("/api/barrel-pickups/:pickupId/approve", async (req, res) => {
             officeSettledAt: settledAt.toISOString(),
           },
         },
+      });
+
+      await recordBarrelMovement(tx, {
+        sourceType: "pickup",
+        sourceRefId: pickupId,
+        refNo: existing.pickupNo,
+        movementDate: settledAt,
+        occurredAt: settledAt,
+        customerId: existing.customerId,
+        deliveryAddressId: existing.deliveryAddressId,
+        barrelsReturned,
+        barrelsDelivered: 0,
+        barrelDelta: -barrelsReturned,
+        barrelsOnSiteBefore: onSite,
+        barrelsOnSiteAfter: newOnSite,
+        driverId: existing.driverId,
+        vehicleId: existing.vehicleId,
+        barrelPickupId: pickupId,
+        note: existing.driverNote || existing.remark,
+        createdByUserId: settlerId,
       });
 
       return updated;

@@ -10,15 +10,19 @@ import type {
   CustomerPaymentRow,
 } from "../adminUtils";
 import {
+  barrelCollectionSourceBadgeClass,
+  barrelCollectionSourceLabel,
   barrelPickupStatusBadgeClass,
   barrelPickupStatusLabel,
   billingTypeLabel,
   fmtLocalYmd,
+  formatBarrelSiteChangeSummary,
   ledgerEntryTypeLabel,
   moneyText,
   orderStatusBadgeClass,
   sumCustomerBarrelsOnSite,
 } from "../adminUtils";
+import { OrderDetailModal, type OrderRecord } from "../components/OrderDetailModal";
 import { cashInvoiceModeLabel } from "../taxDisplay";
 import { formatDeliveryFloor } from "../floorBonusUtils";
 
@@ -62,15 +66,25 @@ type AddressFormRow = {
   barrelsOnSite: string;
 };
 
-type CustomerBarrelPickupRow = {
+type CustomerBarrelCollectionRow = {
   id: string;
-  pickupNo?: string;
+  sourceType: "pickup" | "delivery";
+  refNo?: string;
+  refId?: string;
   status: string;
+  collectionDate?: string | null;
   pickupDate?: string | null;
   barrelsExpected?: number | null;
   barrelsReturned?: number | null;
+  barrelsDelivered?: number | null;
+  barrelNet?: number | null;
+  barrelsOnSiteBefore?: number | null;
+  barrelsOnSiteAfter?: number | null;
+  barrelSiteChangeSummary?: string | null;
+  barrelSitePreview?: boolean;
   driverNote?: string | null;
   remark?: string | null;
+  note?: string | null;
   driverReportedAt?: string | null;
   officeSettledAt?: string | null;
   deliveryAddress?: { id?: string; label?: string | null; addressLine?: string };
@@ -176,9 +190,11 @@ export default function DataCustomersPage() {
   const [detailId, setDetailId] = useState<string | null>(null);
   const [customerSearch, setCustomerSearch] = useState("");
   const [billingFilter, setBillingFilter] = useState<BillingFilter>("all");
-  const [barrelPickups, setBarrelPickups] = useState<CustomerBarrelPickupRow[]>([]);
-  const [barrelPickupsLoading, setBarrelPickupsLoading] = useState(false);
-  const [barrelPickupsErr, setBarrelPickupsErr] = useState("");
+  const [barrelCollections, setBarrelCollections] = useState<CustomerBarrelCollectionRow[]>([]);
+  const [barrelCollectionsLoading, setBarrelCollectionsLoading] = useState(false);
+  const [barrelCollectionsErr, setBarrelCollectionsErr] = useState("");
+  const [barrelOrderDetail, setBarrelOrderDetail] = useState<OrderRecord | null>(null);
+  const [barrelOrderDetailLoading, setBarrelOrderDetailLoading] = useState(false);
 
   const displayedCustomers = useMemo(() => {
     let list = customers;
@@ -207,35 +223,53 @@ export default function DataCustomersPage() {
     });
   }, [displayedCustomers, pageMode]);
 
-  const loadBarrelPickups = useCallback(async (customerId: string) => {
-    setBarrelPickupsLoading(true);
-    setBarrelPickupsErr("");
+  const loadBarrelCollections = useCallback(async (customerId: string) => {
+    setBarrelCollectionsLoading(true);
+    setBarrelCollectionsErr("");
     try {
-      const params = new URLSearchParams({ customerId });
-      const res = await fetch(`/api/barrel-pickups?${params.toString()}`);
+      const params = new URLSearchParams({ customerId, source: "all" });
+      const res = await fetch(`/api/barrel-collections?${params.toString()}`);
       const data = await res.json();
       if (!res.ok) {
-        setBarrelPickups([]);
-        setBarrelPickupsErr(typeof data?.message === "string" ? data.message : "讀取收空桶紀錄失敗");
+        setBarrelCollections([]);
+        setBarrelCollectionsErr(typeof data?.message === "string" ? data.message : "讀取空桶回收紀錄失敗");
         return;
       }
-      setBarrelPickups(Array.isArray(data) ? data : []);
+      setBarrelCollections(Array.isArray(data) ? data : []);
     } catch {
-      setBarrelPickups([]);
-      setBarrelPickupsErr("讀取收空桶紀錄失敗");
+      setBarrelCollections([]);
+      setBarrelCollectionsErr("讀取空桶回收紀錄失敗");
     } finally {
-      setBarrelPickupsLoading(false);
+      setBarrelCollectionsLoading(false);
     }
   }, []);
 
   useEffect(() => {
     if (pageMode !== "browse" || !detailId) {
-      setBarrelPickups([]);
-      setBarrelPickupsErr("");
+      setBarrelCollections([]);
+      setBarrelCollectionsErr("");
       return;
     }
-    void loadBarrelPickups(detailId);
-  }, [pageMode, detailId, loadBarrelPickups]);
+    void loadBarrelCollections(detailId);
+  }, [pageMode, detailId, loadBarrelCollections]);
+
+  const openBarrelCollectionOrder = async (row: CustomerBarrelCollectionRow) => {
+    if (row.sourceType !== "delivery" || !row.refId) return;
+    setBarrelOrderDetailLoading(true);
+    try {
+      const res = await fetch(`/api/sales-orders/${encodeURIComponent(row.refId)}`);
+      const data = await res.json();
+      if (!res.ok) {
+        window.alert(typeof data?.message === "string" ? data.message : "讀取訂單失敗");
+        return;
+      }
+      setBarrelOrderDetail(data as OrderRecord);
+    } catch {
+      window.alert("讀取訂單失敗");
+    } finally {
+      setBarrelOrderDetailLoading(false);
+    }
+  };
 
   const clearCustomerSearch = () => {
     setCustomerSearch("");
@@ -1618,15 +1652,15 @@ export default function DataCustomersPage() {
 
                   <section className="customer-hub__panel">
                     <div className="customer-hub__panel-head">
-                      <h4 className="customer-hub__panel-title">收空桶紀錄</h4>
+                      <h4 className="customer-hub__panel-title">空桶回收紀錄</h4>
                       <div className="customer-detail-actions customer-detail-actions--wrap">
                         <button
                           type="button"
                           className="btn btn--ghost btn--sm"
-                          onClick={() => detailId && void loadBarrelPickups(detailId)}
-                          disabled={barrelPickupsLoading}
+                          onClick={() => detailId && void loadBarrelCollections(detailId)}
+                          disabled={barrelCollectionsLoading}
                         >
-                          {barrelPickupsLoading ? "讀取中…" : "重新載入"}
+                          {barrelCollectionsLoading ? "讀取中…" : "重新載入"}
                         </button>
                         <Link
                           className="btn btn--secondary btn--sm"
@@ -1638,40 +1672,61 @@ export default function DataCustomersPage() {
                         </Link>
                       </div>
                     </div>
-                    {barrelPickupsErr ? (
-                      <p className="card__hint">{barrelPickupsErr}</p>
-                    ) : barrelPickupsLoading ? (
-                      <p className="card__hint">收空桶紀錄載入中…</p>
-                    ) : barrelPickups.length === 0 ? (
-                      <p className="card__hint">此客戶目前沒有收空桶紀錄。</p>
+                    {barrelCollectionsErr ? (
+                      <p className="card__hint">{barrelCollectionsErr}</p>
+                    ) : barrelCollectionsLoading ? (
+                      <p className="card__hint">空桶回收紀錄載入中…</p>
+                    ) : barrelCollections.length === 0 ? (
+                      <p className="card__hint">此客戶目前沒有空桶回收紀錄。</p>
                     ) : (
                       <div className="table-wrap">
                         <table className="data-table data-table--compact">
                           <thead>
                             <tr>
+                              <th>類型</th>
                               <th>狀態</th>
                               <th>收桶日</th>
                               <th>單號</th>
                               <th>送貨點</th>
+                              <th>客戶押桶變化</th>
                               <th className="num">實收</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {barrelPickups.slice(0, 5).map((row) => (
-                              <tr key={String(row.id)}>
+                            {barrelCollections.slice(0, 5).map((row) => (
+                              <tr key={`${row.sourceType}-${row.id}`}>
+                                <td>
+                                  <span className={barrelCollectionSourceBadgeClass(row.sourceType)}>
+                                    {barrelCollectionSourceLabel(row.sourceType)}
+                                  </span>
+                                </td>
                                 <td>
                                   <span className={barrelPickupStatusBadgeClass(row.status)}>
                                     {barrelPickupStatusLabel(row.status)}
                                   </span>
                                 </td>
-                                <td className="cell-nowrap">{fmtLocalYmd(row.pickupDate)}</td>
+                                <td className="cell-nowrap">{fmtLocalYmd(row.collectionDate ?? row.pickupDate)}</td>
                                 <td>
-                                  <code style={{ fontSize: "0.8em" }}>{row.pickupNo ?? "—"}</code>
+                                  {row.sourceType === "delivery" && row.refId ? (
+                                    <button
+                                      type="button"
+                                      className="btn btn--ghost btn--sm"
+                                      style={{ padding: "0 0.25rem", fontSize: "0.8em" }}
+                                      disabled={barrelOrderDetailLoading}
+                                      onClick={() => void openBarrelCollectionOrder(row)}
+                                      title="開啟訂單明細"
+                                    >
+                                      <code>{row.refNo ?? "—"}</code>
+                                    </button>
+                                  ) : (
+                                    <code style={{ fontSize: "0.8em" }}>{row.refNo ?? "—"}</code>
+                                  )}
                                 </td>
                                 <td>
                                   {row.deliveryAddress?.label ? `${row.deliveryAddress.label} · ` : ""}
                                   {row.deliveryAddress?.addressLine ?? "—"}
                                 </td>
+                                <td style={{ fontSize: "0.8125rem" }}>{formatBarrelSiteChangeSummary(row)}</td>
                                 <td className="num">{row.barrelsReturned ?? "—"}</td>
                               </tr>
                             ))}
@@ -2306,6 +2361,9 @@ export default function DataCustomersPage() {
           )}
         </main>
       </div>
+      {barrelOrderDetail ? (
+        <OrderDetailModal order={barrelOrderDetail} onClose={() => setBarrelOrderDetail(null)} />
+      ) : null}
     </section>
   );
 }

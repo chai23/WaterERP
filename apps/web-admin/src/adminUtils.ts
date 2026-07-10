@@ -401,6 +401,56 @@ export function barrelPickupStatusBadgeClass(status: string | null | undefined):
   }
 }
 
+export function barrelCollectionSourceLabel(sourceType: string | null | undefined): string {
+  switch (sourceType) {
+    case "pickup":
+      return "純收空桶";
+    case "delivery":
+      return "配送順收";
+    default:
+      return sourceType ?? "—";
+  }
+}
+
+export function barrelCollectionSourceBadgeClass(sourceType: string | null | undefined): string {
+  switch (sourceType) {
+    case "pickup":
+      return "badge badge--assigned";
+    case "delivery":
+      return "badge badge--confirmed";
+    default:
+      return "badge badge--default";
+  }
+}
+
+/** 客戶送貨點押桶餘額變化說明，例如「原 5 → 送 5 收 4 → 餘 6」 */
+export function formatBarrelSiteChangeSummary(row: {
+  sourceType?: string | null;
+  status?: string | null;
+  barrelsOnSiteBefore?: number | null;
+  barrelsDelivered?: number | null;
+  barrelsReturned?: number | null;
+  barrelsOnSiteAfter?: number | null;
+  barrelSitePreview?: boolean;
+  barrelSiteChangeSummary?: string | null;
+}): string {
+  if (row.barrelSiteChangeSummary) return row.barrelSiteChangeSummary;
+  if (row.barrelsOnSiteBefore == null || row.barrelsOnSiteAfter == null) return "—";
+  const before = row.barrelsOnSiteBefore;
+  const delivered = Math.max(0, Number(row.barrelsDelivered ?? 0));
+  const returned = Math.max(0, Number(row.barrelsReturned ?? 0));
+  const after = row.barrelsOnSiteAfter;
+  const pending = row.status === "pending_settlement" || row.barrelSitePreview;
+  const suffix = pending ? "（待核銷）" : "";
+  if (row.sourceType === "delivery" && delivered > 0) {
+    return `原 ${before} → 送 ${delivered} 收 ${returned} → 餘 ${after}${suffix}`;
+  }
+  if (returned > 0) {
+    return `原 ${before} → 收 ${returned} → 餘 ${after}${suffix}`;
+  }
+  return `原 ${before} → 餘 ${after}${suffix}`;
+}
+
 export function settlementBadgeClass(code: string | null | undefined): string {
   switch (code) {
     case "not_delivered":

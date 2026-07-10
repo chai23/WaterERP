@@ -33,6 +33,7 @@ model User {
   customerLedgerEntries    CustomerLedgerEntry[]
   expenseVouchersCreated   ExpenseVoucher[]       @relation("ExpenseVoucherCreator")
   expenseVouchersVerified  ExpenseVoucher[]       @relation("ExpenseVoucherVerifier")
+  barrelMovementsCreated   BarrelMovement[]       @relation("BarrelMovementCreator")
 
   @@map("users")
 }
@@ -48,6 +49,7 @@ model Vehicle {
   drivers             Driver[]
   deliveryAssignments DeliveryAssignment[]
   barrelPickups       BarrelPickup[]
+  barrelMovements     BarrelMovement[]
 
   @@map("vehicles")
 }
@@ -68,6 +70,7 @@ model Driver {
   assignments DeliveryAssignment[]
   barrelPickups BarrelPickup[]
   floorBonusRecords FloorDeliveryBonusRecord[]
+  barrelMovements BarrelMovement[]
 
   @@map("drivers")
 }
@@ -177,6 +180,7 @@ model Customer {
   taxInvoices       TaxInvoice[]
   barrelPickups     BarrelPickup[]
   expenseLines      ExpenseLine[]
+  barrelMovements   BarrelMovement[]
 
   @@map("customers")
 }
@@ -219,6 +223,7 @@ model DeliveryAddress {
   customer    Customer     @relation(fields: [customerId], references: [id])
   salesOrders SalesOrder[]
   barrelPickups BarrelPickup[]
+  barrelMovements BarrelMovement[]
 
   @@map("delivery_addresses")
 }
@@ -299,6 +304,7 @@ model SalesOrder {
   billingStatementOrder BillingStatementOrder?
   taxInvoices          TaxInvoice[]
   floorBonusRecords    FloorDeliveryBonusRecord[]
+  barrelMovements      BarrelMovement[]
 
   @@index([customerId, officeSettledAt])
   @@map("sales_orders")
@@ -494,6 +500,7 @@ model DeliveryAssignment {
   assignedBy   User?             @relation("AssignmentAssigner", fields: [assignedByUserId], references: [id])
   events       DeliveryEvent[]
   floorBonusRecords FloorDeliveryBonusRecord[]
+  barrelMovements BarrelMovement[]
 
   @@map("delivery_assignments")
 }
@@ -818,6 +825,7 @@ model BarrelPickup {
   createdBy        User?           @relation("BarrelPickupCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
   officeSettledBy  User?           @relation("BarrelPickupSettler", fields: [officeSettledByUserId], references: [id], onDelete: SetNull)
   events           BarrelPickupEvent[]
+  barrelMovements  BarrelMovement[]
 
   @@index([status, pickupDate])
   @@map("barrel_pickups")
@@ -834,6 +842,46 @@ model BarrelPickupEvent {
 
   @@index([barrelPickupId])
   @@map("barrel_pickup_events")
+}
+
+/// 空桶回收稽核流水（核銷時寫入）
+model BarrelMovement {
+  id                   BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  movementDate         DateTime @map("movement_date") @db.Date
+  occurredAt           DateTime @map("occurred_at") @db.DateTime(3)
+  sourceType           String   @map("source_type") @db.VarChar(32)
+  sourceRefId          BigInt   @map("source_ref_id") @db.UnsignedBigInt
+  refNo                String   @map("ref_no") @db.VarChar(40)
+  customerId           BigInt   @map("customer_id") @db.UnsignedBigInt
+  deliveryAddressId    BigInt   @map("delivery_address_id") @db.UnsignedBigInt
+  barrelsReturned      Int      @default(0) @map("barrels_returned") @db.UnsignedInt
+  barrelsDelivered     Int      @default(0) @map("barrels_delivered") @db.UnsignedInt
+  barrelDelta          Int      @map("barrel_delta") @db.Int
+  barrelsOnSiteBefore  Int?     @map("barrels_on_site_before") @db.UnsignedInt
+  barrelsOnSiteAfter   Int?     @map("barrels_on_site_after") @db.UnsignedInt
+  driverId             BigInt?  @map("driver_id") @db.UnsignedBigInt
+  vehicleId            BigInt?  @map("vehicle_id") @db.UnsignedBigInt
+  salesOrderId         BigInt?  @map("sales_order_id") @db.UnsignedBigInt
+  barrelPickupId       BigInt?  @map("barrel_pickup_id") @db.UnsignedBigInt
+  deliveryAssignmentId BigInt?  @map("delivery_assignment_id") @db.UnsignedBigInt
+  note                 String?  @db.VarChar(500)
+  createdByUserId      BigInt?  @map("created_by_user_id") @db.UnsignedBigInt
+  createdAt            DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  customer           Customer            @relation(fields: [customerId], references: [id])
+  deliveryAddress    DeliveryAddress     @relation(fields: [deliveryAddressId], references: [id])
+  driver             Driver?             @relation(fields: [driverId], references: [id], onDelete: SetNull)
+  vehicle            Vehicle?            @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
+  salesOrder         SalesOrder?         @relation(fields: [salesOrderId], references: [id], onDelete: SetNull)
+  barrelPickup       BarrelPickup?       @relation(fields: [barrelPickupId], references: [id], onDelete: SetNull)
+  deliveryAssignment DeliveryAssignment? @relation(fields: [deliveryAssignmentId], references: [id], onDelete: SetNull)
+  createdBy          User?               @relation("BarrelMovementCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([sourceType, sourceRefId])
+  @@index([customerId, movementDate])
+  @@index([deliveryAddressId, movementDate])
+  @@index([refNo])
+  @@map("barrel_movements")
 }
 
 model ExpenseCategory {
