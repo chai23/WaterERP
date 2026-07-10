@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import "./admin-ui.css";
+import "./admin-mobile.css";
 import { AuthProvider, useAuth } from "./AuthContext";
 import { DashboardProvider } from "./DashboardContext";
 import { ThemeProvider } from "./ThemeContext";

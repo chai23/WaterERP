@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { DesktopOnlyNotice } from "../components/DesktopOnlyNotice";
 import type { PrintSlogan } from "../components/RemarkSloganPicker";
 
 async function readJson<T>(url: string, init?: RequestInit): Promise<{ ok: boolean; data?: T; message?: string }> {
@@ -107,6 +108,7 @@ export default function SettingsPrintSlogansPage() {
 
   return (
     <section className="page-card">
+      <DesktopOnlyNotice feature="套印標語維護" />
       <div className="page-card__header">
         <div>
           <h2>套印標語</h2>

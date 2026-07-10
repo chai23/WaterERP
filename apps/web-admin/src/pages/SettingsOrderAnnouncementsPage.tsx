@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { DesktopOnlyNotice } from "../components/DesktopOnlyNotice";
 import { todayLocalYmd } from "../adminUtils";
 
 type AnnouncementKind = "standing" | "period";
@@ -175,6 +176,7 @@ export default function SettingsOrderAnnouncementsPage() {
 
   return (
     <section className="page-card">
+      <DesktopOnlyNotice feature="訂單公告維護" />
       <div className="page-card__header">
         <div>
           <h2>訂單公告</h2>

@@ -1,18 +1,19 @@
 import { Link } from "react-router-dom";
 import { useAuth } from "../AuthContext";
+import { PERM_MODULES } from "../rolePermissions";
 
 const modules = [
-  { key: "overview", label: "總覽", admin: true, accounting: true, dispatcher: true, warehouse: true, driver: false },
-  { key: "orders", label: "訂單新增/查詢/修改", admin: true, accounting: true, dispatcher: true, warehouse: false, driver: false },
-  { key: "assign", label: "派車與核銷", admin: true, accounting: true, dispatcher: true, warehouse: false, driver: false },
-  { key: "expenses", label: "公司支出登錄與查詢", admin: true, accounting: true, dispatcher: true, warehouse: true, driver: false },
-  { key: "expenseVerify", label: "支出會計核銷", admin: true, accounting: true, dispatcher: false, warehouse: false, driver: false },
-  { key: "masters", label: "客戶/商品/車輛主檔", admin: true, accounting: true, dispatcher: true, warehouse: true, driver: false },
-  { key: "accounting", label: "AR 沖帳與會計報表", admin: true, accounting: true, dispatcher: true, warehouse: false, driver: false },
-  { key: "users", label: "使用者與密碼重設", admin: true, accounting: false, dispatcher: false, warehouse: false, driver: false },
-  { key: "settings", label: "系統設定", admin: true, accounting: false, dispatcher: false, warehouse: false, driver: false },
+  { key: "overview", label: "總覽" },
+  { key: "orders", label: "訂單新增/查詢/修改" },
+  { key: "assign", label: "派車與核銷" },
+  { key: "expenses", label: "公司支出登錄與查詢" },
+  { key: "expenseVerify", label: "支出會計核銷" },
+  { key: "masters", label: "客戶/商品/車輛主檔" },
+  { key: "accounting", label: "AR 沖帳與會計報表" },
+  { key: "users", label: "使用者與密碼重設" },
+  { key: "settings", label: "系統設定" },
   { key: "driverApp", label: "司機端任務回報", admin: false, accounting: false, dispatcher: false, warehouse: false, driver: true },
-];
+] as const;
 
 const roles = [
   { key: "admin", label: "管理員", note: "完整後台權限，可維護帳號與重設密碼。" },
@@ -24,6 +25,14 @@ const roles = [
 
 function Mark({ enabled }: { enabled: boolean }) {
   return <span className={enabled ? "perm-mark perm-mark--on" : "perm-mark perm-mark--off"}>{enabled ? "允許" : "限制"}</span>;
+}
+
+function moduleEnabled(modKey: string, roleKey: string): boolean {
+  if (modKey === "driverApp") return roleKey === "driver";
+  const mod = PERM_MODULES.find((m) => m.key === modKey);
+  if (!mod) return false;
+  if (roleKey === "driver") return false;
+  return Boolean(mod[roleKey as keyof typeof mod]);
 }
 
 export default function SettingsPermissionsPage() {
@@ -62,7 +71,7 @@ export default function SettingsPermissionsPage() {
         </div>
 
         <div className="table-wrap">
-          <table className="data-table permission-table">
+          <table className="data-table permission-table data-table--no-card">
             <thead>
               <tr>
                 <th>功能</th>
@@ -77,7 +86,7 @@ export default function SettingsPermissionsPage() {
                   <td>{mod.label}</td>
                   {roles.map((role) => (
                     <td key={role.key}>
-                      <Mark enabled={Boolean(mod[role.key as keyof typeof mod])} />
+                      <Mark enabled={moduleEnabled(mod.key, role.key)} />
                     </td>
                   ))}
                 </tr>

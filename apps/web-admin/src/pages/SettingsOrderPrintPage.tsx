@@ -10,6 +10,7 @@ import {
   slipWithOrderAnnouncement,
 } from "../orderPrint";
 import type { FieldPos, OrderPrintLayoutV1 } from "../orderPrint";
+import { DesktopOnlyNotice } from "../components/DesktopOnlyNotice";
 
 /** 設定頁預覽縮放（僅螢幕；列印仍 1:1）。0.9 為螢幕略縮小預覽；1 為與版面 mm 同比例。 */
 const ORDER_PRINT_PREVIEW_SCALE = 0.9;
@@ -140,7 +141,8 @@ export default function SettingsOrderPrintPage() {
 
   return (
     <>
-      <section className="card">
+      <DesktopOnlyNotice feature="訂單列印版面編輯" />
+      <section className="card order-print-editor">
         <h2 className="card__title">訂單列印版面（點陣套印）</h2>
         <p className="card__hint">
           版面以<strong>毫米（mm）</strong>定位，配合公司已印格線的空白訂單紙套印文字。設定儲存在<strong>本機瀏覽器</strong>

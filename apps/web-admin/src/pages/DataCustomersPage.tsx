@@ -50,6 +50,7 @@ function orderStatusLabel(status: string | undefined): string {
   }
 }
 import { useDashboard } from "../DashboardContext";
+import { useMediaQuery } from "../useMediaQuery";
 
 type WorkspaceTab = "summary" | "orders" | "billing" | "edit";
 type PageMode = "browse" | "create";
@@ -184,6 +185,7 @@ function billingTypeBadgeClass(code: string | null | undefined): string {
 
 export default function DataCustomersPage() {
   const { customers, addressZones, affiliatedCompanies, loadDashboard } = useDashboard();
+  const isMobile = useMediaQuery("(max-width: 768px)");
 
   const [pageMode, setPageMode] = useState<PageMode>("browse");
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("summary");
@@ -946,6 +948,14 @@ export default function DataCustomersPage() {
   const createFormReady = createHasValidCode && createHasName && createHasAddress;
 
   const workspaceCustomer = detail ?? selectedListCustomer;
+  const customerHubMobileClass =
+    isMobile && pageMode === "create"
+      ? " customer-hub--mobile-create"
+      : isMobile && detailId && pageMode === "browse"
+        ? " customer-hub--mobile-detail"
+        : isMobile
+          ? " customer-hub--mobile-list"
+          : "";
   const workspaceTabs: { id: WorkspaceTab; label: string; count?: number }[] = [
     { id: "summary", label: "摘要" },
     { id: "orders", label: "訂單", count: detail?.salesOrders?.length },
@@ -954,7 +964,7 @@ export default function DataCustomersPage() {
   ];
 
   return (
-    <section className="card customer-hub">
+    <section className={`card customer-hub${customerHubMobileClass}`}>
       <header className="customer-hub__header">
         <div className="customer-hub__header-main">
           <h2 className="card__title">客戶資料</h2>
@@ -1068,6 +1078,11 @@ export default function DataCustomersPage() {
         <main className="customer-hub__workspace">
           {pageMode === "create" ? (
         <div className="customer-hub__create">
+          {isMobile ? (
+            <button type="button" className="btn btn--ghost btn--sm customer-hub__mobile-back" onClick={exitCreateCustomer}>
+              ← 返回清單
+            </button>
+          ) : null}
           <div className="customer-detail-head">
             <h2 className="card__title">新增客戶</h2>
             <button type="button" className="btn btn--ghost" onClick={resetCreateForm} disabled={saving}>
@@ -1433,6 +1448,18 @@ export default function DataCustomersPage() {
 
               {workspaceCustomer ? (
                 <header className="customer-hub__hero">
+                  {isMobile && pageMode === "browse" ? (
+                    <button
+                      type="button"
+                      className="btn btn--ghost btn--sm customer-hub__mobile-back"
+                      onClick={() => {
+                        setDetailId(null);
+                        setWorkspaceTab("summary");
+                      }}
+                    >
+                      ← 返回清單
+                    </button>
+                  ) : null}
                   <div className="customer-hub__hero-main">
                     <p className="customer-hub__hero-code mono-text">
                       {workspaceCustomer.customerCode ?? "—"} · ID {String(workspaceCustomer.id)}

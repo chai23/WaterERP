@@ -1,8 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../AuthContext";
 import { useDashboard } from "../DashboardContext";
+import { canAccessOverview, canAccessPath } from "../rolePermissions";
+import { setupResponsiveTables } from "../responsiveTables";
 import { useTheme, type AdminTheme } from "../ThemeContext";
+import { useMediaQuery } from "../useMediaQuery";
 
 const navGroups: { id: string; title: string; items: { to: string; label: string }[] }[] = [
   {
@@ -104,12 +107,44 @@ export default function AdminLayout() {
   const { error } = useDashboard();
   const { theme, setTheme } = useTheme();
   const location = useLocation();
+  const isMobile = useMediaQuery("(max-width: 768px)");
+  const mainRef = useRef<HTMLElement>(null);
   const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set());
+  const [navOpen, setNavOpen] = useState(false);
+
+  const visibleNavGroups = useMemo(
+    () =>
+      navGroups
+        .map((group) => ({
+          ...group,
+          items: group.items.filter((item) => canAccessPath(user?.role, item.to)),
+        }))
+        .filter((group) => group.items.length > 0),
+    [user?.role],
+  );
+
+  const showOverview = canAccessOverview(user?.role);
 
   useEffect(() => {
     const activeId = groupIdFromPath(location.pathname);
     setOpenGroups(activeId ? new Set([activeId]) : new Set());
+    setNavOpen(false);
   }, [location.pathname]);
+
+  useEffect(() => {
+    if (!isMobile) setNavOpen(false);
+  }, [isMobile]);
+
+  useEffect(() => {
+    document.body.classList.toggle("admin-nav-body-lock", isMobile && navOpen);
+    return () => document.body.classList.remove("admin-nav-body-lock");
+  }, [isMobile, navOpen]);
+
+  useEffect(() => {
+    const main = mainRef.current;
+    if (!main) return;
+    return setupResponsiveTables(main);
+  }, []);
 
   const toggleGroup = (groupId: string) => {
     setOpenGroups((prev) => {
@@ -124,13 +159,33 @@ export default function AdminLayout() {
     });
   };
 
+  const closeNav = () => setNavOpen(false);
+
   return (
     <div className="admin-app">
       <header className="admin-header">
         <div className="admin-header__inner">
-          <div>
-            <h1 className="admin-brand">超好企業進銷存系統</h1>
-            <p className="admin-tagline">營運後台 · 訂單作業、主檔資料、收入報表與系統設定</p>
+          <div className="admin-header__brand-block">
+            {isMobile ? (
+              <button
+                type="button"
+                className="admin-header__menu-btn"
+                aria-label={navOpen ? "關閉選單" : "開啟選單"}
+                aria-expanded={navOpen}
+                aria-controls="admin-primary-nav"
+                onClick={() => setNavOpen((open) => !open)}
+              >
+                <span className="admin-header__menu-icon" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                </span>
+              </button>
+            ) : null}
+            <div>
+              <h1 className="admin-brand">超好企業進銷存系統</h1>
+              <p className="admin-tagline">營運後台 · 訂單作業、主檔資料、收入報表與系統設定</p>
+            </div>
           </div>
           <div className="admin-header__meta">
             <div className="theme-switch" role="group" aria-label="配色版本">
@@ -146,7 +201,9 @@ export default function AdminLayout() {
                 </button>
               ))}
             </div>
-            <span className="pill pill--subtle">{user?.name ?? "使用者"} · {user?.employeeCode}</span>
+            <span className="pill pill--subtle admin-header__user-pill">
+              {user?.name ?? "使用者"} · {user?.employeeCode}
+            </span>
             <button type="button" className="btn btn--secondary btn--sm" onClick={logout}>
               登出
             </button>
@@ -155,13 +212,24 @@ export default function AdminLayout() {
       </header>
 
       <div className="admin-shell">
-        <nav className="admin-nav" aria-label="後台主要選單">
-          <div className="admin-nav__inner">
-            <NavLink to="/overview" end className={({ isActive }) => navLinkClass(isActive, false)}>
-              總覽
-            </NavLink>
+        {isMobile && navOpen ? (
+          <button type="button" className="admin-nav-backdrop" aria-label="關閉選單" onClick={closeNav} />
+        ) : null}
 
-            {navGroups.map((g) => {
+        <nav
+          id="admin-primary-nav"
+          className={`admin-nav${isMobile ? " admin-nav--drawer" : ""}${navOpen ? " admin-nav--open" : ""}`}
+          aria-label="後台主要選單"
+          aria-hidden={isMobile && !navOpen ? true : undefined}
+        >
+          <div className="admin-nav__inner">
+            {showOverview ? (
+              <NavLink to="/overview" end className={({ isActive }) => navLinkClass(isActive, false)} onClick={closeNav}>
+                總覽
+              </NavLink>
+            ) : null}
+
+            {visibleNavGroups.map((g) => {
               const routeActive = groupIdFromPath(location.pathname) === g.id;
               const isOpen = openGroups.has(g.id);
 
@@ -196,6 +264,7 @@ export default function AdminLayout() {
                             key={item.to}
                             to={item.to}
                             className={({ isActive }) => `admin-nav__sublink${isActive ? " admin-nav__sublink--active" : ""}`}
+                            onClick={closeNav}
                           >
                             {item.label}
                           </NavLink>
@@ -209,7 +278,7 @@ export default function AdminLayout() {
           </div>
         </nav>
 
-        <main className="admin-main">
+        <main className="admin-main" ref={mainRef}>
           {error ? <div className="alert alert--error">{error}</div> : null}
           <Outlet />
         </main>
