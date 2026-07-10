@@ -129,7 +129,7 @@ export default function AdminLayout() {
       <header className="admin-header">
         <div className="admin-header__inner">
           <div>
-            <h1 className="admin-brand">WaterERP</h1>
+            <h1 className="admin-brand">超好企業進銷存系統</h1>
             <p className="admin-tagline">營運後台 · 訂單作業、主檔資料、收入報表與系統設定</p>
           </div>
           <div className="admin-header__meta">
