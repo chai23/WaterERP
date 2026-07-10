@@ -4543,27 +4543,6 @@ app.get("/api/sales-orders", async (_req, res) => {
   }
 });
 
-app.get("/api/sales-orders/:salesOrderId", async (req, res) => {
-  try {
-    const salesOrderId = toBigInt(req.params.salesOrderId);
-    if (!salesOrderId) {
-      res.status(400).json({ ok: false, message: "參數錯誤" });
-      return;
-    }
-    const row = await prisma.salesOrder.findUnique({
-      where: { id: salesOrderId },
-      include: salesOrderDetailInclude,
-    });
-    if (!row) {
-      res.status(404).json({ ok: false, message: "找不到訂單" });
-      return;
-    }
-    res.json(row);
-  } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
-  }
-});
-
 /** 後台分配：指定客戶之未完成訂單（已分派／未分派），不含已完成與已取消 */
 app.get("/api/sales-orders/incomplete-by-customer", async (req, res) => {
   try {
@@ -4593,6 +4572,27 @@ app.get("/api/sales-orders/incomplete-by-customer", async (req, res) => {
       take: 120,
     });
     res.json({ ok: true, data: rows });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+app.get("/api/sales-orders/:salesOrderId", async (req, res) => {
+  try {
+    const salesOrderId = toBigInt(req.params.salesOrderId);
+    if (!salesOrderId) {
+      res.status(400).json({ ok: false, message: "參數錯誤" });
+      return;
+    }
+    const row = await prisma.salesOrder.findUnique({
+      where: { id: salesOrderId },
+      include: salesOrderDetailInclude,
+    });
+    if (!row) {
+      res.status(404).json({ ok: false, message: "找不到訂單" });
+      return;
+    }
+    res.json(row);
   } catch (e) {
     res.status(500).json({ ok: false, message: String(e) });
   }
