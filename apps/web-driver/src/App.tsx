@@ -500,7 +500,7 @@ export default function App() {
       <div className="driver-app">
         <main className="driver-login">
           <section className="driver-panel driver-login__panel">
-            <h1 className="driver-header__title">WaterERP · 司機登入</h1>
+            <h1 className="driver-header__title">超好企業進銷存系統 · 司機登入</h1>
             <form className="driver-login__form" onSubmit={login}>
               <div className="d-field">
                 <span>員編</span>
@@ -522,7 +522,7 @@ export default function App() {
   return (
     <div className="driver-app">
       <header className="driver-header">
-        <h1 className="driver-header__title">WaterERP · 司機任務</h1>
+        <h1 className="driver-header__title">超好企業進銷存系統 · 司機任務</h1>
         <div className="driver-header__tabs" role="tablist" style={{ display: "flex", gap: "0.5rem", margin: "0.5rem 0" }}>
           <button
             type="button"

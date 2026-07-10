@@ -27,7 +27,7 @@ final class LauncherViewModel: ObservableObject {
     }
 
     func onAppear() {
-        logStore.info("WaterERP Mac 啟動器已就緒")
+        logStore.info("超好企業進銷存系統 Mac 啟動器已就緒")
         startMonitoring()
         Task {
             await refresh()

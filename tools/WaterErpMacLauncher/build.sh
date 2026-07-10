@@ -1,5 +1,5 @@
 #!/bin/bash
-# 建置並啟動 WaterERP Mac 原生啟動器
+# 建置並啟動超好企業進銷存系統 Mac 原生啟動器
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -8,7 +8,7 @@ cd "$SCRIPT_DIR"
 DERIVED_DATA="$SCRIPT_DIR/build"
 APP_PATH="$DERIVED_DATA/Build/Products/Release/WaterErpMacLauncher.app"
 
-echo "🔨 正在建置 WaterERP Mac 啟動器…"
+echo "🔨 正在建置超好企業進銷存系統 Mac 啟動器…"
 xcodebuild \
   -project WaterErpMacLauncher.xcodeproj \
   -scheme WaterErpMacLauncher \

@@ -21,7 +21,7 @@
     <key>LSMinimumSystemVersion</key>
     <string>$(MACOSX_DEPLOYMENT_TARGET)</string>
     <key>NSHumanReadableCopyright</key>
-    <string>WaterERP</string>
+    <string>超好企業進銷存系統</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
 </dict>

@@ -60,7 +60,7 @@ export default function LoginPage() {
       </div>
       <section className="login-panel">
         <div className="login-brand">
-          <h1>WaterERP</h1>
+          <h1>超好企業進銷存系統</h1>
           <p>{mode === "login" ? "營運後台登入" : "建立第一位管理員"}</p>
         </div>
 

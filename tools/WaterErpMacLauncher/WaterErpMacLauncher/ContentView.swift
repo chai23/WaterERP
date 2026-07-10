@@ -23,6 +23,7 @@ struct ContentView: View {
             }
             .frame(minWidth: 680, minHeight: 520)
         }
+        .navigationTitle("超好企業進銷存系統")
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button("重新整理") {

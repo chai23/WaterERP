@@ -70,7 +70,7 @@ internal sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "WaterERP 伺服器啟動器 v1.5";
+        Text = "超好企業進銷存系統 伺服器啟動器 v1.5";
         MinimumSize = new Size(720, 660);
         Size = new Size(900, 720);
         StartPosition = FormStartPosition.CenterScreen;
@@ -412,7 +412,7 @@ internal sealed class MainForm : Form
         {
             InitialDirectory = TryGetDirectory(_projectRoot.Text.Trim()) ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             UseDescriptionForTitle = true,
-            Description = "選擇 WaterERP 專案根目錄（含 package.json）"
+            Description = "選擇專案根目錄（含 package.json）"
         };
         if (dlg.ShowDialog(this) == DialogResult.OK)
             _projectRoot.Text = dlg.SelectedPath;
@@ -786,7 +786,7 @@ internal sealed class MainForm : Form
         if (string.IsNullOrEmpty(root))
             throw new InvalidOperationException("請先設定專案根目錄。");
         if (!File.Exists(Path.Combine(root, "package.json")))
-            throw new InvalidOperationException("此資料夾找不到 package.json，請確認為 WaterERP 專案根目錄。");
+            throw new InvalidOperationException("此資料夾找不到 package.json，請確認為本系統專案根目錄。");
     }
 
     private static string? FindNodeExe()

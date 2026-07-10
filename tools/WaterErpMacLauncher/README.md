@@ -1,6 +1,6 @@
-# WaterERP Mac 啟動器（原生 SwiftUI 應用程式）
+# 超好企業進銷存系統 Mac 啟動器（原生 SwiftUI 應用程式）
 
-macOS 專用的原生桌面啟動器，用於管理 WaterERP 開發環境。
+macOS 專用的原生桌面啟動器，用於管理超好企業進銷存系統開發環境。
 
 ## 功能
 
