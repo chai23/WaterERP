@@ -43,8 +43,9 @@ struct HealthService {
         return await checkConnection(host: .ipv6(.loopback), port: port)
     }
 
-    static func isWebDevServerUp(port: Int) async -> Bool {
-        for host in ["http://localhost:\(port)", "http://127.0.0.1:\(port)"] {
+    static func isWebDevServerUp(port: Int, path: String = "/") async -> Bool {
+        let normalizedPath = path.hasPrefix("/") ? path : "/\(path)"
+        for host in ["http://localhost:\(port)\(normalizedPath)", "http://127.0.0.1:\(port)\(normalizedPath)"] {
             guard let url = URL(string: host) else { continue }
             var request = URLRequest(url: url)
             request.timeoutInterval = 2
@@ -67,6 +68,8 @@ struct HealthService {
             return false
         case .admin, .driver:
             return await isWebDevServerUp(port: id.port)
+        case .liff:
+            return await isWebDevServerUp(port: id.port, path: "/liff/")
         case .api:
             if await isPortOpen(id.port) { return true }
             return (await apiHealth()).ok
@@ -109,11 +112,13 @@ struct HealthService {
         async let apiPort = isPortOpen(3000)
         async let adminUp = isWebDevServerUp(port: 5173)
         async let driverUp = isWebDevServerUp(port: 5174)
+        async let liffUp = isWebDevServerUp(port: 5175, path: "/liff/")
 
         let mysql = await mysqlRunning
         let apiUp = await apiPort
         let adminRunning = await adminUp
         let driverRunning = await driverUp
+        let liffRunning = await liffUp
         let health = await apiHealth()
 
         return ServiceId.allCases.map { id in
@@ -133,6 +138,9 @@ struct HealthService {
             case .driver:
                 return ServiceStatus(id: id, running: driverRunning, healthy: driverRunning,
                                      detail: driverRunning ? "Vite 開發伺服器運行中" : "未啟動")
+            case .liff:
+                return ServiceStatus(id: id, running: liffRunning, healthy: liffRunning,
+                                     detail: liffRunning ? "Vite 開發伺服器運行中（LINE 訂水）" : "未啟動")
             }
         }
     }

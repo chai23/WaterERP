@@ -1965,6 +1965,16 @@
   color: var(--text-secondary);
 }
 
+.order-line-flags {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.order-line-flags .order-line-topup-check {
+  margin-top: 0.25rem;
+}
+
 .order-line-topup-check input {
   width: auto;
   margin: 0;

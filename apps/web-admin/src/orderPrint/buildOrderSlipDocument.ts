@@ -43,9 +43,11 @@ function lineProductLabel(line: SlipLine): string {
   const u = unit ? `（${unit}）` : "";
   const top = line.isPromotionGift
     ? " · 贈品"
-    : line.linePurpose === "prepaid_barrel_topup"
-      ? " · 預付桶儲值"
-      : "";
+    : line.isReplenishment
+      ? " · 補送"
+      : line.linePurpose === "prepaid_barrel_topup"
+        ? " · 預付桶儲值"
+        : "";
   const promo = line.promotionNote?.trim() ? ` · ${line.promotionNote.trim()}` : "";
   return `${name}${u}${top}${promo}`;
 }

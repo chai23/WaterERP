@@ -34,6 +34,8 @@ type OrderLineRow = {
   qtyOrdered?: number;
   qtyDelivered?: number;
   linePurpose?: string | null;
+  isPromotionGift?: boolean;
+  isReplenishment?: boolean;
   product?: { name?: string; code?: string; consumesPrepaidBarrel?: boolean };
 };
 
@@ -100,6 +102,13 @@ function deliveryLinesFromJob(job: AssignmentJob): OrderLineRow[] {
 
 function floorBonusLinesFromJob(job: AssignmentJob): OrderLineRow[] {
   return deliveryLinesFromJob(job).filter((line) => line.product?.consumesPrepaidBarrel === true);
+}
+
+function orderLineDisplayName(line: OrderLineRow): string {
+  const name = line.product?.name ?? line.product?.code ?? "商品";
+  if (line.isReplenishment) return `${name}（補送）`;
+  if (line.isPromotionGift) return `${name}（贈品）`;
+  return name;
 }
 
 function isFloorBonusEligible(floor: number): boolean {
@@ -665,7 +674,7 @@ export default function OrderProxyReportPage() {
                                         style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}
                                       >
                                         <span style={{ flex: "1 1 8rem", fontSize: "0.84rem" }}>
-                                          {line.product?.name ?? line.product?.code ?? "商品"}
+                                          {orderLineDisplayName(line)}
                                           {ordered > 0 ? (
                                             <span className="proxy-report-card__cash-muted">（開單 {ordered}）</span>
                                           ) : (
@@ -687,7 +696,7 @@ export default function OrderProxyReportPage() {
                                               },
                                             })
                                           }
-                                          aria-label={`${line.product?.name ?? "商品"} 實際配送桶數`}
+                                          aria-label={`${orderLineDisplayName(line)} 實際配送桶數`}
                                         />
                                         <span style={{ fontSize: "0.78rem", color: "var(--text-muted)" }}>桶</span>
                                       </div>
@@ -750,7 +759,7 @@ export default function OrderProxyReportPage() {
                                     <option value="">商品</option>
                                     {floorBonusLinesFromJob(job).map((line) => (
                                       <option key={String(line.id)} value={String(line.id)}>
-                                        {line.product?.name ?? "商品"}
+                                        {orderLineDisplayName(line)}
                                       </option>
                                     ))}
                                   </select>

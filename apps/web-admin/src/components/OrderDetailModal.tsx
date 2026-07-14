@@ -62,6 +62,7 @@ export type OrderRecord = Record<string, unknown> & {
     isPromotionGift?: boolean;
     promotionRuleKey?: string | null;
     promotionNote?: string | null;
+    isReplenishment?: boolean;
     product?: { name?: string; sku?: string | null; unit?: string | null };
   }>;
   assignments?: Array<{
@@ -387,7 +388,11 @@ export function OrderDetailModal({ order, onClose }: { order: OrderRecord; onClo
                           </div>
                         </td>
                         <td>
-                          {linePurposeLabel(line.linePurpose, Boolean(line.isPromotionGift))}
+                          {linePurposeLabel(
+                            line.linePurpose,
+                            Boolean(line.isPromotionGift),
+                            Boolean(line.isReplenishment),
+                          )}
                           {line.promotionNote ? (
                             <div className="order-detail__line-note">{String(line.promotionNote)}</div>
                           ) : null}
@@ -399,6 +404,7 @@ export function OrderDetailModal({ order, onClose }: { order: OrderRecord; onClo
                         <td className="num">
                           {moneyText(line.lineAmount)}
                           {line.isPromotionGift ? <div className="order-detail__line-note">贈品</div> : null}
+                          {line.isReplenishment ? <div className="order-detail__line-note">補送</div> : null}
                           {excluded ? <div className="order-detail__line-note">含於儲值</div> : null}
                         </td>
                       </tr>

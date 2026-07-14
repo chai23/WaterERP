@@ -119,12 +119,13 @@ final class ProcessManager: ObservableObject {
         try await Task.sleep(nanoseconds: 2_000_000_000)
         try await startService(.admin, settings: settings, log: log)
         try await startService(.driver, settings: settings, log: log)
+        try await startService(.liff, settings: settings, log: log)
         log.success("全部服務已啟動")
     }
 
     func stopAll(settings: LauncherSettings, log: LogStore) async {
         log.info("正在停止全部服務…")
-        for id in [ServiceId.driver, .admin, .api] {
+        for id in [ServiceId.liff, .driver, .admin, .api] {
             await stopService(id, log: log)
         }
         await PortHelper.stopOrphanedDevProcesses(projectRoot: settings.projectRoot, log: log)

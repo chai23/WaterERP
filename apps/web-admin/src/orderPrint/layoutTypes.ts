@@ -126,6 +126,7 @@ export type OrderSlipSource = {
     linePurpose?: string | null;
     billingTypeAtLine?: string | null;
     isPromotionGift?: boolean;
+    isReplenishment?: boolean;
     promotionNote?: string | null;
     product?: { name?: string | null; unit?: string | null };
   }>;

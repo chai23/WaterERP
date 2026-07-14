@@ -1,7 +1,7 @@
 import Foundation
 
 enum ServiceId: String, CaseIterable, Identifiable {
-    case mysql, api, admin, driver
+    case mysql, api, admin, driver, liff
 
     var id: String { rawValue }
 
@@ -11,6 +11,7 @@ enum ServiceId: String, CaseIterable, Identifiable {
         case .api: return "API"
         case .admin: return "後台"
         case .driver: return "司機端"
+        case .liff: return "LIFF 訂水"
         }
     }
 
@@ -20,6 +21,7 @@ enum ServiceId: String, CaseIterable, Identifiable {
         case .api: return 3000
         case .admin: return 5173
         case .driver: return 5174
+        case .liff: return 5175
         }
     }
 
@@ -29,6 +31,7 @@ enum ServiceId: String, CaseIterable, Identifiable {
         case .api: return "http://localhost:3000"
         case .admin: return "http://localhost:5173"
         case .driver: return "http://localhost:5174"
+        case .liff: return "http://localhost:5175/liff/"
         }
     }
 
@@ -38,6 +41,7 @@ enum ServiceId: String, CaseIterable, Identifiable {
         case .api: return "dev:api"
         case .admin: return "dev:admin"
         case .driver: return "dev:driver"
+        case .liff: return "dev:liff"
         }
     }
 }

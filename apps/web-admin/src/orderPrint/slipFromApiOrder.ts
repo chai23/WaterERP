@@ -16,6 +16,7 @@ export function slipFromDashboardOrder(row: Record<string, unknown>): OrderSlipS
       linePurpose: L.linePurpose != null ? String(L.linePurpose) : null,
       billingTypeAtLine: L.billingTypeAtLine != null ? String(L.billingTypeAtLine) : null,
       isPromotionGift: Boolean(L.isPromotionGift),
+      isReplenishment: Boolean(L.isReplenishment),
       promotionNote: L.promotionNote != null ? String(L.promotionNote) : null,
       product: {
         name: p.name != null ? String(p.name) : undefined,

@@ -8,6 +8,8 @@ import AdminLayout from "./layout/AdminLayout";
 import LoginPage from "./pages/LoginPage";
 import OverviewPage from "./pages/OverviewPage";
 import OrderNewPage from "./pages/OrderNewPage";
+import OrderPatrolGeneratePage from "./pages/OrderPatrolGeneratePage";
+import OrderLiffReviewPage from "./pages/OrderLiffReviewPage";
 import OrderAssignPage from "./pages/OrderAssignPage";
 import OrderCompletePage from "./pages/OrderCompletePage";
 import OrderProxyReportPage from "./pages/OrderProxyReportPage";
@@ -63,6 +65,8 @@ export default function App() {
 
               <Route path="orders" element={<Navigate to="/orders/new" replace />} />
               <Route path="orders/new" element={<OrderNewPage />} />
+              <Route path="orders/patrol" element={<OrderPatrolGeneratePage />} />
+              <Route path="orders/liff-review" element={<OrderLiffReviewPage />} />
               <Route path="orders/assign" element={<OrderAssignPage />} />
               <Route path="orders/proxy-report" element={<OrderProxyReportPage />} />
               <Route path="orders/complete" element={<OrderCompletePage />} />

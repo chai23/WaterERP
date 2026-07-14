@@ -13,6 +13,8 @@ const navGroups: { id: string; title: string; items: { to: string; label: string
     title: "訂單作業",
     items: [
       { to: "/orders/new", label: "新增訂單" },
+      { to: "/orders/patrol", label: "產生巡查單" },
+      { to: "/orders/liff-review", label: "確認 LINE 訂單" },
       { to: "/orders/assign", label: "分配訂單" },
       { to: "/orders/proxy-report", label: "代登配送回報" },
       { to: "/orders/complete", label: "核銷訂單" },

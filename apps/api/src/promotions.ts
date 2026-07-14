@@ -13,6 +13,8 @@ export type DraftOrderLine = {
   isPromotionGift?: boolean;
   promotionRuleKey?: string | null;
   promotionNote?: string | null;
+  /** 補送：不觸發優惠贈品 */
+  isReplenishment?: boolean;
 };
 
 export type PromotionPreviewMessage = {
@@ -188,25 +190,27 @@ export async function applyPromotions(
   prisma: PrismaClient,
   lines: DraftOrderLine[],
 ): Promise<{ lines: DraftOrderLine[]; messages: PromotionPreviewMessage[] }> {
-  const paidLines = lines.filter(isPaidLine);
+  const baseLines = lines.filter(isPaidLine);
+  /** 補送不觸發滿額／購買贈品 */
+  const triggerLines = baseLines.filter((l) => !l.isReplenishment);
   const ctx = await loadPromotionContext(prisma);
   const allGiftLines: DraftOrderLine[] = [];
   const allMessages: PromotionPreviewMessage[] = [];
 
   if (ctx.prepaidRule?.isEnabled) {
     const config = parsePrepaidTopupBonusConfig(ctx.prepaidRule.config);
-    const { giftLines, messages } = applyPrepaidTopupBonus(paidLines, config, ctx.productNames);
+    const { giftLines, messages } = applyPrepaidTopupBonus(triggerLines, config, ctx.productNames);
     allGiftLines.push(...giftLines);
     allMessages.push(...messages);
   }
 
   if (ctx.dispenserMaster?.isEnabled && ctx.dispenserRules.length > 0) {
-    const { giftLines, messages } = applyDispenserPurchaseGifts(paidLines, ctx.dispenserRules);
+    const { giftLines, messages } = applyDispenserPurchaseGifts(triggerLines, ctx.dispenserRules);
     allGiftLines.push(...giftLines);
     allMessages.push(...messages);
   }
 
-  return { lines: [...paidLines, ...allGiftLines], messages: allMessages };
+  return { lines: [...baseLines, ...allGiftLines], messages: allMessages };
 }
 
 export function validatePrepaidTopupBonusConfig(config: unknown): { ok: true; data: PrepaidTopupBonusConfig } | { ok: false; message: string } {

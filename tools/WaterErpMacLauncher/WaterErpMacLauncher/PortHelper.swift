@@ -49,6 +49,7 @@ enum PortHelper {
             "npm run dev:api",
             "npm run dev:admin",
             "npm run dev:driver",
+            "npm run dev:liff",
             "tsx watch src/index.ts",
             "node_modules/.bin/vite",
             "node_modules/vite/bin/vite.js",

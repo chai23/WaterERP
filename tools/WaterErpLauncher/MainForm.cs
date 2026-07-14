@@ -12,6 +12,7 @@ internal sealed class MainForm : Form
     private readonly TextBox _apiBaseUrl = new() { Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top };
     private readonly TextBox _adminUrl = new() { Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top };
     private readonly TextBox _driverUrl = new() { Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top };
+    private readonly TextBox _liffUrl = new() { Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top };
     private readonly CheckBox _chkProductionMode = new()
     {
         Text = "正式部署（Nginx + 靜態前端）",
@@ -26,6 +27,11 @@ internal sealed class MainForm : Form
     private readonly CheckBox _chkDriverDev = new()
     {
         Text = "一併啟動司機端 Vite (npm run dev:driver)",
+        AutoSize = true
+    };
+    private readonly CheckBox _chkLiffDev = new()
+    {
+        Text = "一併啟動 LIFF 訂水 Vite (npm run dev:liff)",
         AutoSize = true
     };
     private readonly RichTextBox _log = new()
@@ -56,6 +62,7 @@ internal sealed class MainForm : Form
     private readonly Button _btnMigrateProducts = new() { Text = "轉換商品資料" };
     private readonly Button _btnOpenAdmin = new() { Text = "開啟後台 (瀏覽器)" };
     private readonly Button _btnOpenDriver = new() { Text = "開啟司機端 (瀏覽器)" };
+    private readonly Button _btnOpenLiff = new() { Text = "開啟 LIFF 訂水 (瀏覽器)" };
 
     private readonly System.Windows.Forms.Timer _healthTimer = new() { Interval = 3000 };
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(5) };
@@ -63,6 +70,7 @@ internal sealed class MainForm : Form
     private Process? _apiProcess;
     private Process? _adminDevProcess;
     private Process? _driverDevProcess;
+    private Process? _liffDevProcess;
     private bool _nginxStartedByLauncher;
     private bool _uiBusy;
     private string _gitBranch = "main";
@@ -70,9 +78,9 @@ internal sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "超好企業進銷存系統 伺服器啟動器 v1.5";
-        MinimumSize = new Size(720, 660);
-        Size = new Size(900, 720);
+        Text = "超好企業進銷存系統 伺服器啟動器 v1.6";
+        MinimumSize = new Size(720, 680);
+        Size = new Size(900, 740);
         StartPosition = FormStartPosition.CenterScreen;
 
         var root = new TableLayoutPanel
@@ -105,6 +113,7 @@ internal sealed class MainForm : Form
         AddRow(formPanel, r++, "網站基底 URL", _apiBaseUrl, null);
         AddRow(formPanel, r++, "後台網址", _adminUrl, null);
         AddRow(formPanel, r++, "司機端網址", _driverUrl, null);
+        AddRow(formPanel, r++, "LIFF 訂水網址", _liffUrl, null);
 
         formPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         var modeOpts = new FlowLayoutPanel
@@ -136,6 +145,7 @@ internal sealed class MainForm : Form
         };
         _devOpts.Controls.Add(_chkAdminDev);
         _devOpts.Controls.Add(_chkDriverDev);
+        _devOpts.Controls.Add(_chkLiffDev);
         formPanel.Controls.Add(devLabel, 0, r);
         formPanel.Controls.Add(_devOpts, 1, r);
         formPanel.SetColumnSpan(_devOpts, 2);
@@ -156,6 +166,7 @@ internal sealed class MainForm : Form
         buttons.Controls.Add(_btnResetData);
         buttons.Controls.Add(_btnOpenAdmin);
         buttons.Controls.Add(_btnOpenDriver);
+        buttons.Controls.Add(_btnOpenLiff);
 
         var deployHint = new Label
         {
@@ -284,6 +295,7 @@ internal sealed class MainForm : Form
         _btnMigrateProducts.Click += async (_, _) => await MigrateLegacyAsync("run db:migrate-products", "轉換商品資料", MigrateProductsConfirmText()).ConfigureAwait(true);
         _btnOpenAdmin.Click += (_, _) => OpenUrl(_adminUrl.Text.Trim());
         _btnOpenDriver.Click += (_, _) => OpenUrl(_driverUrl.Text.Trim());
+        _btnOpenLiff.Click += (_, _) => OpenUrl(_liffUrl.Text.Trim());
 
         _healthTimer.Tick += async (_, _) => await CheckHealthAsync().ConfigureAwait(true);
         Load += OnLoad;
@@ -322,10 +334,12 @@ internal sealed class MainForm : Form
         _apiBaseUrl.Text = string.IsNullOrWhiteSpace(s.ApiBaseUrl) ? "http://125.228.16.160" : s.ApiBaseUrl;
         _adminUrl.Text = string.IsNullOrWhiteSpace(s.AdminUrl) ? "http://125.228.16.160/" : s.AdminUrl;
         _driverUrl.Text = string.IsNullOrWhiteSpace(s.DriverUrl) ? "http://125.228.16.160/driver/" : s.DriverUrl;
+        _liffUrl.Text = string.IsNullOrWhiteSpace(s.LiffUrl) ? "http://125.228.16.160/liff/" : s.LiffUrl;
         _gitBranch = string.IsNullOrWhiteSpace(s.GitBranch) ? "main" : s.GitBranch.Trim();
         _chkProductionMode.Checked = s.UseProductionMode;
         _chkAdminDev.Checked = s.StartAdminDevWithApi;
         _chkDriverDev.Checked = s.StartDriverDevWithApi;
+        _chkLiffDev.Checked = s.StartLiffDevWithApi;
         MigrateSavedUrlsToFixedIpIfNeeded();
         SyncDeploymentModeUi();
         if (s.UseProductionMode)
@@ -398,10 +412,12 @@ internal sealed class MainForm : Form
             ApiBaseUrl = _apiBaseUrl.Text.Trim(),
             AdminUrl = _adminUrl.Text.Trim(),
             DriverUrl = _driverUrl.Text.Trim(),
+            LiffUrl = _liffUrl.Text.Trim(),
             UseProductionMode = _chkProductionMode.Checked,
             GitBranch = _gitBranch,
             StartAdminDevWithApi = _chkAdminDev.Checked,
-            StartDriverDevWithApi = _chkDriverDev.Checked
+            StartDriverDevWithApi = _chkDriverDev.Checked,
+            StartLiffDevWithApi = _chkLiffDev.Checked
         };
         s.Save();
     }
@@ -438,10 +454,12 @@ internal sealed class MainForm : Form
         _devOpts.Enabled = !production;
         _chkAdminDev.Enabled = !production;
         _chkDriverDev.Enabled = !production;
+        _chkLiffDev.Enabled = !production;
         if (production)
         {
             _chkAdminDev.Checked = false;
             _chkDriverDev.Checked = false;
+            _chkLiffDev.Checked = false;
             NormalizeProductionUrls();
         }
     }
@@ -454,6 +472,7 @@ internal sealed class MainForm : Form
         var baseText = _apiBaseUrl.Text.Trim();
         var adminText = _adminUrl.Text.Trim();
         var driverText = _driverUrl.Text.Trim();
+        var liffText = _liffUrl.Text.Trim();
 
         var looksLikeOldLocal =
             baseText.Contains("localhost", StringComparison.OrdinalIgnoreCase)
@@ -462,9 +481,12 @@ internal sealed class MainForm : Form
             || adminText.Contains("127.0.0.1", StringComparison.OrdinalIgnoreCase)
             || driverText.Contains("localhost", StringComparison.OrdinalIgnoreCase)
             || driverText.Contains("127.0.0.1", StringComparison.OrdinalIgnoreCase)
+            || liffText.Contains("localhost", StringComparison.OrdinalIgnoreCase)
+            || liffText.Contains("127.0.0.1", StringComparison.OrdinalIgnoreCase)
             || IsDevPort(PortHelper.ParsePortFromUrl(baseText, 80))
             || IsDevPort(PortHelper.ParsePortFromUrl(adminText, 80))
-            || IsDevPort(PortHelper.ParsePortFromUrl(driverText, 80));
+            || IsDevPort(PortHelper.ParsePortFromUrl(driverText, 80))
+            || IsDevPort(PortHelper.ParsePortFromUrl(liffText, 80));
 
         if (!looksLikeOldLocal)
             return;
@@ -472,11 +494,12 @@ internal sealed class MainForm : Form
         _apiBaseUrl.Text = $"http://{host}";
         _adminUrl.Text = $"http://{host}/";
         _driverUrl.Text = $"http://{host}/driver/";
+        _liffUrl.Text = $"http://{host}/liff/";
         SaveSettingsFromUi();
         AppendLog($"已將網址預設更新為固定 IP：http://{host}/");
     }
 
-    private static bool IsDevPort(int port) => port is 3000 or 5173 or 5174;
+    private static bool IsDevPort(int port) => port is 3000 or 5173 or 5174 or 5175;
 
     private static string GetUrlHost(string url, string fallbackHost = DefaultPublicHost)
     {
@@ -504,9 +527,11 @@ internal sealed class MainForm : Form
         var basePort = PortHelper.ParsePortFromUrl(_apiBaseUrl.Text.Trim(), 80);
         var adminPort = PortHelper.ParsePortFromUrl(_adminUrl.Text.Trim(), 80);
         var driverPort = PortHelper.ParsePortFromUrl(_driverUrl.Text.Trim(), 80);
-        var needsFix = IsDevPort(basePort) || IsDevPort(adminPort) || IsDevPort(driverPort)
+        var liffPort = PortHelper.ParsePortFromUrl(_liffUrl.Text.Trim(), 80);
+        var needsFix = IsDevPort(basePort) || IsDevPort(adminPort) || IsDevPort(driverPort) || IsDevPort(liffPort)
             || _adminUrl.Text.Contains(":5173", StringComparison.OrdinalIgnoreCase)
             || _driverUrl.Text.Contains(":5174", StringComparison.OrdinalIgnoreCase)
+            || _liffUrl.Text.Contains(":5175", StringComparison.OrdinalIgnoreCase)
             || _apiBaseUrl.Text.Contains(":3000", StringComparison.OrdinalIgnoreCase);
 
         if (!needsFix)
@@ -515,6 +540,7 @@ internal sealed class MainForm : Form
         _apiBaseUrl.Text = $"http://{host}";
         _adminUrl.Text = $"http://{host}/";
         _driverUrl.Text = $"http://{host}/driver/";
+        _liffUrl.Text = $"http://{host}/liff/";
         AppendLog($"已將網址改為正式部署格式（Nginx 80 埠）：http://{host}/");
     }
 
@@ -695,6 +721,8 @@ internal sealed class MainForm : Form
             _adminDevProcess.Exited -= OnDevProcessExited;
         if (_driverDevProcess != null)
             _driverDevProcess.Exited -= OnDevProcessExited;
+        if (_liffDevProcess != null)
+            _liffDevProcess.Exited -= OnDevProcessExited;
     }
 
     /// <summary>同步停止服務，不更新 UI（關閉視窗時使用，避免死結）。</summary>
@@ -703,19 +731,22 @@ internal sealed class MainForm : Form
         var api = _apiProcess;
         var admin = _adminDevProcess;
         var driver = _driverDevProcess;
+        var liff = _liffDevProcess;
         var stopNginx = ShouldManageNginx();
 
-        if (api is null && admin is null && driver is null && !stopNginx)
+        if (api is null && admin is null && driver is null && liff is null && !stopNginx)
             return;
 
         DetachManagedProcesses();
         _apiProcess = null;
         _adminDevProcess = null;
         _driverDevProcess = null;
+        _liffDevProcess = null;
 
         TryKillAndDisposeApi(api);
         TryKillAndDisposeSimple(admin);
         TryKillAndDisposeSimple(driver);
+        TryKillAndDisposeSimple(liff);
 
         if (stopNginx)
             StopNginxCore(log);
@@ -726,8 +757,10 @@ internal sealed class MainForm : Form
         {
             var adminPort = PortHelper.ParsePortFromUrl(_adminUrl.Text.Trim(), 5173);
             var driverPort = PortHelper.ParsePortFromUrl(_driverUrl.Text.Trim(), 5174);
+            var liffPort = PortHelper.ParsePortFromUrl(_liffUrl.Text.Trim(), 5175);
             PortHelper.ReleasePortForNode(adminPort, log);
             PortHelper.ReleasePortForNode(driverPort, log);
+            PortHelper.ReleasePortForNode(liffPort, log);
         }
     }
 
@@ -808,6 +841,7 @@ internal sealed class MainForm : Form
         return (_apiProcess is { HasExited: false })
             || (_adminDevProcess is { HasExited: false })
             || (_driverDevProcess is { HasExited: false })
+            || (_liffDevProcess is { HasExited: false })
             || _nginxStartedByLauncher;
     }
 
@@ -824,6 +858,7 @@ internal sealed class MainForm : Form
         var httpPort = GetHttpPort();
         var adminPort = PortHelper.ParsePortFromUrl(_adminUrl.Text.Trim(), 5173);
         var driverPort = PortHelper.ParsePortFromUrl(_driverUrl.Text.Trim(), 5174);
+        var liffPort = PortHelper.ParsePortFromUrl(_liffUrl.Text.Trim(), 5175);
 
         void Log(string msg) => AppendLog(msg);
 
@@ -865,6 +900,12 @@ internal sealed class MainForm : Form
             {
                 AppendLog($"偵測到埠 {driverPort} 已被佔用，嘗試結束殘留的 Node 行程…");
                 PortHelper.ReleasePortForNode(driverPort, Log);
+            }
+
+            if (_chkLiffDev.Checked && PortHelper.IsPortListening(liffPort))
+            {
+                AppendLog($"偵測到埠 {liffPort} 已被佔用，嘗試結束殘留的 Node 行程…");
+                PortHelper.ReleasePortForNode(liffPort, Log);
             }
         }
 
@@ -945,11 +986,12 @@ internal sealed class MainForm : Form
         {
             var adminDist = Path.Combine(root, "apps", "web-admin", "dist", "index.html");
             var driverDist = Path.Combine(root, "apps", "web-driver", "dist", "index.html");
-            if (!File.Exists(adminDist) || !File.Exists(driverDist))
+            var liffDist = Path.Combine(root, "apps", "web-liff", "dist", "index.html");
+            if (!File.Exists(adminDist) || !File.Exists(driverDist) || !File.Exists(liffDist))
             {
                 MessageBox.Show(
                     this,
-                    "正式部署需要先建置前端靜態檔。\n請按「建置專案」後再啟動。",
+                    "正式部署需要先建置前端靜態檔（含後台、司機端、LIFF 訂水）。\n請按「建置專案」後再啟動。",
                     Text,
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
@@ -964,7 +1006,7 @@ internal sealed class MainForm : Form
         }
 
         var npmCmd = Path.Combine(Path.GetDirectoryName(node)!, "npm.cmd");
-        if (!_chkProductionMode.Checked && (_chkAdminDev.Checked || _chkDriverDev.Checked) && !File.Exists(npmCmd))
+        if (!_chkProductionMode.Checked && (_chkAdminDev.Checked || _chkDriverDev.Checked || _chkLiffDev.Checked) && !File.Exists(npmCmd))
         {
             MessageBox.Show(this, "已勾選啟動前端，但找不到 npm.cmd。", Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
@@ -1035,6 +1077,17 @@ internal sealed class MainForm : Form
                 }
             }
 
+            if (!_chkProductionMode.Checked && _chkLiffDev.Checked)
+            {
+                _liffDevProcess = StartNpmDevProcess(npmCmd, root, "run dev:liff", "LIFF 訂水 Vite");
+                if (_liffDevProcess != null)
+                {
+                    _liffDevProcess.EnableRaisingEvents = true;
+                    _liffDevProcess.Exited += OnDevProcessExited;
+                    AppendLog("已啟動 LIFF 訂水開發伺服器（http://localhost:5175/liff/）。");
+                }
+            }
+
             SyncStartStopButtons();
         }
         catch (Exception ex)
@@ -1087,6 +1140,12 @@ internal sealed class MainForm : Form
                 _driverDevProcess = null;
                 AppendLog("司機端開發伺服器已結束。");
             }
+            else if (ReferenceEquals(_liffDevProcess, p))
+            {
+                TryDisposeProcessNoRedirect(_liffDevProcess);
+                _liffDevProcess = null;
+                AppendLog("LIFF 訂水開發伺服器已結束。");
+            }
 
             SyncStartStopButtons();
         });
@@ -1124,9 +1183,10 @@ internal sealed class MainForm : Form
         var api = _apiProcess;
         var admin = _adminDevProcess;
         var driver = _driverDevProcess;
+        var liff = _liffDevProcess;
         var stopNginx = ShouldManageNginx();
 
-        if (api is null && admin is null && driver is null && !stopNginx)
+        if (api is null && admin is null && driver is null && liff is null && !stopNginx)
             return;
 
         AppendLog("正在停止服務…");
@@ -1405,7 +1465,8 @@ internal sealed class MainForm : Form
         var apiDist = Path.Combine(projectRoot, "apps", "api", "dist", "index.js");
         var adminDist = Path.Combine(projectRoot, "apps", "web-admin", "dist", "index.html");
         var driverDist = Path.Combine(projectRoot, "apps", "web-driver", "dist", "index.html");
-        foreach (var path in new[] { apiDist, adminDist, driverDist })
+        var liffDist = Path.Combine(projectRoot, "apps", "web-liff", "dist", "index.html");
+        foreach (var path in new[] { apiDist, adminDist, driverDist, liffDist })
         {
             if (!File.Exists(path))
             {
@@ -1494,6 +1555,7 @@ internal sealed class MainForm : Form
                 "更新並部署完成。\n\n"
                 + $"後台：{_adminUrl.Text.Trim()}\n"
                 + $"司機端：{_driverUrl.Text.Trim()}\n"
+                + $"LIFF 訂水：{_liffUrl.Text.Trim()}\n"
                 + $"健康檢查：{_apiBaseUrl.Text.Trim().TrimEnd('/')}/api/health",
                 Text,
                 MessageBoxButtons.OK,
@@ -2102,6 +2164,7 @@ internal sealed class MainForm : Form
         _chkProductionMode.Enabled = !busy;
         _chkAdminDev.Enabled = !busy && !_chkProductionMode.Checked;
         _chkDriverDev.Enabled = !busy && !_chkProductionMode.Checked;
+        _chkLiffDev.Enabled = !busy && !_chkProductionMode.Checked;
         Cursor = busy ? Cursors.WaitCursor : Cursors.Default;
         SyncStartStopButtons();
     }

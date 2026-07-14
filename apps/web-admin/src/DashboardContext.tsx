@@ -79,6 +79,8 @@ export type OrderFormLine = {
   /** 此列結帳方式（現金／月結／預付桶） */
   billingType: LineBillingType;
   linePurpose: LinePurpose;
+  /** 補送（破桶補水）；預設單價 $0，仍計未收回空桶 */
+  isReplenishment: boolean;
 };
 
 export function newOrderFormLine(defaultBilling: LineBillingType = "cash"): OrderFormLine {
@@ -92,6 +94,7 @@ export function newOrderFormLine(defaultBilling: LineBillingType = "cash"): Orde
     unitPrice: "",
     billingType: defaultBilling,
     linePurpose: "delivery",
+    isReplenishment: false,
   };
 }
 
@@ -139,8 +142,22 @@ export type DashboardContextValue = {
   clearLastOrderSlipForPrint: () => void;
   assigning: boolean;
   assignMessage: string;
-  assignForm: { salesOrderId: string; driverId: string; vehicleId: string; assignmentDate: string };
-  setAssignForm: React.Dispatch<React.SetStateAction<{ salesOrderId: string; driverId: string; vehicleId: string; assignmentDate: string }>>;
+  assignForm: {
+    salesOrderId: string;
+    driverId: string;
+    vehicleId: string;
+    assignmentDate: string;
+    estimatedDeliverySlot: string;
+  };
+  setAssignForm: React.Dispatch<
+    React.SetStateAction<{
+      salesOrderId: string;
+      driverId: string;
+      vehicleId: string;
+      assignmentDate: string;
+      estimatedDeliverySlot: string;
+    }>
+  >;
   onSubmitAssign: (e: React.FormEvent) => Promise<boolean>;
   driverSaving: boolean;
   driverMessage: string;
@@ -171,6 +188,7 @@ export type DashboardContextValue = {
     unit: string;
     countsDepositBarrel: boolean;
     consumesPrepaidBarrel: boolean;
+    availableOnLiff: boolean;
     salePrice: string;
     costPrice: string;
     initialQty: string;
@@ -183,6 +201,7 @@ export type DashboardContextValue = {
       unit: string;
       countsDepositBarrel: boolean;
       consumesPrepaidBarrel: boolean;
+      availableOnLiff: boolean;
       salePrice: string;
       costPrice: string;
       initialQty: string;
@@ -240,6 +259,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     driverId: "",
     vehicleId: "",
     assignmentDate: todayLocalYmd(),
+    estimatedDeliverySlot: "",
   });
   const [driverSaving, setDriverSaving] = useState(false);
   const [driverMessage, setDriverMessage] = useState("");
@@ -264,6 +284,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     unit: "桶",
     countsDepositBarrel: false,
     consumesPrepaidBarrel: false,
+    availableOnLiff: false,
     salePrice: "0",
     costPrice: "0",
     initialQty: "0",
@@ -384,6 +405,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
             unitPrice: l.unitPrice.trim() === "" ? undefined : Number(l.unitPrice),
             billingType: l.billingType,
             linePurpose: l.linePurpose,
+            isReplenishment: Boolean(l.isReplenishment),
           })),
         }),
       });
@@ -433,8 +455,11 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          ...assignForm,
+          salesOrderId: assignForm.salesOrderId,
+          driverId: assignForm.driverId,
           vehicleId: assignForm.vehicleId || undefined,
+          assignmentDate: assignForm.assignmentDate,
+          estimatedDeliverySlot: assignForm.estimatedDeliverySlot.trim() || undefined,
         }),
       });
       const payload = await res.json();
@@ -443,6 +468,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         return false;
       }
       setAssignMessage(`分派成功：${payload.data.salesOrder?.orderNo ?? ""}`);
+      setAssignForm((prev) => ({ ...prev, estimatedDeliverySlot: "" }));
       loadDashboard();
       return true;
     } catch {
@@ -477,6 +503,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
           unit: productForm.unit.trim() || "桶",
           countsDepositBarrel: productForm.countsDepositBarrel,
           consumesPrepaidBarrel: productForm.consumesPrepaidBarrel,
+          availableOnLiff: productForm.availableOnLiff,
           salePrice: Number(productForm.salePrice),
           costPrice: Number(productForm.costPrice),
           initialQty: Number(productForm.initialQty),
@@ -495,6 +522,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         unit: "桶",
         countsDepositBarrel: false,
         consumesPrepaidBarrel: false,
+        availableOnLiff: false,
         salePrice: "0",
         costPrice: "0",
         initialQty: "0",

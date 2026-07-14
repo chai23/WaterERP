@@ -316,10 +316,13 @@ CREATE TABLE `customers` (
   `monthly_settlement_day` INT NULL DEFAULT NULL COMMENT '月結：每月幾號對帳參考 1-31',
   `prepaid_barrel_balance` INT NOT NULL DEFAULT 0 COMMENT '預付：可用桶數',
   `allow_prepaid_overdraft` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '預付不足時是否仍允許核銷',
+  `line_user_id` VARCHAR(64) NULL DEFAULT NULL COMMENT 'LINE userId（LIFF 綁定）',
+  `line_bound_at` DATETIME(3) NULL DEFAULT NULL COMMENT 'LINE 綁定時間',
   `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_customers_customer_code` (`customer_code`),
+  UNIQUE KEY `uk_customers_line_user_id` (`line_user_id`),
   KEY `idx_customers_name` (`name`),
   KEY `fk_customers_address_zone` (`address_zone_id`),
   KEY `fk_customers_affiliated_company` (`affiliated_company_id`),
@@ -339,10 +342,15 @@ CREATE TABLE `delivery_addresses` (
   `notes` TEXT NULL,
   `is_default` TINYINT(1) NOT NULL DEFAULT 0,
   `barrels_on_site` INT NOT NULL DEFAULT 0 COMMENT '此送貨點未收回空桶數：核銷送達時依押桶商品與回桶數自動增減，亦可手動調整',
+  `patrol_weekday` TINYINT UNSIGNED NULL DEFAULT NULL COMMENT '巡查星期：1=週一 … 7=週日；NULL=不參加巡查',
+  `target_water_level` INT UNSIGNED NULL DEFAULT NULL COMMENT '目標水位（桶）；現場不足時補到此量',
+  `patrol_product_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT '巡查預設商品',
   `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (`id`),
   KEY `fk_addr_customer` (`customer_id`),
+  KEY `idx_addr_patrol_weekday` (`patrol_weekday`),
+  KEY `fk_addr_patrol_product` (`patrol_product_id`),
   CONSTRAINT `fk_addr_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -354,6 +362,7 @@ CREATE TABLE `products` (
   `unit` VARCHAR(20) NOT NULL DEFAULT '桶',
   `counts_deposit_barrel` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '核銷送達時是否計入客戶未收回空桶（與單位無關）',
   `consumes_prepaid_barrel` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '預付結帳列出貨時是否自預付桶餘額扣桶（與計入押桶無關）',
+  `available_on_liff` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否顯示於 LINE LIFF 訂水選單',
   `sale_price` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
   `cost_price` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '參考成本／加權用',
   `is_active` TINYINT(1) NOT NULL DEFAULT 1,
@@ -363,6 +372,9 @@ CREATE TABLE `products` (
   UNIQUE KEY `uk_products_product_code` (`product_code`),
   UNIQUE KEY `uk_products_sku` (`sku`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+ALTER TABLE `delivery_addresses`
+  ADD CONSTRAINT `fk_addr_patrol_product` FOREIGN KEY (`patrol_product_id`) REFERENCES `products` (`id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
 CREATE TABLE `sales_orders` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -385,6 +397,7 @@ CREATE TABLE `sales_orders` (
   `monthly_period_paid` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '月結該筆訂單是否已全額沖完',
   `pending_prepaid_topup_barrels` INT NOT NULL DEFAULT 0 COMMENT '預付桶儲值待入帳桶數（本單現金AR全沖清後入餘額）',
   `cash_invoice_mode` VARCHAR(32) NULL DEFAULT NULL COMMENT 'none | tax_inclusive | tax_exclusive',
+  `source` VARCHAR(16) NOT NULL DEFAULT 'admin' COMMENT 'admin | liff',
   `created_by_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
   `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
@@ -396,6 +409,7 @@ CREATE TABLE `sales_orders` (
   KEY `idx_so_status_date` (`status`, `scheduled_delivery_date`),
   KEY `idx_so_billing_period` (`billing_period_key`, `customer_id`),
   KEY `idx_so_customer_office_settled` (`customer_id`, `office_settled_at`),
+  KEY `idx_so_source` (`source`),
   CONSTRAINT `fk_so_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
   CONSTRAINT `fk_so_addr` FOREIGN KEY (`delivery_address_id`) REFERENCES `delivery_addresses` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
   CONSTRAINT `fk_so_creator` FOREIGN KEY (`created_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
@@ -446,11 +460,13 @@ CREATE TABLE `sales_order_lines` (
   `is_promotion_gift` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否為優惠贈品列',
   `promotion_rule_key` VARCHAR(50) NULL DEFAULT NULL COMMENT '套用優惠規則代碼',
   `promotion_note` VARCHAR(200) NULL DEFAULT NULL COMMENT '贈品說明',
+  `is_replenishment` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '補送（破桶補水等）',
   `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (`id`),
   KEY `fk_sol_order` (`sales_order_id`),
   KEY `fk_sol_product` (`product_id`),
+  KEY `idx_sol_replenishment` (`is_replenishment`),
   CONSTRAINT `fk_sol_order` FOREIGN KEY (`sales_order_id`) REFERENCES `sales_orders` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
   CONSTRAINT `fk_sol_product` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -577,6 +593,8 @@ CREATE TABLE `delivery_assignments` (
   `cash_variance` DECIMAL(14,2) NULL DEFAULT NULL COMMENT '實收-應收',
   `settlement_note` VARCHAR(500) NULL DEFAULT NULL COMMENT '司機備註',
   `office_settled_at` DATETIME(3) NULL DEFAULT NULL COMMENT '辦公室核銷確認時間',
+  `estimated_delivery_slot` VARCHAR(120) NULL DEFAULT NULL COMMENT '預計配送時段說明',
+  `estimated_delivery_at` DATETIME(3) NULL DEFAULT NULL COMMENT '預計配送時間點',
   `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (`id`),
@@ -590,6 +608,41 @@ CREATE TABLE `delivery_assignments` (
   CONSTRAINT `fk_da_driver` FOREIGN KEY (`driver_id`) REFERENCES `drivers` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
   CONSTRAINT `fk_da_vehicle` FOREIGN KEY (`vehicle_id`) REFERENCES `vehicles` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
   CONSTRAINT `fk_da_assigner` FOREIGN KEY (`assigned_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `notification_logs` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `customer_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `line_user_id` VARCHAR(64) NULL DEFAULT NULL,
+  `channel` VARCHAR(16) NOT NULL DEFAULT 'line',
+  `event_type` VARCHAR(40) NOT NULL,
+  `sales_order_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `delivery_assignment_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `payload_json` JSON NULL,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'pending',
+  `error_message` VARCHAR(500) NULL DEFAULT NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  KEY `idx_notification_customer_created` (`customer_id`, `created_at`),
+  KEY `idx_notification_event_created` (`event_type`, `created_at`),
+  KEY `fk_notification_customer` (`customer_id`),
+  KEY `fk_notification_so` (`sales_order_id`),
+  KEY `fk_notification_da` (`delivery_assignment_id`),
+  CONSTRAINT `fk_notification_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_notification_so` FOREIGN KEY (`sales_order_id`) REFERENCES `sales_orders` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_notification_da` FOREIGN KEY (`delivery_assignment_id`) REFERENCES `delivery_assignments` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `line_otp_challenges` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `mobile` VARCHAR(32) NOT NULL,
+  `code_hash` VARCHAR(128) NOT NULL,
+  `line_user_id` VARCHAR(64) NOT NULL,
+  `expires_at` DATETIME(3) NOT NULL,
+  `consumed_at` DATETIME(3) NULL DEFAULT NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  KEY `idx_line_otp_mobile_user` (`mobile`, `line_user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `delivery_events` (

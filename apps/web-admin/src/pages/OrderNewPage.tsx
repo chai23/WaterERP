@@ -171,7 +171,13 @@ function historyLineSummary(line: NonNullable<CustomerSalesOrder["lines"]>[numbe
   const name = line.product?.name?.trim() || "（商品）";
   const unit = line.product?.unit?.trim();
   const qty = line.qtyOrdered;
-  const suffix = line.linePurpose === "prepaid_barrel_topup" ? " · 預付桶儲值" : "";
+  const suffix = line.isPromotionGift
+    ? " · 贈品"
+    : line.isReplenishment
+      ? " · 補送"
+      : line.linePurpose === "prepaid_barrel_topup"
+        ? " · 預付桶儲值"
+        : "";
   const u = unit ? `${unit}` : "";
   return `${name}${u ? `（${u}）` : ""} × ${qty}${suffix}`;
 }
@@ -188,6 +194,8 @@ function historyGoodsSummary(o: CustomerSalesOrder, maxLen = 88): string {
   const parts = (o.lines ?? []).map((ln) => {
     let t = historyLineSummary(ln);
     if (t.includes("預付桶儲值")) t = t.replace(" · 預付桶儲值", "（儲值）");
+    if (t.includes("補送")) t = t.replace(" · 補送", "（補）");
+    if (t.includes("贈品")) t = t.replace(" · 贈品", "（贈）");
     return t;
   });
   const s = parts.join("；");
@@ -410,7 +418,7 @@ export default function OrderNewPage() {
       ...f,
       cashInvoiceMode: inv,
       lines: f.lines.map((row) => {
-        if (row.linePurpose === "prepaid_barrel_topup") {
+        if (row.linePurpose === "prepaid_barrel_topup" || row.isReplenishment) {
           return { ...row, billingType: "cash" };
         }
         return { ...row, billingType: bt };
@@ -425,7 +433,7 @@ export default function OrderNewPage() {
     setForm((f) => {
       let changed = false;
       const nextLines = f.lines.map((ln) => {
-        if (!ln.productId) return ln;
+        if (!ln.productId || ln.isReplenishment) return ln;
         const p = activeProducts.find((x) => String(x.id) === ln.productId);
         if (!p) return ln;
         const price = defaultUnitPriceForProduct(p, lastPriceMap);
@@ -493,7 +501,7 @@ export default function OrderNewPage() {
     () =>
       form.lines
         .filter((l) => l.productId && l.qty > 0)
-        .map((l) => `${l.productId}:${l.qty}:${l.linePurpose}:${l.billingType}`)
+        .map((l) => `${l.productId}:${l.qty}:${l.linePurpose}:${l.billingType}:${l.isReplenishment ? 1 : 0}`)
         .join("|"),
     [form.lines],
   );
@@ -515,6 +523,7 @@ export default function OrderNewPage() {
             qty: l.qty,
             billingType: l.billingType,
             linePurpose: l.linePurpose,
+            isReplenishment: Boolean(l.isReplenishment),
           })),
         }),
       })
@@ -580,7 +589,7 @@ export default function OrderNewPage() {
           return { ...ln, productId: "", unitPrice: ln.unitPrice };
         }
         const pid = String(hit.id);
-        const price = defaultUnitPriceForProduct(hit, lastPriceMap);
+        const price = ln.isReplenishment ? "0" : defaultUnitPriceForProduct(hit, lastPriceMap);
         if (ln.productId !== pid) {
           changed = true;
           return { ...ln, productId: pid, unitPrice: price };
@@ -597,7 +606,14 @@ export default function OrderNewPage() {
 
   const updateLine = (
     id: string,
-    patch: Partial<{ productId: string; qty: number; unitPrice: string; billingType: LineBillingType; linePurpose: LinePurpose }>,
+    patch: Partial<{
+      productId: string;
+      qty: number;
+      unitPrice: string;
+      billingType: LineBillingType;
+      linePurpose: LinePurpose;
+      isReplenishment: boolean;
+    }>,
   ) => {
     setForm((f) => ({
       ...f,
@@ -622,12 +638,21 @@ export default function OrderNewPage() {
           }
           validProduct = true;
           const pid = String(hit.id);
-          const price = defaultUnitPriceForProduct(hit, lastPriceMap);
+          const catalogPrice = defaultUnitPriceForProduct(hit, lastPriceMap);
+          const price = ln.isReplenishment ? "0" : catalogPrice;
           const productChanged = ln.productId !== pid;
           return {
             ...ln,
             productId: pid,
-            unitPrice: productChanged ? price : ln.unitPrice.trim() !== "" ? ln.unitPrice : price,
+            unitPrice: productChanged
+              ? price
+              : ln.isReplenishment
+                ? ln.unitPrice.trim() !== ""
+                  ? ln.unitPrice
+                  : "0"
+                : ln.unitPrice.trim() !== ""
+                  ? ln.unitPrice
+                  : price,
           };
         });
         const rowIdx = nextLines.findIndex((ln) => ln.id === rowId);
@@ -1096,20 +1121,53 @@ export default function OrderNewPage() {
                     ) : null;
                   })()}
                   {selectedCustomer ? (
-                    <label className="order-line-topup-check">
-                      <input
-                        type="checkbox"
-                        checked={row.linePurpose === "prepaid_barrel_topup"}
-                        onChange={(e) => {
-                          const topup = e.target.checked;
-                          updateLine(row.id, {
-                            linePurpose: topup ? "prepaid_barrel_topup" : "delivery",
-                            billingType: topup ? "cash" : parseLineBilling(selectedCustomer.billingType),
-                          });
-                        }}
-                      />
-                      預付桶儲值（現金應收沖清後入帳桶數）
-                    </label>
+                    <div className="order-line-flags">
+                      <label className="order-line-topup-check">
+                        <input
+                          type="checkbox"
+                          checked={row.linePurpose === "prepaid_barrel_topup"}
+                          disabled={row.isReplenishment}
+                          onChange={(e) => {
+                            const topup = e.target.checked;
+                            updateLine(row.id, {
+                              linePurpose: topup ? "prepaid_barrel_topup" : "delivery",
+                              billingType: topup ? "cash" : parseLineBilling(selectedCustomer.billingType),
+                              isReplenishment: false,
+                            });
+                          }}
+                        />
+                        預付桶儲值（現金應收沖清後入帳桶數）
+                      </label>
+                      <label className="order-line-topup-check">
+                        <input
+                          type="checkbox"
+                          checked={row.isReplenishment}
+                          disabled={row.linePurpose === "prepaid_barrel_topup"}
+                          onChange={(e) => {
+                            const on = e.target.checked;
+                            if (on) {
+                              updateLine(row.id, {
+                                isReplenishment: true,
+                                linePurpose: "delivery",
+                                billingType: "cash",
+                                unitPrice: "0",
+                              });
+                            } else {
+                              const p = activeProducts.find((x) => String(x.id) === row.productId);
+                              const restore = p
+                                ? defaultUnitPriceForProduct(p, lastPriceMap)
+                                : row.unitPrice;
+                              updateLine(row.id, {
+                                isReplenishment: false,
+                                billingType: parseLineBilling(selectedCustomer.billingType),
+                                unitPrice: restore,
+                              });
+                            }
+                          }}
+                        />
+                        補送（預設免費；仍計未收回空桶）
+                      </label>
+                    </div>
                   ) : null}
                 </div>
                 <div className="order-lines__col order-lines__col--billing">
@@ -1118,7 +1176,7 @@ export default function OrderNewPage() {
                     value={row.billingType}
                     onChange={(e) => updateLine(row.id, { billingType: e.target.value as LineBillingType })}
                     onKeyDown={(e) => handleLineFieldEnter(e, row.id, "billing")}
-                    disabled={row.linePurpose === "prepaid_barrel_topup"}
+                    disabled={row.linePurpose === "prepaid_barrel_topup" || row.isReplenishment}
                     aria-label={`第 ${idx + 1} 列結帳方式`}
                   >
                     <option value="cash">現金</option>

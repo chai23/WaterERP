@@ -91,6 +91,8 @@ function orderStatusLabel(status: string | undefined): string {
   switch (status) {
     case "draft":
       return "草稿";
+    case "pending_review":
+      return "待確認";
     case "confirmed":
       return "已確認";
     case "assigned":
@@ -117,6 +119,7 @@ type IncompleteOrder = {
     qtyOrdered: number;
     linePurpose?: string | null;
     isPromotionGift?: boolean;
+    isReplenishment?: boolean;
     product?: { name?: string | null; unit?: string | null } | null;
   }>;
   assignments?: Array<{
@@ -134,9 +137,11 @@ function lineSummary(line: NonNullable<IncompleteOrder["lines"]>[number]): strin
   const qty = line.qtyOrdered;
   const suffix = line.isPromotionGift
     ? " · 贈品"
-    : line.linePurpose === "prepaid_barrel_topup"
-      ? " · 預付桶儲值"
-      : "";
+    : line.isReplenishment
+      ? " · 補送"
+      : line.linePurpose === "prepaid_barrel_topup"
+        ? " · 預付桶儲值"
+        : "";
   const u = unit ? `${unit}` : "";
   return `${name}${u ? `（${u}）` : ""} × ${qty}${suffix}`;
 }
@@ -145,6 +150,7 @@ function goodsSummaryFromLines(lines: IncompleteOrder["lines"] | undefined, maxL
   const parts = (lines ?? []).map((ln) => {
     let t = lineSummary(ln);
     if (t.includes("預付桶儲值")) t = t.replace(" · 預付桶儲值", "（儲值）");
+    if (t.includes("補送")) t = t.replace(" · 補送", "（補）");
     if (t.includes("贈品")) t = t.replace(" · 贈品", "（贈）");
     return t;
   });
@@ -643,6 +649,16 @@ export default function OrderAssignPage() {
                 className="order-new__input-date"
                 value={assignForm.assignmentDate}
                 onChange={(e) => setAssignForm({ ...assignForm, assignmentDate: e.target.value })}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="order-assign-eta-slot">預計配送時段（選填，會推播客戶）</label>
+              <input
+                id="order-assign-eta-slot"
+                type="text"
+                placeholder="例：今日 09:00–12:00"
+                value={assignForm.estimatedDeliverySlot}
+                onChange={(e) => setAssignForm({ ...assignForm, estimatedDeliverySlot: e.target.value })}
               />
             </div>
 

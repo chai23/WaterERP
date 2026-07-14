@@ -160,6 +160,9 @@ model Customer {
   prepaidBarrelBalance Int @default(0) @map("prepaid_barrel_balance")
   /// 預付不足時是否仍允許核銷（透支）
   allowPrepaidOverdraft Boolean @default(false) @map("allow_prepaid_overdraft")
+  /// LINE Messaging API userId（LIFF 綁定後寫入；唯一）
+  lineUserId     String?   @unique @map("line_user_id") @db.VarChar(64)
+  lineBoundAt    DateTime? @map("line_bound_at") @db.DateTime(3)
   createdAt      DateTime @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt      DateTime @updatedAt @map("updated_at") @db.DateTime(3)
 
@@ -174,6 +177,7 @@ model Customer {
   receiptVouchers ReceiptVoucher[]
   prepaymentWallet CustomerPrepaymentWallet?
   prepaymentTxns PrepaymentTxn[]
+  notificationLogs NotificationLog[]
   prepaidProductBalances CustomerPrepaidProductBalance[]
   creditNotes CreditNote[]
   billingStatements BillingStatement[]
@@ -217,14 +221,22 @@ model DeliveryAddress {
   isDefault     Boolean  @default(false) @map("is_default")
   /// 此送貨點未收回空桶數：核銷送達時依押桶商品與回桶數自動增減，亦可手動調整
   barrelsOnSite Int      @default(0) @map("barrels_on_site")
+  /// 巡查星期：1=週一 … 7=週日；null=不參加週期巡查
+  patrolWeekday Int?     @map("patrol_weekday") @db.UnsignedTinyInt
+  /// 目標水位（桶）：現場不足時補到此量（實際桶數於配送回報填）
+  targetWaterLevel Int?  @map("target_water_level") @db.UnsignedInt
+  /// 巡查預設商品（一鍵產生巡查單用）；結帳方式仍依客戶 billingType
+  patrolProductId BigInt? @map("patrol_product_id") @db.UnsignedBigInt
   createdAt     DateTime @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt     DateTime @updatedAt @map("updated_at") @db.DateTime(3)
 
-  customer    Customer     @relation(fields: [customerId], references: [id])
-  salesOrders SalesOrder[]
+  customer      Customer @relation(fields: [customerId], references: [id])
+  patrolProduct Product? @relation(fields: [patrolProductId], references: [id], onDelete: SetNull)
+  salesOrders   SalesOrder[]
   barrelPickups BarrelPickup[]
   barrelMovements BarrelMovement[]
 
+  @@index([patrolWeekday], map: "idx_addr_patrol_weekday")
   @@map("delivery_addresses")
 }
 
@@ -239,6 +251,8 @@ model Product {
   countsDepositBarrel Boolean @default(false) @map("counts_deposit_barrel")
   /// 預付結帳（prepaid）列出貨時是否自預付桶餘額扣桶（與計入押桶無關）
   consumesPrepaidBarrel Boolean @default(false) @map("consumes_prepaid_barrel")
+  /// 是否顯示於 LINE LIFF 客戶訂水選單（預設否）
+  availableOnLiff Boolean @default(false) @map("available_on_liff")
   salePrice Decimal  @default(0) @map("sale_price") @db.Decimal(14, 2)
   costPrice Decimal  @default(0) @map("cost_price") @db.Decimal(14, 2)
   isActive  Boolean  @default(true) @map("is_active")
@@ -254,6 +268,7 @@ model Product {
   floorBonusRecords       FloorDeliveryBonusRecord[]
   dispenserGiftRulesAsTrigger PromotionDispenserGiftRule[] @relation("DispenserGiftTrigger")
   dispenserGiftRulesAsGift    PromotionDispenserGiftRule[] @relation("DispenserGiftProduct")
+  patrolDeliveryAddresses DeliveryAddress[]
 
   @@map("products")
 }
@@ -322,6 +337,8 @@ model SalesOrder {
   pendingPrepaidTopupBarrels Int   @default(0) @map("pending_prepaid_topup_barrels")
   /// 現金區塊發票：none | tax_inclusive | tax_exclusive（未稅金額即 line_amount；稅額見 tax_invoices）
   cashInvoiceMode        String?   @map("cash_invoice_mode") @db.VarChar(32)
+  /// admin | liff
+  source                 String    @default("admin") @db.VarChar(16)
   createdByUserId        BigInt?   @map("created_by_user_id") @db.UnsignedBigInt
   createdAt              DateTime  @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt              DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
@@ -332,6 +349,7 @@ model SalesOrder {
   lines           SalesOrderLine[]
   assignments     DeliveryAssignment[]
   payments        Payment[]
+  notificationLogs NotificationLog[]
   ledgerEntries   CustomerLedgerEntry[]
   arDocuments     ArDocument[]
   arOpenItems     ArOpenItem[]
@@ -388,6 +406,8 @@ model SalesOrderLine {
   isPromotionGift        Boolean   @default(false) @map("is_promotion_gift")
   promotionRuleKey       String?   @map("promotion_rule_key") @db.VarChar(50)
   promotionNote          String?   @map("promotion_note") @db.VarChar(200)
+  /// 補送（破桶補水等）：預設免費；仍依商品 countsDepositBarrel 計入未收回空桶
+  isReplenishment        Boolean   @default(false) @map("is_replenishment")
   createdAt    DateTime @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt    DateTime @updatedAt @map("updated_at") @db.DateTime(3)
 
@@ -529,6 +549,10 @@ model DeliveryAssignment {
   settlementNote       String?   @map("settlement_note") @db.VarChar(500)
   /// 辦公室在後台按下「確認核銷」的時間；null 表示仍待核銷
   officeSettledAt      DateTime? @map("office_settled_at") @db.DateTime(3)
+  /// 預計配送時段說明（派單時填寫，用於 LINE 推播）
+  estimatedDeliverySlot String?  @map("estimated_delivery_slot") @db.VarChar(120)
+  /// 預計配送時間點（選填）
+  estimatedDeliveryAt  DateTime? @map("estimated_delivery_at") @db.DateTime(3)
   createdAt            DateTime  @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt            DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
 
@@ -539,8 +563,46 @@ model DeliveryAssignment {
   events       DeliveryEvent[]
   floorBonusRecords FloorDeliveryBonusRecord[]
   barrelMovements BarrelMovement[]
+  notificationLogs NotificationLog[]
 
   @@map("delivery_assignments")
+}
+
+/// LINE／對外推播紀錄
+model NotificationLog {
+  id                   BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  customerId           BigInt?   @map("customer_id") @db.UnsignedBigInt
+  lineUserId           String?   @map("line_user_id") @db.VarChar(64)
+  channel              String    @default("line") @db.VarChar(16)
+  eventType            String    @map("event_type") @db.VarChar(40)
+  salesOrderId         BigInt?   @map("sales_order_id") @db.UnsignedBigInt
+  deliveryAssignmentId BigInt?   @map("delivery_assignment_id") @db.UnsignedBigInt
+  payloadJson          Json?     @map("payload_json")
+  status               String    @default("pending") @db.VarChar(20)
+  errorMessage         String?   @map("error_message") @db.VarChar(500)
+  createdAt            DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+
+  customer           Customer?           @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  salesOrder         SalesOrder?         @relation(fields: [salesOrderId], references: [id], onDelete: SetNull)
+  deliveryAssignment DeliveryAssignment? @relation(fields: [deliveryAssignmentId], references: [id], onDelete: SetNull)
+
+  @@index([customerId, createdAt])
+  @@index([eventType, createdAt])
+  @@map("notification_logs")
+}
+
+/// LIFF 手機 OTP 挑戰（短效）
+model LineOtpChallenge {
+  id        BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  mobile    String   @db.VarChar(32)
+  codeHash  String   @map("code_hash") @db.VarChar(128)
+  lineUserId String  @map("line_user_id") @db.VarChar(64)
+  expiresAt DateTime @map("expires_at") @db.DateTime(3)
+  consumedAt DateTime? @map("consumed_at") @db.DateTime(3)
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  @@index([mobile, lineUserId])
+  @@map("line_otp_challenges")
 }
 
 model FloorDeliveryBonusRecord {

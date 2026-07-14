@@ -54,18 +54,21 @@ export { OrderDetailModal, type OrderRecord };
 export default function OrderQueryPage() {
   const { orders, onCancelOrder } = useDashboard();
   const [q, setQ] = useState("");
+  const [sourceFilter, setSourceFilter] = useState<"all" | "liff" | "admin">("all");
   const [detailOrder, setDetailOrder] = useState<OrderRecord | null>(null);
   const closeDetail = useCallback(() => setDetailOrder(null), []);
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
-    if (!s) return orders;
     return orders.filter((o) => {
+      const source = String((o as OrderRecord & { source?: string }).source ?? "admin");
+      if (sourceFilter !== "all" && source !== sourceFilter) return false;
+      if (!s) return true;
       const no = String(o.orderNo ?? "").toLowerCase();
       const cust = String(o.customer?.name ?? "").toLowerCase();
       return no.includes(s) || cust.includes(s);
     });
-  }, [orders, q]);
+  }, [orders, q, sourceFilter]);
 
   return (
     <section className="card">
@@ -79,6 +82,14 @@ export default function OrderQueryPage() {
         <span>關鍵字</span>
         <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="單號或客戶名稱" />
       </div>
+      <div className="field" style={{ maxWidth: "16rem", marginBottom: "1rem" }}>
+        <span>訂單來源</span>
+        <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value as "all" | "liff" | "admin")}>
+          <option value="all">全部</option>
+          <option value="liff">LINE 訂購</option>
+          <option value="admin">後台開單</option>
+        </select>
+      </div>
       <h3 className="card__title" style={{ fontSize: "1rem", marginTop: 0 }}>
         結果 <span className="card__title-count">{filtered.length} 筆</span>
       </h3>
@@ -87,6 +98,7 @@ export default function OrderQueryPage() {
           <thead>
             <tr>
               <th>單號</th>
+              <th>來源</th>
               <th>客戶</th>
               <th>狀態</th>
               <th>配送日</th>
@@ -108,6 +120,13 @@ export default function OrderQueryPage() {
                 >
                   <td>
                     <code style={{ fontSize: "0.8em" }}>{o.orderNo}</code>
+                  </td>
+                  <td>
+                    {String((o as OrderRecord & { source?: string }).source ?? "admin") === "liff" ? (
+                      <span className="badge">LINE</span>
+                    ) : (
+                      <span className="text-muted">後台</span>
+                    )}
                   </td>
                   <td>{o.customer?.name ?? "—"}</td>
                   <td>

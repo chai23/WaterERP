@@ -20,6 +20,8 @@ import {
   ledgerEntryTypeLabel,
   moneyText,
   orderStatusBadgeClass,
+  PATROL_WEEKDAY_OPTIONS,
+  patrolWeekdayLabel,
   sumCustomerBarrelsOnSite,
 } from "../adminUtils";
 import { OrderDetailModal, type OrderRecord } from "../components/OrderDetailModal";
@@ -65,7 +67,26 @@ type AddressFormRow = {
   contactMobile: string;
   isDefault: boolean;
   barrelsOnSite: string;
+  patrolWeekday: string;
+  targetWaterLevel: string;
+  patrolProductId: string;
 };
+
+function emptyAddressRow(isDefault: boolean): AddressFormRow {
+  return {
+    key: newRowKey(),
+    label: "",
+    addressLine: "",
+    contactName: "",
+    contactPhone: "",
+    contactMobile: "",
+    isDefault,
+    barrelsOnSite: "0",
+    patrolWeekday: "",
+    targetWaterLevel: "",
+    patrolProductId: "",
+  };
+}
 
 type CustomerBarrelCollectionRow = {
   id: string;
@@ -113,19 +134,6 @@ function newRowKey(): string {
   return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
     ? crypto.randomUUID()
     : `a-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-}
-
-function emptyAddressRow(isDefault: boolean): AddressFormRow {
-  return {
-    key: newRowKey(),
-    label: "",
-    addressLine: "",
-    contactName: "",
-    contactPhone: "",
-    contactMobile: "",
-    isDefault,
-    barrelsOnSite: "0",
-  };
 }
 
 function normalizeCustomerCode(raw: string): string | null {
@@ -184,7 +192,8 @@ function billingTypeBadgeClass(code: string | null | undefined): string {
 }
 
 export default function DataCustomersPage() {
-  const { customers, addressZones, affiliatedCompanies, loadDashboard } = useDashboard();
+  const { customers, addressZones, affiliatedCompanies, products, loadDashboard } = useDashboard();
+  const activeProducts = useMemo(() => products.filter((p) => p.isActive !== false), [products]);
   const isMobile = useMediaQuery("(max-width: 768px)");
 
   const [pageMode, setPageMode] = useState<PageMode>("browse");
@@ -317,6 +326,9 @@ export default function DataCustomersPage() {
   const [newAddrContactMobile, setNewAddrContactMobile] = useState("");
   const [newAddrDefault, setNewAddrDefault] = useState(false);
   const [newAddrFloor, setNewAddrFloor] = useState("");
+  const [newAddrPatrolWeekday, setNewAddrPatrolWeekday] = useState("");
+  const [newAddrTargetWaterLevel, setNewAddrTargetWaterLevel] = useState("");
+  const [newAddrPatrolProductId, setNewAddrPatrolProductId] = useState("");
   const [addingAddr, setAddingAddr] = useState(false);
   const [addAddrMsg, setAddAddrMsg] = useState("");
 
@@ -353,6 +365,9 @@ export default function DataCustomersPage() {
   const [editAddrDefault, setEditAddrDefault] = useState(false);
   const [editAddrBarrels, setEditAddrBarrels] = useState("0");
   const [editAddrFloor, setEditAddrFloor] = useState("");
+  const [editAddrPatrolWeekday, setEditAddrPatrolWeekday] = useState("");
+  const [editAddrTargetWaterLevel, setEditAddrTargetWaterLevel] = useState("");
+  const [editAddrPatrolProductId, setEditAddrPatrolProductId] = useState("");
   const [patchAddrSaving, setPatchAddrSaving] = useState(false);
   const [patchAddrMsg, setPatchAddrMsg] = useState("");
   const [deletingAddrId, setDeletingAddrId] = useState<string | null>(null);
@@ -570,6 +585,9 @@ export default function DataCustomersPage() {
     setEditAddrDefault(Boolean(a.isDefault));
     setEditAddrBarrels(String(a.barrelsOnSite ?? 0));
     setEditAddrFloor(a.deliveryFloor != null ? String(a.deliveryFloor) : "");
+    setEditAddrPatrolWeekday(a.patrolWeekday != null ? String(a.patrolWeekday) : "");
+    setEditAddrTargetWaterLevel(a.targetWaterLevel != null ? String(a.targetWaterLevel) : "");
+    setEditAddrPatrolProductId(a.patrolProductId != null ? String(a.patrolProductId) : a.patrolProduct?.id ? String(a.patrolProduct.id) : "");
     setPatchAddrMsg("");
     scrollToEditSection("edit-addresses");
   };
@@ -697,6 +715,23 @@ export default function DataCustomersPage() {
       setPatchAddrMsg("送貨樓層須為非零整數（地下樓可填 -1）或留空");
       return;
     }
+    const weekdayTrim = editAddrPatrolWeekday.trim();
+    const patrolWeekday = weekdayTrim === "" ? null : Math.floor(Number(weekdayTrim));
+    if (weekdayTrim !== "" && (!Number.isFinite(patrolWeekday) || patrolWeekday! < 1 || patrolWeekday! > 7)) {
+      setPatchAddrMsg("巡查星期須為週一～週日或留空");
+      return;
+    }
+    const levelTrim = editAddrTargetWaterLevel.trim();
+    const targetWaterLevel = levelTrim === "" ? null : Math.floor(Number(levelTrim));
+    if (levelTrim !== "" && (!Number.isFinite(targetWaterLevel) || targetWaterLevel! < 0)) {
+      setPatchAddrMsg("目標水位須為非負整數或留空");
+      return;
+    }
+    const patrolProductId = editAddrPatrolProductId.trim() || null;
+    if (patrolWeekday != null && !patrolProductId) {
+      setPatchAddrMsg("啟用巡查時請指定預設商品");
+      return;
+    }
     setPatchAddrSaving(true);
     try {
       const res = await fetch(`/api/customers/${detailId}/addresses/${editAddrId}`, {
@@ -711,6 +746,9 @@ export default function DataCustomersPage() {
           contactMobile: editAddrContactMobile.trim() || null,
           isDefault: editAddrDefault,
           barrelsOnSite: barrels,
+          patrolWeekday,
+          targetWaterLevel,
+          patrolProductId,
         }),
       });
       const payload = await res.json();
@@ -801,6 +839,18 @@ export default function DataCustomersPage() {
       .map((r) => {
         const barrels = Math.floor(Number(r.barrelsOnSite));
         if (!Number.isFinite(barrels) || barrels < 0) return null;
+        const weekdayTrim = r.patrolWeekday.trim();
+        const patrolWeekday = weekdayTrim === "" ? null : Math.floor(Number(weekdayTrim));
+        if (weekdayTrim !== "" && (!Number.isFinite(patrolWeekday) || patrolWeekday! < 1 || patrolWeekday! > 7)) {
+          return "INVALID_PATROL" as const;
+        }
+        const levelTrim = r.targetWaterLevel.trim();
+        const targetWaterLevel = levelTrim === "" ? null : Math.floor(Number(levelTrim));
+        if (levelTrim !== "" && (!Number.isFinite(targetWaterLevel) || targetWaterLevel! < 0)) {
+          return "INVALID_PATROL" as const;
+        }
+        const patrolProductId = r.patrolProductId.trim() || null;
+        if (patrolWeekday != null && !patrolProductId) return "INVALID_PATROL" as const;
         return {
           label: r.label.trim() || undefined,
           addressLine: r.addressLine.trim(),
@@ -809,15 +859,24 @@ export default function DataCustomersPage() {
           contactMobile: r.contactMobile.trim() || undefined,
           isDefault: r.isDefault,
           barrelsOnSite: barrels,
+          patrolWeekday,
+          targetWaterLevel,
+          patrolProductId,
         };
-      })
-      .filter((a): a is NonNullable<typeof a> => a != null && a.addressLine.length > 0);
+      });
+    if (addresses.some((a) => a === "INVALID_PATROL")) {
+      setFormMessage("巡查設定無效：啟用星期時須選預設商品；目標水位為非負整數或留空。");
+      return;
+    }
+    const validAddresses = addresses.filter(
+      (a): a is Exclude<NonNullable<typeof a>, "INVALID_PATROL"> => a != null && a !== "INVALID_PATROL" && a.addressLine.length > 0,
+    );
 
-    if (addresses.length === 0) {
+    if (validAddresses.length === 0) {
       setFormMessage("請至少新增一筆送貨地址（地址內容必填）。");
       return;
     }
-    if (addresses.length !== addressRows.filter((r) => r.addressLine.trim().length > 0).length) {
+    if (validAddresses.length !== addressRows.filter((r) => r.addressLine.trim().length > 0).length) {
       setFormMessage("各送貨點未收回空桶須為非負整數。");
       return;
     }
@@ -851,7 +910,7 @@ export default function DataCustomersPage() {
           billingType,
           creditLimit: Number(creditLimit) || 0,
           notes: notes.trim() || undefined,
-          addresses,
+          addresses: validAddresses,
           ...(monthlySettlementDay !== undefined ? { monthlySettlementDay } : {}),
           allowPrepaidOverdraft: createAllowOverdraft,
         }),
@@ -891,6 +950,23 @@ export default function DataCustomersPage() {
       setAddAddrMsg("送貨樓層須為非零整數（地下樓可填 -1）或留空");
       return;
     }
+    const weekdayTrim = newAddrPatrolWeekday.trim();
+    const patrolWeekday = weekdayTrim === "" ? null : Math.floor(Number(weekdayTrim));
+    if (weekdayTrim !== "" && (!Number.isFinite(patrolWeekday) || patrolWeekday! < 1 || patrolWeekday! > 7)) {
+      setAddAddrMsg("巡查星期須為週一～週日或留空");
+      return;
+    }
+    const levelTrim = newAddrTargetWaterLevel.trim();
+    const targetWaterLevel = levelTrim === "" ? null : Math.floor(Number(levelTrim));
+    if (levelTrim !== "" && (!Number.isFinite(targetWaterLevel) || targetWaterLevel! < 0)) {
+      setAddAddrMsg("目標水位須為非負整數或留空");
+      return;
+    }
+    const patrolProductId = newAddrPatrolProductId.trim() || null;
+    if (patrolWeekday != null && !patrolProductId) {
+      setAddAddrMsg("啟用巡查時請指定預設商品");
+      return;
+    }
     setAddingAddr(true);
     try {
       const res = await fetch(`/api/customers/${detailId}/addresses`, {
@@ -904,6 +980,9 @@ export default function DataCustomersPage() {
           contactPhone: newAddrContactPhone.trim() || undefined,
           contactMobile: newAddrContactMobile.trim() || undefined,
           isDefault: newAddrDefault,
+          patrolWeekday,
+          targetWaterLevel,
+          patrolProductId,
         }),
       });
       const payload = await res.json();
@@ -919,6 +998,9 @@ export default function DataCustomersPage() {
       setNewAddrContactMobile("");
       setNewAddrDefault(false);
       setNewAddrFloor("");
+      setNewAddrPatrolWeekday("");
+      setNewAddrTargetWaterLevel("");
+      setNewAddrPatrolProductId("");
       setShowAddAddressForm(false);
       await fetchDetail(detailId);
       loadDashboard();
@@ -1414,6 +1496,48 @@ export default function DataCustomersPage() {
                           onChange={(e) => updateAddressRow(row.key, { barrelsOnSite: e.target.value })}
                         />
                       </div>
+                      <div className="form-row-2">
+                        <div className="field">
+                          <span>巡查星期（選填）</span>
+                          <select
+                            value={row.patrolWeekday}
+                            onChange={(e) => updateAddressRow(row.key, { patrolWeekday: e.target.value })}
+                          >
+                            <option value="">不參加週期巡查</option>
+                            {PATROL_WEEKDAY_OPTIONS.map((o) => (
+                              <option key={o.value} value={o.value}>
+                                {o.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="field">
+                          <span>目標水位（桶）</span>
+                          <input
+                            type="number"
+                            min={0}
+                            step={1}
+                            value={row.targetWaterLevel}
+                            onChange={(e) => updateAddressRow(row.key, { targetWaterLevel: e.target.value })}
+                            placeholder="例：8"
+                          />
+                        </div>
+                      </div>
+                      <div className="field">
+                        <span>巡查預設商品{row.patrolWeekday ? "（必填）" : "（選填）"}</span>
+                        <select
+                          value={row.patrolProductId}
+                          onChange={(e) => updateAddressRow(row.key, { patrolProductId: e.target.value })}
+                        >
+                          <option value="">—</option>
+                          {activeProducts.map((p) => (
+                            <option key={String(p.id)} value={String(p.id)}>
+                              {(p.productCode ? `${p.productCode} ` : "") + p.name}
+                            </option>
+                          ))}
+                        </select>
+                        <span className="field-hint text-muted">結帳方式依客戶（現金／月結／預付），不必在此選。</span>
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -1480,12 +1604,39 @@ export default function DataCustomersPage() {
                       {workspaceCustomer.affiliatedCompany?.name ? (
                         <span className="badge badge--default">{workspaceCustomer.affiliatedCompany.name}</span>
                       ) : null}
+                      {workspaceCustomer.lineUserId ? (
+                        <span className="badge badge--ok" title={workspaceCustomer.lineUserId}>
+                          已綁 LINE
+                        </span>
+                      ) : (
+                        <span className="badge badge--default">未綁 LINE</span>
+                      )}
                     </div>
                   </div>
                   <div className="customer-hub__hero-actions">
                     <Link className="btn btn--secondary btn--sm" to="/orders/new">
                       開新訂單
                     </Link>
+                    {detailId && workspaceCustomer.lineUserId ? (
+                      <button
+                        type="button"
+                        className="btn btn--ghost btn--sm"
+                        onClick={() => {
+                          void (async () => {
+                            if (!window.confirm("確定解除此客戶的 LINE 綁定？客戶需重新驗證手機才能訂水。")) return;
+                            const res = await fetch(`/api/customers/${detailId}/unbind-line`, { method: "POST" });
+                            const payload = await res.json().catch(() => ({}));
+                            if (!res.ok || !payload.ok) {
+                              window.alert(payload.message ?? "解除綁定失敗");
+                              return;
+                            }
+                            void fetchDetail(detailId);
+                          })();
+                        }}
+                      >
+                        解除 LINE
+                      </button>
+                    ) : null}
                     {detailId ? (
                       <button type="button" className="btn btn--ghost btn--sm" onClick={() => void fetchDetail(detailId)}>
                         重新載入
@@ -1635,6 +1786,12 @@ export default function DataCustomersPage() {
                               <span className="badge badge--default">空桶 {a.barrelsOnSite ?? 0}</span>
                             {a.deliveryFloor != null ? (
                               <span className="badge badge--default">{formatDeliveryFloor(a.deliveryFloor)}</span>
+                            ) : null}
+                            {a.patrolWeekday != null ? (
+                              <span className="badge badge--delivering">
+                                巡查 {patrolWeekdayLabel(a.patrolWeekday)}
+                                {a.targetWaterLevel != null ? ` · 水位 ${a.targetWaterLevel}` : ""}
+                              </span>
                             ) : null}
                             </div>
                             <p>{a.addressLine}</p>
@@ -2056,6 +2213,44 @@ export default function DataCustomersPage() {
                         placeholder="例：2、3、-1（地下一樓）"
                       />
                     </div>
+                    <div className="form-row-2">
+                      <div className="field">
+                        <span>巡查星期</span>
+                        <select value={editAddrPatrolWeekday} onChange={(e) => setEditAddrPatrolWeekday(e.target.value)}>
+                          <option value="">不參加週期巡查</option>
+                          {PATROL_WEEKDAY_OPTIONS.map((o) => (
+                            <option key={o.value} value={o.value}>
+                              {o.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="field">
+                        <span>目標水位（桶）</span>
+                        <input
+                          type="number"
+                          min={0}
+                          step={1}
+                          value={editAddrTargetWaterLevel}
+                          onChange={(e) => setEditAddrTargetWaterLevel(e.target.value)}
+                          placeholder="例：8"
+                        />
+                      </div>
+                    </div>
+                    <div className="field">
+                      <span>巡查預設商品{editAddrPatrolWeekday ? "（必填）" : ""}</span>
+                      <select value={editAddrPatrolProductId} onChange={(e) => setEditAddrPatrolProductId(e.target.value)}>
+                        <option value="">—</option>
+                        {activeProducts.map((p) => (
+                          <option key={String(p.id)} value={String(p.id)}>
+                            {(p.productCode ? `${p.productCode} ` : "") + p.name}
+                          </option>
+                        ))}
+                      </select>
+                      <span className="field-hint text-muted">
+                        一鍵產單用；結帳跟客戶主檔（目前：{billingTypeLabel(detail?.billingType ?? workspaceCustomer?.billingType)}）
+                      </span>
+                    </div>
                     <div className="form-actions">
                       <button type="submit" className="btn btn--primary btn--sm" disabled={patchAddrSaving}>
                         {patchAddrSaving ? "儲存中…" : "儲存地址"}
@@ -2085,6 +2280,13 @@ export default function DataCustomersPage() {
                             <span className="badge badge--default">空桶 {a.barrelsOnSite ?? 0}</span>
                             {a.deliveryFloor != null ? (
                               <span className="badge badge--default">{formatDeliveryFloor(a.deliveryFloor)}</span>
+                            ) : null}
+                            {a.patrolWeekday != null ? (
+                              <span className="badge badge--delivering">
+                                巡查 {patrolWeekdayLabel(a.patrolWeekday)}
+                                {a.targetWaterLevel != null ? ` · 水位 ${a.targetWaterLevel}` : ""}
+                                {a.patrolProduct?.name ? ` · ${a.patrolProduct.name}` : ""}
+                              </span>
                             ) : null}
                           </div>
                           <div className="customer-detail-actions">
@@ -2152,6 +2354,41 @@ export default function DataCustomersPage() {
                         onChange={(e) => setNewAddrFloor(e.target.value)}
                         placeholder="例：2、3、-1（地下一樓）"
                       />
+                    </div>
+                    <div className="form-row-2">
+                      <div className="field">
+                        <span>巡查星期</span>
+                        <select value={newAddrPatrolWeekday} onChange={(e) => setNewAddrPatrolWeekday(e.target.value)}>
+                          <option value="">不參加週期巡查</option>
+                          {PATROL_WEEKDAY_OPTIONS.map((o) => (
+                            <option key={o.value} value={o.value}>
+                              {o.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="field">
+                        <span>目標水位（桶）</span>
+                        <input
+                          type="number"
+                          min={0}
+                          step={1}
+                          value={newAddrTargetWaterLevel}
+                          onChange={(e) => setNewAddrTargetWaterLevel(e.target.value)}
+                          placeholder="例：8"
+                        />
+                      </div>
+                    </div>
+                    <div className="field">
+                      <span>巡查預設商品{newAddrPatrolWeekday ? "（必填）" : ""}</span>
+                      <select value={newAddrPatrolProductId} onChange={(e) => setNewAddrPatrolProductId(e.target.value)}>
+                        <option value="">—</option>
+                        {activeProducts.map((p) => (
+                          <option key={String(p.id)} value={String(p.id)}>
+                            {(p.productCode ? `${p.productCode} ` : "") + p.name}
+                          </option>
+                        ))}
+                      </select>
                     </div>
                     <div className="form-actions">
                       <button type="submit" className="btn btn--primary btn--sm" disabled={addingAddr}>
@@ -2362,7 +2599,11 @@ export default function DataCustomersPage() {
                                 <li key={String(ln.id)}>
                                   <span>{ln.product?.name ?? "商品"}</span>
                                   <span className="customer-order-card__line-qty">× {ln.qtyOrdered}</span>
-                                  {ln.linePurpose === "prepaid_barrel_topup" ? (
+                                  {ln.isPromotionGift ? (
+                                    <span className="badge badge--default">贈品</span>
+                                  ) : ln.isReplenishment ? (
+                                    <span className="badge badge--default">補送</span>
+                                  ) : ln.linePurpose === "prepaid_barrel_topup" ? (
                                     <span className="badge badge--delivering">預付桶儲值</span>
                                   ) : (
                                     <span className="badge badge--default">{billingTypeLabel(lineBt)}</span>

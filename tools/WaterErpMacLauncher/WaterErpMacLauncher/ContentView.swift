@@ -77,6 +77,7 @@ struct ServicesView: View {
                 HStack {
                     Button("後台 (5173)") { vm.openURL("http://localhost:5173") }
                     Button("司機端 (5174)") { vm.openURL("http://localhost:5174") }
+                    Button("LIFF 訂水 (5175)") { vm.openURL("http://localhost:5175/liff/") }
                     Button("API 健康檢查") { vm.openURL("http://localhost:3000/api/health") }
                 }
             }

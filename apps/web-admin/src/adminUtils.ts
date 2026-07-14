@@ -10,7 +10,28 @@ export type Address = {
   barrelsOnSite?: number;
   /** 送貨樓層（1=一樓, 2=二樓, -1=地下一樓） */
   deliveryFloor?: number | null;
+  /** 巡查星期：1=週一 … 7=週日；null=不參加 */
+  patrolWeekday?: number | null;
+  /** 目標水位（桶） */
+  targetWaterLevel?: number | null;
+  patrolProductId?: string | null;
+  patrolProduct?: { id: string; name: string; productCode?: string | null; isActive?: boolean } | null;
 };
+
+export const PATROL_WEEKDAY_OPTIONS: { value: number; label: string }[] = [
+  { value: 1, label: "週一" },
+  { value: 2, label: "週二" },
+  { value: 3, label: "週三" },
+  { value: 4, label: "週四" },
+  { value: 5, label: "週五" },
+  { value: 6, label: "週六" },
+  { value: 7, label: "週日" },
+];
+
+export function patrolWeekdayLabel(weekday: number | null | undefined): string {
+  if (weekday == null) return "—";
+  return PATROL_WEEKDAY_OPTIONS.find((o) => o.value === weekday)?.label ?? String(weekday);
+}
 
 /** 加總客戶各送貨地址未收回空桶（相容舊 barrelsOnSite 欄位） */
 export function sumCustomerBarrelsOnSite(c: { barrelsOnSite?: number; addresses?: Address[] }): number {
@@ -110,6 +131,9 @@ export type Customer = {
   /** 預付客戶可用桶數 */
   prepaidBarrelBalance?: number;
   allowPrepaidOverdraft?: boolean;
+  /** LINE 綁定 userId */
+  lineUserId?: string | null;
+  lineBoundAt?: string | null;
   addresses: Address[];
 };
 
@@ -151,6 +175,7 @@ export type CustomerSalesOrderLine = {
   isPromotionGift?: boolean;
   promotionRuleKey?: string | null;
   promotionNote?: string | null;
+  isReplenishment?: boolean;
   product?: { id: string; name: string; unit?: string | null };
 };
 
@@ -289,6 +314,8 @@ export type Product = {
   countsDepositBarrel?: boolean;
   /** 預付結帳列出貨時是否扣預付桶餘額 */
   consumesPrepaidBarrel?: boolean;
+  /** 是否顯示於 LINE LIFF 客戶訂水選單 */
+  availableOnLiff?: boolean;
   salePrice: string;
   costPrice?: string;
   isActive?: boolean;
@@ -475,6 +502,8 @@ export function orderStatusBadgeClass(status: string): string {
   switch (status) {
     case "draft":
       return "badge badge--draft";
+    case "pending_review":
+      return "badge badge--warn";
     case "confirmed":
       return "badge badge--confirmed";
     case "assigned":
@@ -496,6 +525,8 @@ export function orderStatusLabel(status: string | null | undefined): string {
   switch (status) {
     case "draft":
       return "草稿";
+    case "pending_review":
+      return "待確認";
     case "confirmed":
       return "已確認";
     case "assigned":
@@ -513,8 +544,13 @@ export function orderStatusLabel(status: string | null | undefined): string {
   }
 }
 
-export function linePurposeLabel(purpose: string | null | undefined, isPromotionGift?: boolean): string {
+export function linePurposeLabel(
+  purpose: string | null | undefined,
+  isPromotionGift?: boolean,
+  isReplenishment?: boolean,
+): string {
   if (isPromotionGift) return "贈品";
+  if (isReplenishment) return "補送";
   return purpose === "prepaid_barrel_topup" ? "預付桶儲值" : "一般出貨";
 }
 

@@ -4,10 +4,19 @@ macOS 專用的原生桌面啟動器，用於管理超好企業進銷存系統�
 
 ## 功能
 
-- **服務管理**：MySQL、API、後台、司機端 一鍵啟停與個別控制
+- **服務管理**：MySQL、API、後台、司機端、LIFF 訂水 一鍵啟停與個別控制
 - **狀態監控**：每 3 秒自動檢查埠與 API 健康狀態
 - **Git 同步**：拉取最新程式碼、提交並推送到 GitHub
 - **執行日誌**：即時顯示服務輸出與操作紀錄
+
+## 開發服務對照
+
+| 服務 | npm script | 網址 |
+|------|------------|------|
+| API | `dev:api` | http://localhost:3000 |
+| 後台 | `dev:admin` | http://localhost:5173 |
+| 司機端 | `dev:driver` | http://localhost:5174 |
+| LIFF 訂水 | `dev:liff` | http://localhost:5175/liff/ |
 
 ## 啟動方式
 
@@ -17,7 +26,15 @@ macOS 專用的原生桌面啟動器，用於管理超好企業進銷存系統�
 tools/WaterErpMacLauncher/start.command
 ```
 
-首次執行會自動建置 `.app`，之後直接開啟。
+首次會建置 `.app`；之後若 Swift 原始碼有更新，也會**自動重新建置**再開啟。
+
+若畫面沒更新，可強制重建：
+
+```bash
+npm run mac:launcher
+# 或
+bash tools/WaterErpMacLauncher/build.sh
+```
 
 ### 方式二：終端機
 

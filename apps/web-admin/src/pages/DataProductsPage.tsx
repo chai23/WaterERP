@@ -16,6 +16,7 @@ const DEFAULT_PRODUCT_FORM = {
   unit: "桶",
   countsDepositBarrel: false,
   consumesPrepaidBarrel: false,
+  availableOnLiff: false,
   salePrice: "0",
   costPrice: "0",
   initialQty: "0",
@@ -130,6 +131,27 @@ export default function DataProductsPage() {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ countsDepositBarrel: next }),
+      });
+      const payload = await res.json();
+      if (!res.ok || !payload.ok) {
+        window.alert(payload.message ?? "更新失敗");
+        return;
+      }
+      loadDashboard();
+    } catch {
+      window.alert("無法連線 API");
+    } finally {
+      setPatchingId(null);
+    }
+  };
+
+  const toggleAvailableOnLiff = async (productId: string, next: boolean) => {
+    setPatchingId(productId);
+    try {
+      const res = await fetch(`/api/products/${productId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ availableOnLiff: next }),
       });
       const payload = await res.json();
       if (!res.ok || !payload.ok) {
@@ -294,7 +316,7 @@ export default function DataProductsPage() {
           <section id="product-rules" className="customer-edit-section">
             <header className="customer-edit-section__head">
               <h4 className="customer-edit-section__title">業務規則</h4>
-              <p className="customer-edit-section__desc">兩項設定互不影響，請依商品實際配送與結帳方式勾選。</p>
+              <p className="customer-edit-section__desc">各項設定互不影響，請依商品實際配送、結帳與銷售管道勾選。</p>
             </header>
             <div className="customer-edit-section__body">
               <div className="product-option-cards">
@@ -329,6 +351,23 @@ export default function DataProductsPage() {
                     <strong className="product-option-card__title">預付扣桶</strong>
                     <p className="product-option-card__desc">
                       預付客戶以「預付（桶）」結帳的明細，送達核銷時會自預付桶餘額扣減。與「計入押桶」無關。
+                    </p>
+                  </div>
+                </label>
+                <label
+                  className={`product-option-card${productForm.availableOnLiff ? " product-option-card--on" : ""}`}
+                >
+                  <input
+                    type="checkbox"
+                    className="product-option-card__input"
+                    checked={productForm.availableOnLiff}
+                    onChange={(e) => setProductForm({ ...productForm, availableOnLiff: e.target.checked })}
+                  />
+                  <span className="product-option-card__check" aria-hidden="true" />
+                  <div className="product-option-card__content">
+                    <strong className="product-option-card__title">LINE 訂水可下訂</strong>
+                    <p className="product-option-card__desc">
+                      勾選後才會出現在 LINE 客戶的訂水選單。未勾選的商品僅供後台開單使用。
                     </p>
                   </div>
                 </label>
@@ -367,6 +406,7 @@ export default function DataProductsPage() {
                 <th>單位</th>
                 <th>計入押桶</th>
                 <th>預付扣桶</th>
+                <th>LINE 訂水</th>
                 <th className="num">售價</th>
                 <th className="num">成本</th>
                 <th className="num">庫存</th>
@@ -428,6 +468,19 @@ export default function DataProductsPage() {
                       />
                       <span className="text-muted" style={{ fontSize: "0.8125rem" }}>
                         {patchingId === String(p.id) ? "更新中…" : p.consumesPrepaidBarrel ? "是" : "否"}
+                      </span>
+                    </label>
+                  </td>
+                  <td>
+                    <label className="table-inline-check">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(p.availableOnLiff)}
+                        disabled={patchingId === String(p.id)}
+                        onChange={(e) => void toggleAvailableOnLiff(String(p.id), e.target.checked)}
+                      />
+                      <span className="text-muted" style={{ fontSize: "0.8125rem" }}>
+                        {patchingId === String(p.id) ? "更新中…" : p.availableOnLiff ? "可下訂" : "否"}
                       </span>
                     </label>
                   </td>

@@ -132,6 +132,8 @@ type OrderLineRow = {
   qtyOrdered?: number;
   qtyDelivered?: number;
   linePurpose?: string | null;
+  isPromotionGift?: boolean;
+  isReplenishment?: boolean;
   product?: { name?: string; code?: string; consumesPrepaidBarrel?: boolean };
 };
 
@@ -820,6 +822,7 @@ export default function App() {
                               <label key={lineId} className="d-inline" style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.35rem" }}>
                                 <span style={{ flex: 1, fontSize: "0.84rem" }}>
                                   {line.product?.name ?? "商品"}
+                                  {line.isReplenishment ? "（補送）" : line.isPromotionGift ? "（贈品）" : ""}
                                   {ordered > 0 ? `（開單 ${ordered}）` : "（待定）"}
                                 </span>
                                 <input
