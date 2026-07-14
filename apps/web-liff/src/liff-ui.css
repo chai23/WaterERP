@@ -729,6 +729,13 @@ textarea {
   font-size: 0.95rem;
 }
 
+.order-card__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
+}
+
 .order-card__lines {
   margin-top: 0.3rem;
   font-size: 0.86rem;
@@ -853,6 +860,21 @@ textarea {
 .badge--fail {
   background: var(--danger-soft);
   color: var(--danger);
+}
+
+.badge--bill-unpaid {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.badge--bill-paid {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.badge--bill-wait {
+  background: var(--info-soft);
+  color: var(--info);
 }
 
 .empty-state {

@@ -99,6 +99,114 @@ async function toLiffCustomerPayload(prisma: PrismaClient, customer: LiffCustome
   };
 }
 
+function liffMonthlyCap(o: {
+  monthlySubtotal?: { toString(): string } | string | number | null;
+  totalAmount: { toString(): string } | string | number;
+  billingTypeAtOrder: string | null;
+}): number {
+  const ms = Number(o.monthlySubtotal ?? 0);
+  if (Number.isFinite(ms) && ms > 0) return ms;
+  if ((o.billingTypeAtOrder ?? "") === "monthly") {
+    const t = Number(o.totalAmount);
+    return Number.isFinite(t) ? t : 0;
+  }
+  return 0;
+}
+
+type LiffOrderEnrichInput = {
+  id: bigint;
+  status: string;
+  totalAmount: { toString(): string } | string | number;
+  monthlySubtotal?: { toString(): string } | string | number | null;
+  monthlyReceivedAmount?: { toString(): string } | string | number | null;
+  monthlyPeriodPaid?: boolean;
+  billingTypeAtOrder: string | null;
+  billingStatementOrder?: { id: bigint } | null;
+};
+
+async function enrichLiffOrders<T extends LiffOrderEnrichInput>(
+  prisma: PrismaClient,
+  customerId: bigint,
+  rows: T[],
+): Promise<
+  Array<
+    T & {
+      monthlyCapAmount: string;
+      monthlyOutstandingAmount: string;
+      monthlySettlementStatus: "none" | "awaiting_delivery" | "unpaid" | "paid";
+      monthlySettlementLabel: string;
+    }
+  >
+> {
+  const monthlyIds = rows.filter((o) => liffMonthlyCap(o) > 0).map((o) => o.id);
+  const unpaidByAr = new Set<string>();
+  if (monthlyIds.length > 0) {
+    const unpaid = await prisma.arOpenItem.groupBy({
+      by: ["salesOrderId"],
+      where: {
+        customerId,
+        salesOrderId: { in: monthlyIds },
+        outstandingAmount: { gt: 0 },
+        arDocument: { billingType: "monthly" },
+      },
+      _sum: { outstandingAmount: true },
+    });
+    for (const r of unpaid) {
+      if (r.salesOrderId == null) continue;
+      const sum = Number(r._sum.outstandingAmount ?? 0);
+      if (sum > 0) unpaidByAr.add(String(r.salesOrderId));
+    }
+  }
+
+  return rows.map((o) => {
+    const cap = liffMonthlyCap(o);
+    const received = Number(o.monthlyReceivedAmount ?? 0);
+    const outstandingRaw = Math.max(0, cap - (Number.isFinite(received) ? received : 0));
+    const idKey = String(o.id);
+    const inStatement = o.billingStatementOrder != null;
+    const arUnpaid = unpaidByAr.has(idKey);
+
+    let monthlySettlementStatus: "none" | "awaiting_delivery" | "unpaid" | "paid" = "none";
+    let monthlySettlementLabel = "";
+    let monthlyOutstandingAmount = "0";
+    let monthlyPeriodPaid = o.monthlyPeriodPaid;
+
+    if (cap <= 0 || o.status === "cancelled" || o.status === "not_delivered") {
+      monthlySettlementStatus = "none";
+    } else if (o.status !== "completed") {
+      monthlySettlementStatus = "awaiting_delivery";
+      monthlySettlementLabel = "帳款：配送完成後列入月結";
+    } else {
+      let paid = Boolean(o.monthlyPeriodPaid);
+      if (arUnpaid) paid = false;
+      else if (!inStatement && cap > 0) paid = false;
+      else if (outstandingRaw > 0) paid = false;
+
+      if (paid) {
+        monthlySettlementStatus = "paid";
+        monthlySettlementLabel = "帳款：月結已結清";
+        monthlyPeriodPaid = true;
+        monthlyOutstandingAmount = "0";
+      } else {
+        const showAmt = outstandingRaw > 0 ? outstandingRaw : cap;
+        monthlySettlementStatus = "unpaid";
+        monthlySettlementLabel = `帳款：月結未結清（尚欠 $${Math.round(showAmt).toLocaleString("zh-TW")}）`;
+        monthlyPeriodPaid = false;
+        monthlyOutstandingAmount = String(showAmt);
+      }
+    }
+
+    return {
+      ...o,
+      monthlyCapAmount: String(cap),
+      monthlyOutstandingAmount,
+      monthlySettlementStatus,
+      monthlySettlementLabel,
+      monthlyPeriodPaid,
+    };
+  });
+}
+
 export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
   const { prisma, jwtSecret, jwtSignOptions, createSalesOrder, toBigInt } = deps;
 
@@ -431,11 +539,12 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
             take: 3,
             include: { driver: { include: { user: true } } },
           },
+          billingStatementOrder: { select: { id: true } },
         },
         orderBy: { id: "desc" },
         take: 50,
       });
-      res.json({ ok: true, data: rows });
+      res.json({ ok: true, data: await enrichLiffOrders(prisma, member.customerId, rows) });
     } catch (e) {
       res.status(500).json({ ok: false, message: String(e) });
     }
@@ -458,13 +567,15 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
             orderBy: { id: "desc" },
             include: { driver: { include: { user: true } } },
           },
+          billingStatementOrder: { select: { id: true } },
         },
       });
       if (!row) {
         res.status(404).json({ ok: false, message: "找不到訂單" });
         return;
       }
-      res.json({ ok: true, data: row });
+      const [enriched] = await enrichLiffOrders(prisma, member.customerId, [row]);
+      res.json({ ok: true, data: enriched });
     } catch (e) {
       res.status(500).json({ ok: false, message: String(e) });
     }
