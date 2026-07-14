@@ -62,6 +62,7 @@ const PATH_PERMISSION: Record<string, PermModule> = {
   "/reports/tax-invoices": "accounting",
   "/expenses/new": "expenses",
   "/expenses/query": "expenses",
+  "/expenses/analytics": "expenses",
   "/expenses/today": "expenses",
   "/expenses/verify": "expenseVerify",
   "/expenses/reports": "expenses",

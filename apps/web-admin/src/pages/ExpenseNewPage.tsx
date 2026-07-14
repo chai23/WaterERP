@@ -260,16 +260,29 @@ export default function ExpenseNewPage() {
         </p>
       </header>
 
-      <section className="card">
-        <div className="card__body">
-          <div className="form-grid form-grid--wide">
+      <section className="card expense-form">
+        <div className="expense-form__section">
+          <header className="expense-form__section-head">
+            <h3 className="expense-form__section-title">憑證資訊</h3>
+            {isEdit && voucherNo ? (
+              <span className="expense-form__voucher-no mono-text">{voucherNo}</span>
+            ) : null}
+            {readOnly ? <span className="badge badge--completed">已核銷（唯讀）</span> : null}
+          </header>
+
+          <div className="expense-form__meta">
             <label className="field">
               <span>支出日期 *</span>
               <input type="date" value={expenseDate} onChange={(e) => setExpenseDate(e.target.value)} disabled={readOnly || saving} />
             </label>
-            <label className="field">
+            <label className="field expense-form__field--grow">
               <span>廠商／對象 *</span>
-              <input value={vendorName} onChange={(e) => setVendorName(e.target.value)} disabled={readOnly || saving} placeholder="加油站、修車廠、客戶名…" />
+              <input
+                value={vendorName}
+                onChange={(e) => setVendorName(e.target.value)}
+                disabled={readOnly || saving}
+                placeholder="加油站、修車廠、客戶名…"
+              />
             </label>
             <label className="field">
               <span>發票歸屬公司 *</span>
@@ -292,166 +305,186 @@ export default function ExpenseNewPage() {
                 ))}
               </select>
             </label>
-            <label className="field field--span2">
+            <label className="field expense-form__field--full">
               <span>備註</span>
-              <input value={remark} onChange={(e) => setRemark(e.target.value)} disabled={readOnly || saving} />
+              <input value={remark} onChange={(e) => setRemark(e.target.value)} disabled={readOnly || saving} placeholder="選填" />
             </label>
           </div>
+        </div>
 
-          <div className="toolbar" style={{ marginTop: "1rem" }}>
-            <h3 className="card__subtitle">支出明細</h3>
+        <div className="expense-form__section">
+          <header className="expense-form__section-head">
+            <div>
+              <h3 className="expense-form__section-title">支出明細</h3>
+              <p className="expense-form__section-hint text-muted">每一行一項支出；類別為「退押金」時會自動改為未開發票，並需填客戶編號。</p>
+            </div>
             {!readOnly ? (
               <button type="button" className="btn btn--secondary btn--sm" onClick={addLine} disabled={saving}>
                 + 新增一行
               </button>
             ) : null}
-          </div>
+          </header>
 
-          <div className="table-wrap">
-            <table className="data-table data-table--compact">
-              <thead>
-                <tr>
-                  <th>類別</th>
-                  <th>項目 *</th>
-                  <th>客戶編號</th>
-                  <th>客戶名稱</th>
-                  <th>數量</th>
-                  <th>單價</th>
-                  <th>發票</th>
-                  <th className="num">稅金</th>
-                  <th className="num">總額</th>
-                  {!readOnly ? <th /> : null}
-                </tr>
-              </thead>
-              <tbody>
-                {lines.map((line, idx) => {
-                  const cat = categories.find((c) => c.id === line.categoryId);
-                  const t = computeLineTotals(Number(line.qty), Number(line.unitPrice), line.taxMode);
-                  const customerName = cat?.requiresCustomer ? customerNameForLine(customers, line) : "";
-                  const codeInvalid = Boolean(cat?.requiresCustomer && line.customerCode.trim() && !line.customerId);
-                  return (
-                    <tr key={line.id}>
-                      <td>
-                        <select
-                          value={line.categoryId}
-                          onChange={(e) => updateLine(line.id, { categoryId: e.target.value })}
-                          disabled={readOnly || saving}
-                        >
-                          <option value="">—</option>
-                          {categories.map((c) => (
-                            <option key={c.id} value={c.id}>{c.name}</option>
-                          ))}
-                        </select>
-                      </td>
-                      <td>
-                        <input
-                          value={line.itemName}
-                          onChange={(e) => updateLine(line.id, { itemName: e.target.value })}
-                          disabled={readOnly || saving}
-                          placeholder={`項目 ${idx + 1}`}
-                        />
-                      </td>
-                      <td>
-                        <input
-                          value={line.customerCode}
-                          onChange={(e) => updateLine(line.id, { customerCode: e.target.value })}
-                          disabled={readOnly || saving || !cat?.requiresCustomer}
-                          placeholder={cat?.requiresCustomer ? "6 碼" : "—"}
-                          inputMode="numeric"
-                          maxLength={6}
-                          style={{ width: "5rem" }}
-                          className={codeInvalid ? "input--invalid" : undefined}
-                        />
-                      </td>
-                      <td>
-                        {cat?.requiresCustomer ? (
-                          <span className={customerName ? "" : codeInvalid ? "text-danger" : "text-muted"}>
-                            {customerName || (codeInvalid ? "找不到客戶" : "—")}
-                          </span>
-                        ) : (
-                          <span className="text-muted">—</span>
-                        )}
-                      </td>
-                      <td>
-                        <input
-                          type="number"
-                          min={1}
-                          step={1}
-                          value={line.qty}
-                          onChange={(e) => updateLine(line.id, { qty: e.target.value })}
-                          disabled={readOnly || saving}
-                          style={{ width: "4rem" }}
-                        />
-                      </td>
-                      <td>
-                        <input
-                          type="number"
-                          min={0}
-                          step="0.01"
-                          value={line.unitPrice}
-                          onChange={(e) => updateLine(line.id, { unitPrice: e.target.value })}
-                          disabled={readOnly || saving}
-                          style={{ width: "6rem" }}
-                        />
-                      </td>
-                      <td>
-                        <select
-                          value={line.taxMode}
-                          onChange={(e) => updateLine(line.id, { taxMode: e.target.value as ExpenseTaxMode })}
-                          disabled={readOnly || saving}
-                        >
-                          <option value="tax_exclusive">未稅</option>
-                          <option value="tax_inclusive">含稅</option>
-                          <option value="none">未開發票</option>
-                        </select>
-                      </td>
-                      <td className="num">{t.tax.toFixed(2)}</td>
-                      <td className="num">{t.total.toFixed(2)}</td>
-                      {!readOnly ? (
-                        <td>
-                          <button type="button" className="btn btn--danger btn--sm" onClick={() => removeLine(line.id)} disabled={saving || lines.length <= 1}>
-                            刪
-                          </button>
-                        </td>
-                      ) : null}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          <p className="card__hint" style={{ marginTop: "0.75rem" }}>
-            合計：未稅 {totals.untaxedTotal.toLocaleString()} │ 稅金 {totals.taxTotal.toLocaleString()} │ 含稅總額{" "}
-            <strong>{totals.totalAmount.toLocaleString()}</strong>
-          </p>
-
-          {msg ? (
-            <div className={`alert ${msg.includes("失敗") || msg.includes("不可") || msg.includes("須") || msg.includes("找不到") ? "alert--error" : "alert--success"}`} style={{ marginTop: "1rem" }}>
-              {msg}
+          <div className="expense-lines" role="group" aria-label="支出明細列">
+            <div className="expense-lines__head" aria-hidden="true">
+              <span>類別</span>
+              <span>項目 *</span>
+              <span>客戶編號</span>
+              <span>客戶名稱</span>
+              <span>數量</span>
+              <span>單價</span>
+              <span>發票</span>
+              <span className="num">稅金</span>
+              <span className="num">總額</span>
+              {!readOnly ? <span /> : null}
             </div>
-          ) : null}
 
-          <div className="form-actions" style={{ marginTop: "1rem" }}>
-            {!readOnly ? (
-              <>
-                <button type="button" className="btn btn--primary" disabled={saving} onClick={() => void submit(false)}>
-                  {saving ? "儲存中…" : "儲存"}
-                </button>
-                {!isEdit ? (
-                  <button type="button" className="btn btn--secondary" disabled={saving} onClick={() => void submit(true)}>
-                    儲存並新增下一張
-                  </button>
-                ) : null}
-                {isEdit ? (
-                  <button type="button" className="btn btn--danger" disabled={saving} onClick={() => void removeVoucher()}>
-                    刪除憑證
-                  </button>
-                ) : null}
-              </>
-            ) : null}
-            <Link className="btn btn--secondary" to="/expenses/query">返回查詢</Link>
+            {lines.map((line, idx) => {
+              const cat = categories.find((c) => c.id === line.categoryId);
+              const t = computeLineTotals(Number(line.qty), Number(line.unitPrice), line.taxMode);
+              const customerName = cat?.requiresCustomer ? customerNameForLine(customers, line) : "";
+              const codeInvalid = Boolean(cat?.requiresCustomer && line.customerCode.trim() && !line.customerId);
+              return (
+                <div key={line.id} className="expense-lines__row">
+                  <label className="expense-lines__cell">
+                    <span className="expense-lines__label">類別</span>
+                    <select
+                      value={line.categoryId}
+                      onChange={(e) => updateLine(line.id, { categoryId: e.target.value })}
+                      disabled={readOnly || saving}
+                    >
+                      <option value="">—</option>
+                      {categories.map((c) => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="expense-lines__cell expense-lines__cell--item">
+                    <span className="expense-lines__label">項目 *</span>
+                    <input
+                      value={line.itemName}
+                      onChange={(e) => updateLine(line.id, { itemName: e.target.value })}
+                      disabled={readOnly || saving}
+                      placeholder={`項目 ${idx + 1}`}
+                    />
+                  </label>
+                  <label className="expense-lines__cell">
+                    <span className="expense-lines__label">客戶編號</span>
+                    <input
+                      value={line.customerCode}
+                      onChange={(e) => updateLine(line.id, { customerCode: e.target.value })}
+                      disabled={readOnly || saving || !cat?.requiresCustomer}
+                      placeholder={cat?.requiresCustomer ? "6 碼" : "—"}
+                      inputMode="numeric"
+                      maxLength={6}
+                      className={codeInvalid ? "input--invalid" : undefined}
+                    />
+                  </label>
+                  <div className="expense-lines__cell expense-lines__cell--readonly">
+                    <span className="expense-lines__label">客戶名稱</span>
+                    {cat?.requiresCustomer ? (
+                      <span className={customerName ? "expense-lines__value" : codeInvalid ? "text-danger" : "text-muted"}>
+                        {customerName || (codeInvalid ? "找不到客戶" : "—")}
+                      </span>
+                    ) : (
+                      <span className="text-muted expense-lines__value">—</span>
+                    )}
+                  </div>
+                  <label className="expense-lines__cell">
+                    <span className="expense-lines__label">數量</span>
+                    <input
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={line.qty}
+                      onChange={(e) => updateLine(line.id, { qty: e.target.value })}
+                      disabled={readOnly || saving}
+                    />
+                  </label>
+                  <label className="expense-lines__cell">
+                    <span className="expense-lines__label">單價</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={line.unitPrice}
+                      onChange={(e) => updateLine(line.id, { unitPrice: e.target.value })}
+                      disabled={readOnly || saving}
+                    />
+                  </label>
+                  <label className="expense-lines__cell">
+                    <span className="expense-lines__label">發票</span>
+                    <select
+                      value={line.taxMode}
+                      onChange={(e) => updateLine(line.id, { taxMode: e.target.value as ExpenseTaxMode })}
+                      disabled={readOnly || saving}
+                    >
+                      <option value="tax_exclusive">未稅</option>
+                      <option value="tax_inclusive">含稅</option>
+                      <option value="none">未開發票</option>
+                    </select>
+                  </label>
+                  <div className="expense-lines__cell expense-lines__cell--readonly num">
+                    <span className="expense-lines__label">稅金</span>
+                    <span className="expense-lines__value mono-text">{t.tax.toFixed(2)}</span>
+                  </div>
+                  <div className="expense-lines__cell expense-lines__cell--readonly num">
+                    <span className="expense-lines__label">總額</span>
+                    <span className="expense-lines__value expense-lines__value--strong mono-text">{t.total.toFixed(2)}</span>
+                  </div>
+                  {!readOnly ? (
+                    <div className="expense-lines__cell expense-lines__cell--act">
+                      <span className="expense-lines__label">操作</span>
+                      <button
+                        type="button"
+                        className="btn btn--danger btn--sm"
+                        onClick={() => removeLine(line.id)}
+                        disabled={saving || lines.length <= 1}
+                        aria-label={`刪除第 ${idx + 1} 行`}
+                      >
+                        刪
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
+
+          <div className="expense-form__totals" aria-live="polite">
+            <span>未稅 <strong>{totals.untaxedTotal.toLocaleString()}</strong></span>
+            <span>稅金 <strong>{totals.taxTotal.toLocaleString()}</strong></span>
+            <span className="expense-form__totals-main">
+              含稅總額 <strong>{totals.totalAmount.toLocaleString()}</strong>
+            </span>
+          </div>
+        </div>
+
+        {msg ? (
+          <div className={`alert ${msg.includes("失敗") || msg.includes("不可") || msg.includes("須") || msg.includes("找不到") ? "alert--error" : "alert--success"}`}>
+            {msg}
+          </div>
+        ) : null}
+
+        <div className="form-actions expense-form__actions">
+          {!readOnly ? (
+            <>
+              <button type="button" className="btn btn--primary" disabled={saving} onClick={() => void submit(false)}>
+                {saving ? "儲存中…" : "儲存"}
+              </button>
+              {!isEdit ? (
+                <button type="button" className="btn btn--secondary" disabled={saving} onClick={() => void submit(true)}>
+                  儲存並新增下一張
+                </button>
+              ) : null}
+              {isEdit ? (
+                <button type="button" className="btn btn--danger" disabled={saving} onClick={() => void removeVoucher()}>
+                  刪除憑證
+                </button>
+              ) : null}
+            </>
+          ) : null}
+          <Link className="btn btn--secondary" to="/expenses/query">返回查詢</Link>
         </div>
       </section>
     </div>

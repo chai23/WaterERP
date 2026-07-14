@@ -58,9 +58,8 @@ const navGroups: { id: string; title: string; items: { to: string; label: string
     items: [
       { to: "/expenses/new", label: "新增支出" },
       { to: "/expenses/query", label: "查詢支出" },
-      { to: "/expenses/today", label: "支出統計" },
+      { to: "/expenses/analytics", label: "支出報表" },
       { to: "/expenses/verify", label: "會計核銷" },
-      { to: "/expenses/reports", label: "支出報表" },
     ],
   },
   {

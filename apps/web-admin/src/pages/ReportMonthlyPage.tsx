@@ -19,8 +19,8 @@ export default function ReportMonthlyPage() {
       pageTitle="月報表"
       expenseTitle="本月支出"
       expenseSummaryUrl={`/api/expense-vouchers/reports/monthly?ym=${ym}`}
-      expenseLinkTo="/expenses/reports"
-      expenseLinkLabel="查看支出報表"
+      expenseLinkTo="/expenses/analytics?tab=monthly"
+      expenseLinkLabel="查看支出月報表"
     />
   );
 }

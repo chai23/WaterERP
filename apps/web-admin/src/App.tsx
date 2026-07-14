@@ -33,9 +33,8 @@ import SettingsPrintSlogansPage from "./pages/SettingsPrintSlogansPage";
 import SettingsOrderAnnouncementsPage from "./pages/SettingsOrderAnnouncementsPage";
 import ExpenseNewPage from "./pages/ExpenseNewPage";
 import ExpenseQueryPage from "./pages/ExpenseQueryPage";
-import ExpenseTodayPage from "./pages/ExpenseTodayPage";
+import ExpenseAnalyticsPage from "./pages/ExpenseAnalyticsPage";
 import ExpenseVerifyPage from "./pages/ExpenseVerifyPage";
-import ExpenseReportsPage from "./pages/ExpenseReportsPage";
 import SettingsExpenseCategoriesPage from "./pages/SettingsExpenseCategoriesPage";
 import FloorDeliveryBonusQueryPage from "./pages/FloorDeliveryBonusQueryPage";
 import TaxInvoiceQueryPage from "./pages/TaxInvoiceQueryPage";
@@ -85,9 +84,10 @@ export default function App() {
               <Route path="expenses/new" element={<ExpenseNewPage />} />
               <Route path="expenses/edit/:voucherId" element={<ExpenseNewPage />} />
               <Route path="expenses/query" element={<ExpenseQueryPage />} />
-              <Route path="expenses/today" element={<ExpenseTodayPage />} />
+              <Route path="expenses/analytics" element={<ExpenseAnalyticsPage />} />
+              <Route path="expenses/today" element={<Navigate to="/expenses/analytics" replace />} />
+              <Route path="expenses/reports" element={<Navigate to="/expenses/analytics?tab=monthly" replace />} />
               <Route path="expenses/verify" element={<ExpenseVerifyPage />} />
-              <Route path="expenses/reports" element={<ExpenseReportsPage />} />
 
               <Route path="reports" element={<Navigate to="/reports/daily" replace />} />
               <Route path="reports/daily" element={<ReportDailyPage />} />

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useDashboard } from "../DashboardContext";
 import { todayLocalYmd } from "../adminUtils";
+import { ExpenseDetailModal } from "../components/ExpenseDetailModal";
 import type { ExpenseVoucher } from "../expenseUtils";
 import { paymentMethodLabel, statusLabel } from "../expenseUtils";
 
@@ -22,6 +23,7 @@ export default function ExpenseQueryPage() {
   const [rows, setRows] = useState<ExpenseVoucher[]>([]);
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState("");
+  const [detailVoucher, setDetailVoucher] = useState<ExpenseVoucher | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -49,11 +51,15 @@ export default function ExpenseQueryPage() {
     void load();
   }, [load]);
 
+  const closeDetail = useCallback(() => setDetailVoucher(null), []);
+
   return (
     <div className="page">
       <header className="page__head">
         <h2 className="page__title">查詢支出</h2>
-        <p className="page__desc text-muted">依日期區間、公司、核銷狀態篩選；點單號可編輯待核銷憑證。</p>
+        <p className="page__desc text-muted">
+          依日期區間、公司、核銷狀態篩選；點「詳情」可查看明細，「編輯」可修改待核銷憑證。
+        </p>
       </header>
 
       <section className="card">
@@ -96,8 +102,8 @@ export default function ExpenseQueryPage() {
 
         {msg ? <div className="alert alert--error">{msg}</div> : null}
 
-        <div className="table-wrap" style={{ marginTop: "1rem" }}>
-          <table className="data-table">
+        <div className="table-wrap table-wrap--card-mobile" style={{ marginTop: "1rem" }}>
+          <table className="data-table data-table--card">
             <thead>
               <tr>
                 <th>支出日期</th>
@@ -114,22 +120,32 @@ export default function ExpenseQueryPage() {
             <tbody>
               {rows.map((v) => (
                 <tr key={v.id}>
-                  <td className="cell-nowrap">{String(v.expenseDate).slice(0, 10)}</td>
-                  <td>{v.voucherNo}</td>
-                  <td>{v.affiliatedCompany?.name ?? "—"}</td>
-                  <td>{v.vendorName}</td>
-                  <td className="num">{v.totalAmount}</td>
-                  <td>{paymentMethodLabel(v.paymentMethod)}</td>
-                  <td>
+                  <td className="cell-nowrap" data-label="支出日期">{String(v.expenseDate).slice(0, 10)}</td>
+                  <td data-label="單號">{v.voucherNo}</td>
+                  <td data-label="公司">{v.affiliatedCompany?.name ?? "—"}</td>
+                  <td data-label="廠商">{v.vendorName}</td>
+                  <td className="num" data-label="含稅總額">{v.totalAmount}</td>
+                  <td data-label="付款">{paymentMethodLabel(v.paymentMethod)}</td>
+                  <td data-label="核銷">
                     <span className={`badge ${v.status === "verified" ? "badge--completed" : "badge--default"}`}>
                       {statusLabel(v.status)}
                     </span>
                   </td>
-                  <td>{v.createdBy?.name ?? "—"}</td>
-                  <td>
-                    <Link className="btn btn--secondary btn--sm" to={`/expenses/edit/${v.id}`}>
-                      {v.status === "verified" ? "檢視" : "編輯"}
-                    </Link>
+                  <td data-label="登錄人">{v.createdBy?.name ?? "—"}</td>
+                  <td data-label="">
+                    <div className="inline-actions">
+                      <button
+                        type="button"
+                        className="btn btn--secondary btn--sm"
+                        aria-label={`查看支出 ${v.voucherNo} 詳情`}
+                        onClick={() => setDetailVoucher(v)}
+                      >
+                        詳情
+                      </button>
+                      <Link className="btn btn--secondary btn--sm" to={`/expenses/edit/${v.id}`}>
+                        {v.status === "verified" ? "檢視" : "編輯"}
+                      </Link>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -142,6 +158,8 @@ export default function ExpenseQueryPage() {
           </table>
         </div>
       </section>
+
+      {detailVoucher ? <ExpenseDetailModal voucher={detailVoucher} onClose={closeDetail} /> : null}
     </div>
   );
 }

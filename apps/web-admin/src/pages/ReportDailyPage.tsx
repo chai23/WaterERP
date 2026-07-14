@@ -19,8 +19,8 @@ export default function ReportDailyPage() {
       pageTitle="日報表"
       expenseTitle="本日支出"
       expenseSummaryUrl={`/api/expense-vouchers/daily-summary?date=${todayStr}`}
-      expenseLinkTo="/expenses/today"
-      expenseLinkLabel="查看完整支出"
+      expenseLinkTo="/expenses/analytics"
+      expenseLinkLabel="查看支出日報表"
     />
   );
 }
