@@ -112,6 +112,16 @@ const MIGRATION_PROBES: Record<string, MigrationProbe> = {
   "032_delivery_check_received.sql": (p) => columnExists(p, "delivery_assignments", "check_received"),
   "033_barrel_movements.sql": (p) => tableExists(p, "barrel_movements"),
   "034_promotion_rules.sql": (p) => tableExists(p, "promotion_rules"),
+  "039_driver_payroll.sql": (p) => tableExists(p, "payroll_settings"),
+  "040_floor_bonus_rates_by_floor.sql": (p) => tableExists(p, "payroll_floor_bonus_rates"),
+  "041_floor_bonus_default_floors.sql": async (p) => {
+    if (!(await tableExists(p, "payroll_floor_bonus_rates"))) return false;
+    const rows = await p.$queryRaw<{ cnt: bigint }[]>`
+      SELECT COUNT(*) AS cnt FROM payroll_floor_bonus_rates
+      WHERE floor NOT IN (2, 3, -1)
+    `;
+    return Number(rows[0]?.cnt ?? 0) === 0;
+  },
 };
 
 async function bootstrapFromExistingDb(prisma: PrismaClient): Promise<void> {

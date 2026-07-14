@@ -318,6 +318,8 @@ export type Product = {
   availableOnLiff?: boolean;
   salePrice: string;
   costPrice?: string;
+  /** 司機每單位配送薪資 */
+  driverDeliveryWage?: string;
   isActive?: boolean;
   inventory?: { qtyOnHand: number } | null;
 };
@@ -333,6 +335,8 @@ export type Driver = {
   employeeCode?: string | null;
   maxOrderCount?: number;
   maxBarrelQty?: number;
+  /** 月基本底薪 */
+  baseSalary?: string | number;
   isActive?: boolean;
   user?: { name: string; employeeCode?: string | null; phone?: string | null; isActive?: boolean } | null;
   vehicle?: { id: string; plateNo: string } | null;

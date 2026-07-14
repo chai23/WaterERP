@@ -191,6 +191,7 @@ export type DashboardContextValue = {
     availableOnLiff: boolean;
     salePrice: string;
     costPrice: string;
+    driverDeliveryWage: string;
     initialQty: string;
   };
   setProductForm: React.Dispatch<
@@ -204,6 +205,7 @@ export type DashboardContextValue = {
       availableOnLiff: boolean;
       salePrice: string;
       costPrice: string;
+      driverDeliveryWage: string;
       initialQty: string;
     }>
   >;
@@ -287,6 +289,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     availableOnLiff: false,
     salePrice: "0",
     costPrice: "0",
+    driverDeliveryWage: "0",
     initialQty: "0",
   });
 
@@ -506,6 +509,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
           availableOnLiff: productForm.availableOnLiff,
           salePrice: Number(productForm.salePrice),
           costPrice: Number(productForm.costPrice),
+          driverDeliveryWage: Number(productForm.driverDeliveryWage),
           initialQty: Number(productForm.initialQty),
         }),
       });
@@ -525,6 +529,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         availableOnLiff: false,
         salePrice: "0",
         costPrice: "0",
+        driverDeliveryWage: "0",
         initialQty: "0",
       });
       loadDashboard();

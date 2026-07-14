@@ -6,6 +6,7 @@ import { driverEmployeeCode, driverIsActive, type Driver } from "../adminUtils";
 type DriverEditState = {
   maxOrderCount: string;
   maxBarrelQty: string;
+  baseSalary: string;
 };
 
 async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -53,11 +54,17 @@ export default function DataDriversPage() {
     if (driverMessage.includes("成功")) void loadDrivers();
   }, [driverMessage, loadDrivers]);
 
-  const ensureEditState = (driverId: string, maxOrderCount?: number, maxBarrelQty?: number): DriverEditState => {
+  const ensureEditState = (
+    driverId: string,
+    maxOrderCount?: number,
+    maxBarrelQty?: number,
+    baseSalary?: string | number,
+  ): DriverEditState => {
     if (editing[driverId]) return editing[driverId];
     return {
       maxOrderCount: String(maxOrderCount ?? 20),
       maxBarrelQty: String(maxBarrelQty ?? 150),
+      baseSalary: String(baseSalary ?? 0),
     };
   };
 
@@ -76,15 +83,24 @@ export default function DataDriversPage() {
     const state = editing[driverId] ?? ensureEditState(driverId);
     const maxOrderCount = Math.floor(Number(state.maxOrderCount));
     const maxBarrelQty = Math.floor(Number(state.maxBarrelQty));
+    const baseSalary = Number(state.baseSalary);
     if (!Number.isFinite(maxOrderCount) || maxOrderCount < 0 || !Number.isFinite(maxBarrelQty) || maxBarrelQty < 0) {
       setRowMessage((prev) => ({ ...prev, [driverId]: "請輸入非負整數" }));
+      return;
+    }
+    if (!Number.isFinite(baseSalary) || baseSalary < 0) {
+      setRowMessage((prev) => ({ ...prev, [driverId]: "底薪須為非負數字" }));
       return;
     }
 
     setSavingId(driverId);
     setRowMessage((prev) => ({ ...prev, [driverId]: "" }));
     try {
-      await patchDriver(driverId, { maxOrderCount, maxBarrelQty });
+      if (isAdmin) {
+        await patchDriver(driverId, { maxOrderCount, maxBarrelQty, baseSalary });
+      } else {
+        await patchDriver(driverId, { baseSalary });
+      }
       setRowMessage((prev) => ({ ...prev, [driverId]: "已儲存" }));
     } catch (err) {
       setRowMessage((prev) => ({ ...prev, [driverId]: err instanceof Error ? err.message : "儲存失敗" }));
@@ -228,6 +244,7 @@ export default function DataDriversPage() {
                 <th>預設車牌</th>
                 <th>最高訂單數</th>
                 <th>最大運送桶數</th>
+                <th>月底薪</th>
                 {isAdmin ? <th>重設密碼</th> : null}
                 <th>{isAdmin ? "操作" : ""}</th>
               </tr>
@@ -235,7 +252,7 @@ export default function DataDriversPage() {
             <tbody>
               {drivers.map((d) => {
                 const id = String(d.id);
-                const edit = editing[id] ?? ensureEditState(id, d.maxOrderCount, d.maxBarrelQty);
+                const edit = editing[id] ?? ensureEditState(id, d.maxOrderCount, d.maxBarrelQty, d.baseSalary);
                 const active = driverIsActive(d);
                 return (
                   <tr key={id}>
@@ -278,6 +295,22 @@ export default function DataDriversPage() {
                         }
                       />
                     </td>
+                    <td>
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        className="input--compact"
+                        style={{ width: "6rem" }}
+                        value={edit.baseSalary}
+                        onChange={(e) =>
+                          setEditing((prev) => ({
+                            ...prev,
+                            [id]: { ...edit, baseSalary: e.target.value },
+                          }))
+                        }
+                      />
+                    </td>
                     {isAdmin ? (
                       <td>
                         <div className="inline-actions">
@@ -302,7 +335,7 @@ export default function DataDriversPage() {
                           disabled={savingId === id}
                           onClick={() => onSaveCapacity(id)}
                         >
-                          {savingId === id ? "儲存中…" : "儲存上限"}
+                          {savingId === id ? "儲存中…" : "儲存"}
                         </button>
                         {isAdmin ? (
                           <button

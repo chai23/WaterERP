@@ -68,6 +68,7 @@ export default function App() {
               <Route path="orders/patrol" element={<OrderPatrolGeneratePage />} />
               <Route path="orders/liff-review" element={<OrderLiffReviewPage />} />
               <Route path="orders/assign" element={<OrderAssignPage />} />
+              <Route path="orders/assignment-status" element={<Navigate to="/orders/assign?tab=status" replace />} />
               <Route path="orders/proxy-report" element={<OrderProxyReportPage />} />
               <Route path="orders/complete" element={<OrderCompletePage />} />
               <Route path="orders/floor-bonus" element={<FloorDeliveryBonusQueryPage />} />

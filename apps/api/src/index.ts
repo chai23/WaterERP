@@ -4358,6 +4358,7 @@ app.post("/api/products", async (req, res) => {
       availableOnLiff?: unknown;
       salePrice?: unknown;
       costPrice?: unknown;
+      driverDeliveryWage?: unknown;
       initialQty?: unknown;
     };
 
@@ -4377,6 +4378,7 @@ app.post("/api/products", async (req, res) => {
     const availableOnLiff = Boolean(body.availableOnLiff);
     const salePrice = Number(body.salePrice ?? 0);
     const costPrice = Number(body.costPrice ?? 0);
+    const driverDeliveryWage = Number(body.driverDeliveryWage ?? 0);
     const initialQty = Math.floor(Number(body.initialQty ?? 0));
 
     if (!name) {
@@ -4385,6 +4387,10 @@ app.post("/api/products", async (req, res) => {
     }
     if (!Number.isFinite(salePrice) || salePrice < 0 || !Number.isFinite(costPrice) || costPrice < 0) {
       res.status(400).json({ ok: false, message: "售價與成本須為非負數字" });
+      return;
+    }
+    if (!Number.isFinite(driverDeliveryWage) || driverDeliveryWage < 0) {
+      res.status(400).json({ ok: false, message: "配送薪資須為非負數字" });
       return;
     }
     if (!Number.isInteger(initialQty) || initialQty < 0) {
@@ -4404,6 +4410,7 @@ app.post("/api/products", async (req, res) => {
           availableOnLiff,
           salePrice,
           costPrice,
+          driverDeliveryWage,
         } as Parameters<typeof tx.product.create>[0]["data"],
       });
       await tx.inventoryBalance.create({
@@ -4445,6 +4452,7 @@ app.patch("/api/products/:productId", async (req, res) => {
       unit?: unknown;
       salePrice?: unknown;
       costPrice?: unknown;
+      driverDeliveryWage?: unknown;
       isActive?: unknown;
     };
 
@@ -4463,6 +4471,7 @@ app.patch("/api/products/:productId", async (req, res) => {
       unit?: string;
       salePrice?: Prisma.Decimal;
       costPrice?: Prisma.Decimal;
+      driverDeliveryWage?: Prisma.Decimal;
       isActive?: boolean;
     } = {};
 
@@ -4513,6 +4522,14 @@ app.patch("/api/products/:productId", async (req, res) => {
         return;
       }
       data.costPrice = new Prisma.Decimal(cp);
+    }
+    if (body.driverDeliveryWage !== undefined) {
+      const w = Number(body.driverDeliveryWage);
+      if (!Number.isFinite(w) || w < 0) {
+        res.status(400).json({ ok: false, message: "配送薪資須為非負數字" });
+        return;
+      }
+      data.driverDeliveryWage = new Prisma.Decimal(w);
     }
     if (body.isActive !== undefined) {
       data.isActive = Boolean(body.isActive);
@@ -4897,7 +4914,17 @@ app.post("/api/drivers", async (req, res) => {
 });
 
 app.patch("/api/drivers/:driverId", async (req, res) => {
-  if (!requireRole(req, res, ["admin"])) return;
+  const auth = getAuthUser(req);
+  if (!auth) {
+    res.status(401).json({ ok: false, message: "請先登入" });
+    return;
+  }
+  const isAdmin = auth.role === "admin";
+  const canPayroll = auth.role === "admin" || auth.role === "accounting" || auth.role === "dispatcher";
+  if (!isAdmin && !canPayroll) {
+    res.status(403).json({ ok: false, message: "權限不足" });
+    return;
+  }
   try {
     const driverId = toBigInt(req.params.driverId);
     if (!driverId) {
@@ -4916,19 +4943,45 @@ app.patch("/api/drivers/:driverId", async (req, res) => {
     const body = req.body as {
       maxOrderCount?: unknown;
       maxBarrelQty?: unknown;
+      baseSalary?: unknown;
       vehicleId?: unknown;
       isActive?: unknown;
       password?: unknown;
     };
 
+    if (!isAdmin) {
+      const extraKeys = Object.keys(body).filter((k) => k !== "baseSalary");
+      if (extraKeys.length > 0) {
+        res.status(403).json({ ok: false, message: "僅管理員可修改容量／車輛／啟停／密碼" });
+        return;
+      }
+      if (body.baseSalary === undefined) {
+        res.status(400).json({ ok: false, message: "未提供可更新欄位" });
+        return;
+      }
+    }
+
     const driverData: {
       maxOrderCount?: number;
       maxBarrelQty?: number;
+      baseSalary?: Prisma.Decimal;
       vehicleId?: bigint | null;
       isActive?: boolean;
     } = {};
     let passwordHash: string | undefined;
 
+    if (body.baseSalary !== undefined) {
+      if (!canPayroll) {
+        res.status(403).json({ ok: false, message: "權限不足" });
+        return;
+      }
+      const n = Number(body.baseSalary);
+      if (!Number.isFinite(n) || n < 0) {
+        res.status(400).json({ ok: false, message: "底薪須為非負數字" });
+        return;
+      }
+      driverData.baseSalary = new Prisma.Decimal(n);
+    }
     if (body.maxOrderCount !== undefined) {
       const n = parsePositiveInt(body.maxOrderCount, -1);
       if (n < 0) {
@@ -5055,6 +5108,79 @@ app.get("/api/sales-orders/incomplete-by-customer", async (req, res) => {
       take: 120,
     });
     res.json({ ok: true, data: rows });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+/** 進行中配送任務（尚未結案） */
+const ACTIVE_DELIVERY_ASSIGNMENT_STATUSES = ["assigned", "delivering", "pending_settlement"] as const;
+
+/**
+ * 分派狀態佇列：未分派／已分派（須在 :salesOrderId 之前）
+ * scope=unassigned：未完成且無進行中 DeliveryAssignment
+ * scope=assigned：有進行中 DeliveryAssignment
+ */
+app.get("/api/sales-orders/assignment-queue", async (req, res) => {
+  try {
+    const scopeRaw = typeof req.query.scope === "string" ? req.query.scope.trim() : "unassigned";
+    const scope = scopeRaw === "assigned" ? "assigned" : "unassigned";
+    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    const limitRaw = typeof req.query.limit === "string" ? Number(req.query.limit) : 200;
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.trunc(limitRaw), 1), 500) : 200;
+
+    const activeAssignmentFilter = {
+      status: { in: [...ACTIVE_DELIVERY_ASSIGNMENT_STATUSES] },
+    };
+
+    const where: Prisma.SalesOrderWhereInput = {
+      status: { notIn: ["completed", "cancelled", "pending_review"] },
+      ...(scope === "unassigned"
+        ? { assignments: { none: activeAssignmentFilter } }
+        : { assignments: { some: activeAssignmentFilter } }),
+    };
+
+    if (q) {
+      where.AND = [
+        {
+          OR: [
+            { orderNo: { contains: q } },
+            { customer: { name: { contains: q } } },
+            { customer: { customerCode: { contains: q } } },
+            { customer: { phone: { contains: q } } },
+            { customer: { mobile: { contains: q } } },
+          ],
+        },
+      ];
+    }
+
+    const rows = await prisma.salesOrder.findMany({
+      where,
+      include: salesOrderDetailInclude,
+      orderBy:
+        scope === "unassigned"
+          ? [{ scheduledDeliveryDate: "asc" }, { id: "asc" }]
+          : [{ id: "desc" }],
+      take: limit,
+    });
+
+    res.json({
+      ok: true,
+      data: {
+        scope,
+        total: rows.length,
+        orders: rows.map((o) => {
+          const activeAssignments = (o.assignments ?? []).filter((a) =>
+            (ACTIVE_DELIVERY_ASSIGNMENT_STATUSES as readonly string[]).includes(a.status),
+          );
+          return {
+            ...o,
+            orderBillableAmount: orderBillableAmount(o).toString(),
+            activeAssignments,
+          };
+        }),
+      },
+    });
   } catch (e) {
     res.status(500).json({ ok: false, message: String(e) });
   }
@@ -5723,6 +5849,396 @@ app.get("/api/floor-delivery-bonuses", async (req, res) => {
       : rows;
 
     res.json(filtered);
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+function parseYearMonthDbRange(yearMonth: string): { start: Date; end: Date; label: string } | null {
+  const m = /^(\d{4})-(\d{2})$/.exec(yearMonth.trim());
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  if (mo < 1 || mo > 12) return null;
+  const label = `${y}-${String(mo).padStart(2, "0")}`;
+  const start = parseLocalYmdToDbDate(`${label}-01`);
+  const nextM = mo === 12 ? 1 : mo + 1;
+  const nextY = mo === 12 ? y + 1 : y;
+  const end = parseLocalYmdToDbDate(`${nextY}-${String(nextM).padStart(2, "0")}-01`);
+  if (!start || !end) return null;
+  return { start, end, label };
+}
+
+async function ensurePayrollSettings() {
+  const existing = await prisma.payrollSetting.findUnique({ where: { id: 1n } });
+  if (existing) return existing;
+  return prisma.payrollSetting.create({
+    data: { id: 1n, emptyBarrelWage: 0, floorBonusWage: 0 },
+  });
+}
+
+function sortFloorBonusRates<T extends { floor: number }>(rows: T[]): T[] {
+  return [...rows].sort((a, b) => {
+    // 地上樓層升冪，地下樓層（負數）排在後面且絕對值升冪
+    const aAbove = a.floor > 0;
+    const bAbove = b.floor > 0;
+    if (aAbove !== bAbove) return aAbove ? -1 : 1;
+    if (aAbove) return a.floor - b.floor;
+    return Math.abs(a.floor) - Math.abs(b.floor);
+  });
+}
+
+async function listFloorBonusRates() {
+  const rows = await prisma.payrollFloorBonusRate.findMany();
+  return sortFloorBonusRates(rows);
+}
+
+app.get("/api/payroll-settings", async (_req, res) => {
+  try {
+    const [row, floorRates] = await Promise.all([ensurePayrollSettings(), listFloorBonusRates()]);
+    res.json({
+      ok: true,
+      data: {
+        emptyBarrelWage: row.emptyBarrelWage.toString(),
+        floorBonusRates: floorRates.map((r) => ({
+          floor: r.floor,
+          wage: r.wage.toString(),
+        })),
+        updatedAt: row.updatedAt,
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+app.patch("/api/payroll-settings", async (req, res) => {
+  if (!requireRole(req, res, ["admin", "accounting", "dispatcher"])) return;
+  try {
+    const body = req.body as {
+      emptyBarrelWage?: unknown;
+      floorBonusRates?: unknown;
+    };
+    const data: { emptyBarrelWage?: Prisma.Decimal } = {};
+    if (body.emptyBarrelWage !== undefined) {
+      const n = Number(body.emptyBarrelWage);
+      if (!Number.isFinite(n) || n < 0) {
+        res.status(400).json({ ok: false, message: "空桶單價須為非負數字" });
+        return;
+      }
+      data.emptyBarrelWage = new Prisma.Decimal(n);
+    }
+
+    let parsedRates: Array<{ floor: number; wage: Prisma.Decimal }> | null = null;
+    if (body.floorBonusRates !== undefined) {
+      if (!Array.isArray(body.floorBonusRates)) {
+        res.status(400).json({ ok: false, message: "floorBonusRates 須為陣列" });
+        return;
+      }
+      const seen = new Set<number>();
+      parsedRates = [];
+      for (const item of body.floorBonusRates) {
+        const floor = Math.trunc(Number((item as { floor?: unknown })?.floor));
+        const wageN = Number((item as { wage?: unknown })?.wage);
+        if (!Number.isFinite(floor) || floor === 0 || floor === 1) {
+          res.status(400).json({ ok: false, message: "樓層須為整數，且不可為 0 或 1（一樓不計搬運）" });
+          return;
+        }
+        if (!Number.isFinite(wageN) || wageN < 0) {
+          res.status(400).json({ ok: false, message: "搬運單價須為非負數字" });
+          return;
+        }
+        if (seen.has(floor)) {
+          res.status(400).json({ ok: false, message: `樓層 ${floor} 重複` });
+          return;
+        }
+        seen.add(floor);
+        parsedRates.push({ floor, wage: new Prisma.Decimal(wageN) });
+      }
+    }
+
+    await ensurePayrollSettings();
+    const row = await prisma.$transaction(async (tx) => {
+      const updated =
+        Object.keys(data).length > 0
+          ? await tx.payrollSetting.update({ where: { id: 1n }, data })
+          : await tx.payrollSetting.findUniqueOrThrow({ where: { id: 1n } });
+      if (parsedRates) {
+        await tx.payrollFloorBonusRate.deleteMany({});
+        if (parsedRates.length > 0) {
+          await tx.payrollFloorBonusRate.createMany({
+            data: parsedRates.map((r) => ({ floor: r.floor, wage: r.wage })),
+          });
+        }
+      }
+      return updated;
+    });
+
+    const floorRates = await listFloorBonusRates();
+    res.json({
+      ok: true,
+      data: {
+        emptyBarrelWage: row.emptyBarrelWage.toString(),
+        floorBonusRates: floorRates.map((r) => ({
+          floor: r.floor,
+          wage: r.wage.toString(),
+        })),
+        updatedAt: row.updatedAt,
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+/**
+ * 司機月薪資統計
+ * 薪資 = 底薪 + Σ(商品配送量×單價) + 回收空桶×固定單價 + Σ(上樓桶數×該樓層單價)
+ * yearMonth=YYYY-MM；僅統計已核銷完成（completed）之配送／收空桶／搬運紀錄
+ */
+app.get("/api/reports/driver-payroll", async (req, res) => {
+  try {
+    const ymRaw =
+      typeof req.query.yearMonth === "string" && req.query.yearMonth.trim()
+        ? req.query.yearMonth.trim()
+        : toLocalYmd(new Date()).slice(0, 7);
+    const range = parseYearMonthDbRange(ymRaw);
+    if (!range) {
+      res.status(400).json({ ok: false, message: "yearMonth 格式須為 YYYY-MM" });
+      return;
+    }
+    const { start, end, label } = range;
+    const dateFilter = { gte: start, lt: end };
+
+    const [settings, floorRates, drivers, products, assignments, pickups, floorRows] = await Promise.all([
+      ensurePayrollSettings(),
+      listFloorBonusRates(),
+      prisma.driver.findMany({
+        where: { isActive: true },
+        include: { user: true },
+        orderBy: { id: "asc" },
+      }),
+      prisma.product.findMany({
+        select: { id: true, name: true, unit: true, driverDeliveryWage: true, productCode: true },
+        orderBy: [{ productCode: "asc" }, { id: "asc" }],
+      }),
+      prisma.deliveryAssignment.findMany({
+        where: { status: "completed", assignmentDate: dateFilter },
+        include: {
+          salesOrder: {
+            include: {
+              lines: { include: { product: { select: { id: true, name: true, unit: true, driverDeliveryWage: true } } } },
+            },
+          },
+        },
+      }),
+      prisma.barrelPickup.findMany({
+        where: { status: "completed", pickupDate: dateFilter },
+        select: { driverId: true, barrelsReturned: true },
+      }),
+      prisma.floorDeliveryBonusRecord.findMany({
+        where: {
+          deliveryDate: dateFilter,
+          deliveryAssignment: { is: { status: "completed" } },
+        },
+        select: { driverId: true, qty: true, floor: true },
+      }),
+    ]);
+
+    const emptyWage = Number(settings.emptyBarrelWage);
+    const floorWageByFloor = new Map<number, number>(floorRates.map((r) => [r.floor, Number(r.wage)]));
+
+    type ProductAgg = { productId: string; productName: string; unit: string; qty: number; wagePerUnit: number; amount: number };
+    type FloorAgg = { floor: number; qty: number; wagePerUnit: number; amount: number };
+    type DriverAgg = {
+      driverId: string;
+      employeeCode: string;
+      name: string;
+      baseSalary: number;
+      deliveryByProduct: Map<string, ProductAgg>;
+      deliveryQty: number;
+      deliveryAmount: number;
+      emptyBarrelQty: number;
+      floorBonusQty: number;
+      floorBonusAmount: number;
+      floorByLevel: Map<number, FloorAgg>;
+    };
+
+    const byDriver = new Map<string, DriverAgg>();
+    for (const d of drivers) {
+      byDriver.set(String(d.id), {
+        driverId: String(d.id),
+        employeeCode: String(d.user?.employeeCode ?? d.employeeCode ?? ""),
+        name: String(d.user?.name ?? ""),
+        baseSalary: Number(d.baseSalary),
+        deliveryByProduct: new Map(),
+        deliveryQty: 0,
+        deliveryAmount: 0,
+        emptyBarrelQty: 0,
+        floorBonusQty: 0,
+        floorBonusAmount: 0,
+        floorByLevel: new Map(),
+      });
+    }
+
+    const ensureDriver = (driverId: bigint) => {
+      const key = String(driverId);
+      let row = byDriver.get(key);
+      if (!row) {
+        row = {
+          driverId: key,
+          employeeCode: "",
+          name: `司機#${key}`,
+          baseSalary: 0,
+          deliveryByProduct: new Map(),
+          deliveryQty: 0,
+          deliveryAmount: 0,
+          emptyBarrelQty: 0,
+          floorBonusQty: 0,
+          floorBonusAmount: 0,
+          floorByLevel: new Map(),
+        };
+        byDriver.set(key, row);
+      }
+      return row;
+    };
+
+    for (const a of assignments) {
+      const row = ensureDriver(a.driverId);
+      row.emptyBarrelQty += Math.max(0, Number(a.emptyBarrelsReturned ?? 0));
+      for (const line of a.salesOrder?.lines ?? []) {
+        const purpose = line.linePurpose ?? "delivery";
+        if (purpose === "prepaid_barrel_topup") continue;
+        const qty = effectiveLineDeliveryQty(line);
+        if (qty <= 0) continue;
+        const productId = String(line.productId);
+        const wage = Number(line.product?.driverDeliveryWage ?? 0);
+        const hit = row.deliveryByProduct.get(productId) ?? {
+          productId,
+          productName: line.product?.name ?? "商品",
+          unit: line.product?.unit ?? "",
+          qty: 0,
+          wagePerUnit: wage,
+          amount: 0,
+        };
+        hit.qty += qty;
+        hit.wagePerUnit = wage;
+        hit.amount = hit.qty * hit.wagePerUnit;
+        row.deliveryByProduct.set(productId, hit);
+      }
+    }
+
+    for (const p of pickups) {
+      const row = ensureDriver(p.driverId);
+      row.emptyBarrelQty += Math.max(0, Number(p.barrelsReturned ?? 0));
+    }
+
+    for (const f of floorRows) {
+      const row = ensureDriver(f.driverId);
+      const qty = Math.max(0, Number(f.qty ?? 0));
+      const floor = Number(f.floor);
+      const wage = floorWageByFloor.get(floor) ?? 0;
+      const amount = qty * wage;
+      row.floorBonusQty += qty;
+      row.floorBonusAmount += amount;
+      const hit = row.floorByLevel.get(floor) ?? { floor, qty: 0, wagePerUnit: wage, amount: 0 };
+      hit.qty += qty;
+      hit.wagePerUnit = wage;
+      hit.amount = hit.qty * hit.wagePerUnit;
+      row.floorByLevel.set(floor, hit);
+    }
+
+    const driversOut = [...byDriver.values()]
+      .map((row) => {
+        const deliveryProducts = [...row.deliveryByProduct.values()].sort((a, b) => b.qty - a.qty);
+        const deliveryQty = deliveryProducts.reduce((s, p) => s + p.qty, 0);
+        const deliveryAmount = deliveryProducts.reduce((s, p) => s + p.amount, 0);
+        const emptyBarrelAmount = row.emptyBarrelQty * emptyWage;
+        const floorByLevel = sortFloorBonusRates([...row.floorByLevel.values()]);
+        const totalPay = row.baseSalary + deliveryAmount + emptyBarrelAmount + row.floorBonusAmount;
+        return {
+          driverId: row.driverId,
+          employeeCode: row.employeeCode,
+          name: row.name,
+          baseSalary: row.baseSalary.toFixed(2),
+          deliveryQty,
+          deliveryAmount: deliveryAmount.toFixed(2),
+          deliveryProducts: deliveryProducts.map((p) => ({
+            ...p,
+            wagePerUnit: p.wagePerUnit.toFixed(2),
+            amount: p.amount.toFixed(2),
+          })),
+          emptyBarrelQty: row.emptyBarrelQty,
+          emptyBarrelWage: emptyWage.toFixed(2),
+          emptyBarrelAmount: emptyBarrelAmount.toFixed(2),
+          floorBonusQty: row.floorBonusQty,
+          floorBonusAmount: row.floorBonusAmount.toFixed(2),
+          floorByLevel: floorByLevel.map((f) => ({
+            floor: f.floor,
+            qty: f.qty,
+            wagePerUnit: f.wagePerUnit.toFixed(2),
+            amount: f.amount.toFixed(2),
+          })),
+          totalPay: totalPay.toFixed(2),
+        };
+      })
+      .sort((a, b) => Number(b.totalPay) - Number(a.totalPay) || a.employeeCode.localeCompare(b.employeeCode));
+
+    const totals = driversOut.reduce(
+      (acc, d) => {
+        acc.baseSalary += Number(d.baseSalary);
+        acc.deliveryQty += d.deliveryQty;
+        acc.deliveryAmount += Number(d.deliveryAmount);
+        acc.emptyBarrelQty += d.emptyBarrelQty;
+        acc.emptyBarrelAmount += Number(d.emptyBarrelAmount);
+        acc.floorBonusQty += d.floorBonusQty;
+        acc.floorBonusAmount += Number(d.floorBonusAmount);
+        acc.totalPay += Number(d.totalPay);
+        return acc;
+      },
+      {
+        baseSalary: 0,
+        deliveryQty: 0,
+        deliveryAmount: 0,
+        emptyBarrelQty: 0,
+        emptyBarrelAmount: 0,
+        floorBonusQty: 0,
+        floorBonusAmount: 0,
+        totalPay: 0,
+      },
+    );
+
+    res.json({
+      ok: true,
+      data: {
+        yearMonth: label,
+        settings: {
+          emptyBarrelWage: settings.emptyBarrelWage.toString(),
+          floorBonusRates: floorRates.map((r) => ({
+            floor: r.floor,
+            wage: r.wage.toString(),
+          })),
+        },
+        products: products.map((p) => ({
+          id: String(p.id),
+          productCode: p.productCode,
+          name: p.name,
+          unit: p.unit,
+          driverDeliveryWage: p.driverDeliveryWage.toString(),
+        })),
+        drivers: driversOut,
+        totals: {
+          baseSalary: totals.baseSalary.toFixed(2),
+          deliveryQty: totals.deliveryQty,
+          deliveryAmount: totals.deliveryAmount.toFixed(2),
+          emptyBarrelQty: totals.emptyBarrelQty,
+          emptyBarrelAmount: totals.emptyBarrelAmount.toFixed(2),
+          floorBonusQty: totals.floorBonusQty,
+          floorBonusAmount: totals.floorBonusAmount.toFixed(2),
+          totalPay: totals.totalPay.toFixed(2),
+        },
+      },
+    });
   } catch (e) {
     res.status(500).json({ ok: false, message: String(e) });
   }

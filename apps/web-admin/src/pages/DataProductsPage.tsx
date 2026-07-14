@@ -19,6 +19,7 @@ const DEFAULT_PRODUCT_FORM = {
   availableOnLiff: false,
   salePrice: "0",
   costPrice: "0",
+  driverDeliveryWage: "0",
   initialQty: "0",
 };
 
@@ -294,15 +295,27 @@ export default function DataProductsPage() {
                   />
                 </div>
               </div>
-              <div className="field">
-                <span>初始庫存數量</span>
-                <input
-                  type="number"
-                  min={0}
-                  step={1}
-                  value={productForm.initialQty}
-                  onChange={(e) => setProductForm({ ...productForm, initialQty: e.target.value })}
-                />
+              <div className="form-row-2">
+                <div className="field">
+                  <span>司機配送薪資（元／單位）</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={productForm.driverDeliveryWage}
+                    onChange={(e) => setProductForm({ ...productForm, driverDeliveryWage: e.target.value })}
+                  />
+                </div>
+                <div className="field">
+                  <span>初始庫存數量</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={productForm.initialQty}
+                    onChange={(e) => setProductForm({ ...productForm, initialQty: e.target.value })}
+                  />
+                </div>
               </div>
               {marginPreview ? (
                 <p className="card__hint product-create-margin-hint">
@@ -409,6 +422,7 @@ export default function DataProductsPage() {
                 <th>LINE 訂水</th>
                 <th className="num">售價</th>
                 <th className="num">成本</th>
+                <th className="num">配送薪資</th>
                 <th className="num">庫存</th>
               </tr>
             </thead>
@@ -486,6 +500,7 @@ export default function DataProductsPage() {
                   </td>
                   <td className="num">{p.salePrice}</td>
                   <td className="num">{p.costPrice ?? "0"}</td>
+                  <td className="num">{p.driverDeliveryWage ?? "0"}</td>
                   <td className="num">{p.inventory?.qtyOnHand ?? 0}</td>
                 </tr>
               ))}

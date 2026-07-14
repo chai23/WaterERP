@@ -82,6 +82,7 @@ CREATE TABLE `drivers` (
   `employee_code` VARCHAR(50) NULL DEFAULT NULL,
   `max_order_count` INT UNSIGNED NOT NULL DEFAULT 20 COMMENT '可負荷最高訂單數',
   `max_barrel_qty` INT UNSIGNED NOT NULL DEFAULT 150 COMMENT '可運送最大桶數',
+  `base_salary` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '月基本底薪',
   `is_active` TINYINT(1) NOT NULL DEFAULT 1,
   `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
@@ -365,12 +366,31 @@ CREATE TABLE `products` (
   `available_on_liff` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否顯示於 LINE LIFF 訂水選單',
   `sale_price` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
   `cost_price` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '參考成本／加權用',
+  `driver_delivery_wage` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '司機每單位配送薪資',
   `is_active` TINYINT(1) NOT NULL DEFAULT 1,
   `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_products_product_code` (`product_code`),
   UNIQUE KEY `uk_products_sku` (`sku`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `payroll_settings` (
+  `id` BIGINT UNSIGNED NOT NULL DEFAULT 1,
+  `empty_barrel_wage` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '回收空桶每桶薪資（固定）',
+  `floor_bonus_wage` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '已廢止：搬運改依樓層單價',
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `payroll_floor_bonus_rates` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `floor` SMALLINT NOT NULL COMMENT '樓層：2=二樓、-1=地下一樓',
+  `wage` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '該樓層每桶獎金',
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_payroll_floor_bonus_rates_floor` (`floor`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 ALTER TABLE `delivery_addresses`

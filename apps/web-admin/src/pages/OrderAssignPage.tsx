@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useDashboard } from "../DashboardContext";
 import type { Customer } from "../adminUtils";
 import {
@@ -7,6 +8,9 @@ import {
   fmtLocalYmd,
   orderStatusBadgeClass,
 } from "../adminUtils";
+import AssignmentStatusPanel from "./OrderAssignmentStatusPage";
+
+type PageTab = "status" | "assign";
 
 function digitsOnly(value: string): string {
   return value.replace(/\D/g, "");
@@ -205,6 +209,27 @@ export default function OrderAssignPage() {
     onSubmitAssign,
     driverEmployeeCode,
   } = useDashboard();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const pageTab: PageTab = useMemo(() => {
+    const t = searchParams.get("tab");
+    if (t === "assign" || t === "status") return t;
+    if (searchParams.get("customerId")) return "assign";
+    return "status";
+  }, [searchParams]);
+
+  const setPageTab = useCallback(
+    (tab: PageTab) => {
+      if (tab === "status") {
+        setSearchParams({ tab: "status" });
+        return;
+      }
+      const next = new URLSearchParams(searchParams);
+      next.set("tab", "assign");
+      setSearchParams(next);
+    },
+    [searchParams, setSearchParams],
+  );
 
   const [customerKeyword, setCustomerKeyword] = useState("");
   const [assignCustomerId, setAssignCustomerId] = useState("");
@@ -215,6 +240,21 @@ export default function OrderAssignPage() {
   const [routeTotals, setRouteTotals] = useState<ProductTotalRow[]>([]);
   const [routeLoading, setRouteLoading] = useState(false);
   const [routeError, setRouteError] = useState("");
+  const appliedQueryKeyRef = useRef("");
+  const pendingSalesOrderIdRef = useRef<string | null>(null);
+  const skipAutoMatchRef = useRef(false);
+
+  const goAssignFromQueue = useCallback(
+    (customerId: string, salesOrderId: string) => {
+      appliedQueryKeyRef.current = "";
+      const next = new URLSearchParams();
+      next.set("tab", "assign");
+      next.set("customerId", customerId);
+      if (salesOrderId) next.set("salesOrderId", salesOrderId);
+      setSearchParams(next);
+    },
+    [setSearchParams],
+  );
 
   const alternateCandidates = useMemo(() => {
     const q = customerKeyword.trim();
@@ -237,9 +277,27 @@ export default function OrderAssignPage() {
 
   const selectedCustomer = customers.find((c) => String(c.id) === assignCustomerId);
 
+  /** 由「分派狀態」帶入 customerId／salesOrderId */
+  useEffect(() => {
+    const customerId = searchParams.get("customerId")?.trim() ?? "";
+    const salesOrderId = searchParams.get("salesOrderId")?.trim() ?? "";
+    if (!customerId || customers.length === 0) return;
+    const key = `${customerId}|${salesOrderId}`;
+    if (appliedQueryKeyRef.current === key) return;
+    const c = customers.find((x) => String(x.id) === customerId);
+    if (!c) return;
+    appliedQueryKeyRef.current = key;
+    pendingSalesOrderIdRef.current = salesOrderId || null;
+    skipAutoMatchRef.current = true;
+    setCustomerKeyword((c.customerCode ?? "").trim() || c.name || customerId);
+    setAssignCustomerId(customerId);
+    setMatchHint(`已由分派狀態帶入：${c.customerCode ?? "------"}／${c.name}`);
+  }, [searchParams, customers]);
+
   useEffect(() => {
     const q = customerKeyword.trim();
     const timer = window.setTimeout(() => {
+      if (skipAutoMatchRef.current) return;
       if (!q) {
         setMatchHint("");
         setAssignCustomerId("");
@@ -318,12 +376,26 @@ export default function OrderAssignPage() {
     void loadIncomplete();
   }, [loadIncomplete]);
 
+  /** 套用 URL 預選訂單；其餘情況若選中訂單不在列表則清除 */
   useEffect(() => {
+    if (incompleteLoading) return;
+
+    const pendingOid = pendingSalesOrderIdRef.current;
+    if (pendingOid) {
+      if (incompleteOrders.some((o) => String(o.id) === pendingOid)) {
+        setAssignForm((f) => ({ ...f, salesOrderId: pendingOid }));
+        pendingSalesOrderIdRef.current = null;
+      } else if (assignCustomerId) {
+        pendingSalesOrderIdRef.current = null;
+      }
+      return;
+    }
+
     if (!assignForm.salesOrderId) return;
     if (!incompleteOrders.some((o) => String(o.id) === assignForm.salesOrderId)) {
       setAssignForm((f) => ({ ...f, salesOrderId: "" }));
     }
-  }, [incompleteOrders, assignForm.salesOrderId, setAssignForm]);
+  }, [incompleteOrders, incompleteLoading, assignCustomerId, assignForm.salesOrderId, setAssignForm]);
 
   const loadRoute = useCallback(async () => {
     const driverId = assignForm.driverId;
@@ -372,7 +444,7 @@ export default function OrderAssignPage() {
   const selectedOrderSummary = incompleteOrders.find((o) => String(o.id) === assignForm.salesOrderId);
 
   return (
-    <section className="card order-new-page order-new-page--pro">
+    <section className="card order-new-page order-new-page--pro order-assign-page">
       <header className="order-new__hero">
         <div className="order-new__hero-top">
           <div className="order-new__hero-titles">
@@ -381,12 +453,35 @@ export default function OrderAssignPage() {
           </div>
         </div>
         <p className="order-new__hero-lead">
-          區塊 <strong>①②</strong>
-          輸入客戶編號後列出未完成訂單（含已分派與未分派）；區塊 <strong>③</strong>{" "}
-          於選定司機與配送日後顯示該司機當日任務與商品合計。區塊 <strong>④</strong> 確認分派。
+          {pageTab === "status"
+            ? "先查看未分派／已分派佇列，避免漏派；需要派車時再切到「分配訂單」。"
+            : "區塊 ①② 輸入客戶後列出未完成訂單；區塊 ③ 顯示司機當日任務；區塊 ④ 確認分派。"}
         </p>
+        <nav className="order-assign-tabs" role="tablist" aria-label="分配訂單分頁">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={pageTab === "status"}
+            className={`order-assign-tabs__btn${pageTab === "status" ? " order-assign-tabs__btn--active" : ""}`}
+            onClick={() => setPageTab("status")}
+          >
+            分派狀態
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={pageTab === "assign"}
+            className={`order-assign-tabs__btn${pageTab === "assign" ? " order-assign-tabs__btn--active" : ""}`}
+            onClick={() => setPageTab("assign")}
+          >
+            分配訂單
+          </button>
+        </nav>
       </header>
 
+      {pageTab === "status" ? (
+        <AssignmentStatusPanel onGoAssign={goAssignFromQueue} />
+      ) : (
       <form onSubmit={handleSubmit} className="order-new__form order-new__form--layout">
         <div className="order-new__workspace" aria-label="分配訂單分區">
           <section className="order-new__zone order-new__zone--tools" aria-labelledby="order-assign-zone-tools-title">
@@ -412,7 +507,10 @@ export default function OrderAssignPage() {
                     className="order-new__input-code"
                     placeholder="6 碼編號或關鍵字"
                     value={customerKeyword}
-                    onChange={(e) => setCustomerKeyword(e.target.value)}
+                    onChange={(e) => {
+                      skipAutoMatchRef.current = false;
+                      setCustomerKeyword(e.target.value);
+                    }}
                     autoComplete="off"
                   />
                   {matchHint ? <p className={orderAssignMatchHintClass(matchHint)}>{matchHint}</p> : null}
@@ -695,6 +793,7 @@ export default function OrderAssignPage() {
           </div>
         </section>
       </form>
+      )}
     </section>
   );
 }

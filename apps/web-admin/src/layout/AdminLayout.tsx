@@ -49,7 +49,7 @@ const navGroups: { id: string; title: string; items: { to: string; label: string
       { to: "/reports/daily", label: "日報表" },
       { to: "/reports/monthly", label: "月報表" },
       { to: "/reports/driver-daily", label: "司機日收款核對" },
-      { to: "/orders/floor-bonus", label: "搬運獎金查詢" },
+      { to: "/orders/floor-bonus", label: "司機薪資統計" },
       { to: "/reports/billing-ar", label: "AR 沖帳與稽核" },
       { to: "/reports/tax-invoices", label: "發票查詢與補登" },
     ],

@@ -61,6 +61,8 @@ model Driver {
   employeeCode  String?  @map("employee_code") @db.VarChar(50)
   maxOrderCount Int      @default(20) @map("max_order_count") @db.UnsignedInt
   maxBarrelQty  Int      @default(150) @map("max_barrel_qty") @db.UnsignedInt
+  /// 月基本底薪（薪資統計用）
+  baseSalary    Decimal  @default(0) @map("base_salary") @db.Decimal(14, 2)
   isActive      Boolean  @default(true) @map("is_active")
   createdAt     DateTime @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt     DateTime @updatedAt @map("updated_at") @db.DateTime(3)
@@ -255,6 +257,8 @@ model Product {
   availableOnLiff Boolean @default(false) @map("available_on_liff")
   salePrice Decimal  @default(0) @map("sale_price") @db.Decimal(14, 2)
   costPrice Decimal  @default(0) @map("cost_price") @db.Decimal(14, 2)
+  /// 司機每單位配送薪資（月薪統計用）
+  driverDeliveryWage Decimal @default(0) @map("driver_delivery_wage") @db.Decimal(14, 2)
   isActive  Boolean  @default(true) @map("is_active")
   createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.DateTime(3)
@@ -271,6 +275,29 @@ model Product {
   patrolDeliveryAddresses DeliveryAddress[]
 
   @@map("products")
+}
+
+/// 薪資費率設定（單列 id=1）
+model PayrollSetting {
+  id               BigInt   @id @default(1) @db.UnsignedBigInt
+  /// 回收空桶每桶薪資（固定）
+  emptyBarrelWage  Decimal  @default(0) @map("empty_barrel_wage") @db.Decimal(14, 2)
+  /// 已廢止：搬運改依樓層單價（payroll_floor_bonus_rates）；欄位保留相容
+  floorBonusWage   Decimal  @default(0) @map("floor_bonus_wage") @db.Decimal(14, 2)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  @@map("payroll_settings")
+}
+
+/// 上樓搬運獎金：依樓層單價（floor 與 FloorDeliveryBonusRecord.floor 相同語意）
+model PayrollFloorBonusRate {
+  id        BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  floor     Int      @unique @db.SmallInt
+  wage      Decimal  @default(0) @db.Decimal(14, 2)
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  @@map("payroll_floor_bonus_rates")
 }
 
 /// 優惠活動主檔（各類型開關與參數）
