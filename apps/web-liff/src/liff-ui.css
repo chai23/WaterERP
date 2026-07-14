@@ -1,28 +1,28 @@
 :root {
-  --bg: #eaf4f0;
-  --bg-deep: #d5ebe3;
+  --bg: #eef5fb;
+  --bg-deep: #d7e8f5;
   --surface: #ffffff;
-  --surface-soft: #f4faf7;
-  --ink: #14332b;
-  --ink-soft: #2a4a41;
-  --muted: #5f7a70;
-  --accent: #0d6b56;
-  --accent-2: #128a6f;
-  --accent-soft: #d4efe6;
-  --accent-glow: rgba(13, 107, 86, 0.18);
+  --surface-soft: #f4f8fc;
+  --ink: #153045;
+  --ink-soft: #2d4660;
+  --muted: #5f7388;
+  --accent: #3a8fc4;
+  --accent-2: #56a6d6;
+  --accent-soft: #d8ecf8;
+  --accent-glow: rgba(58, 143, 196, 0.2);
   --warn: #9a6700;
   --warn-soft: #fff3cd;
   --danger: #b42318;
   --danger-soft: #fde8e6;
-  --ok: #0d6b56;
-  --ok-soft: #d4efe6;
-  --info: #1a5f8a;
-  --info-soft: #e0f0fa;
-  --border: #c9ddd4;
+  --ok: #2f7fad;
+  --ok-soft: #d8ecf8;
+  --info: #2a6f9e;
+  --info-soft: #e3f1fa;
+  --border: #c5d8e8;
   --radius: 16px;
   --radius-sm: 12px;
-  --shadow: 0 10px 28px rgba(20, 51, 43, 0.08);
-  --shadow-sm: 0 2px 10px rgba(20, 51, 43, 0.06);
+  --shadow: 0 10px 28px rgba(21, 48, 69, 0.08);
+  --shadow-sm: 0 2px 10px rgba(21, 48, 69, 0.06);
   --nav-h: 4.25rem;
   --cart-h: 4.75rem;
   font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
@@ -46,9 +46,9 @@ body {
 body {
   min-height: 100dvh;
   background:
-    radial-gradient(900px 420px at 8% -8%, #b8e4d4 0%, transparent 55%),
-    radial-gradient(720px 360px at 100% 0%, #cfe8f5 0%, transparent 48%),
-    linear-gradient(180deg, #edf7f3 0%, var(--bg) 42%, var(--bg-deep) 100%);
+    radial-gradient(900px 420px at 8% -8%, #c5e4f7 0%, transparent 55%),
+    radial-gradient(720px 360px at 100% 0%, #dceef9 0%, transparent 48%),
+    linear-gradient(180deg, #f3f8fc 0%, var(--bg) 42%, var(--bg-deep) 100%);
 }
 
 #root {
@@ -104,10 +104,10 @@ textarea {
   border-radius: calc(var(--radius) + 4px);
   padding: 1.15rem 1.1rem 1.05rem;
   margin-bottom: 0.9rem;
-  color: #f4fffb;
+  color: #f5fbff;
   background:
-    linear-gradient(135deg, #0a5a48 0%, #0d6b56 48%, #1a8570 100%),
-    radial-gradient(circle at 90% 10%, rgba(255, 255, 255, 0.18), transparent 42%);
+    linear-gradient(135deg, #2f7fb3 0%, #3a8fc4 48%, #5aa8d8 100%),
+    radial-gradient(circle at 90% 10%, rgba(255, 255, 255, 0.2), transparent 42%);
   box-shadow: var(--shadow);
 }
 
@@ -278,7 +278,7 @@ textarea {
 .step-pill.is-on {
   color: var(--accent);
   background: var(--accent-soft);
-  border-color: #b7dfd0;
+  border-color: #b7d7eb;
 }
 
 .field {
@@ -333,9 +333,9 @@ textarea {
 
 .btn--primary {
   width: 100%;
-  background: linear-gradient(135deg, #0c634f, #128a6f);
+  background: linear-gradient(135deg, #2f7fb3, #56a6d6);
   color: #fff;
-  box-shadow: 0 8px 18px rgba(13, 107, 86, 0.28);
+  box-shadow: 0 8px 18px rgba(58, 143, 196, 0.28);
 }
 
 .btn--ghost {
@@ -346,7 +346,7 @@ textarea {
 .btn--outline {
   background: #fff;
   color: var(--accent);
-  border: 1px solid #b7dfd0;
+  border: 1px solid #b7d7eb;
 }
 
 .btn--sm {
@@ -444,7 +444,7 @@ textarea {
 
 .addr-card.is-selected {
   border-color: var(--accent);
-  background: #eefaf5;
+  background: #eef6fc;
   box-shadow: 0 0 0 3px var(--accent-glow);
 }
 
@@ -487,7 +487,7 @@ textarea {
 
 .mini-tag--accent {
   background: var(--accent-soft);
-  border-color: #b7dfd0;
+  border-color: #b7d7eb;
   color: var(--accent);
 }
 
@@ -546,8 +546,8 @@ textarea {
 }
 
 .product-card.has-qty {
-  border-color: #a9d9c8;
-  box-shadow: 0 0 0 2px rgba(13, 107, 86, 0.08);
+  border-color: #a8cfe8;
+  box-shadow: 0 0 0 2px rgba(58, 143, 196, 0.1);
 }
 
 .product-card__name {
