@@ -5383,12 +5383,23 @@ app.post("/api/settlements/approve", async (req, res) => {
         } as Prisma.DeliveryAssignmentUpdateInput,
       });
 
+      const topupAlreadyPosted = await tx.customerLedgerEntry.findFirst({
+        where: { salesOrderId: assignment.salesOrderId, entryType: "prepaid_topup" },
+        select: { id: true },
+      });
+      const nextPendingTopup =
+        order.pendingPrepaidTopupBarrels > 0
+          ? order.pendingPrepaidTopupBarrels
+          : barrelsTopupCredit > 0 && !topupAlreadyPosted
+            ? barrelsTopupCredit
+            : order.pendingPrepaidTopupBarrels;
+
       await tx.salesOrder.update({
         where: { id: assignment.salesOrderId },
         data: {
           status: "completed",
           lockVersion: { increment: 1 },
-          pendingPrepaidTopupBarrels: barrelsTopupCredit,
+          pendingPrepaidTopupBarrels: nextPendingTopup,
           ...(monthlyPortion.greaterThan(0)
             ? {
                 billingPeriodKey: billingPeriodKeyFromDate(settledAt),
@@ -6637,11 +6648,14 @@ async function createConfirmedSalesOrder(
       .filter((l) => !l.isPromotionGift)
       .map((l) => {
       const isReplenishment = Boolean(l.isReplenishment);
+      // LINE 訂水一律依客戶主檔結帳方式，不接受前端自行指定（避免誤成現金）
       const billingType = isReplenishment
         ? "cash"
         : l.linePurpose === "prepaid_barrel_topup"
           ? "cash"
-          : normalizeLineBillingType(l.billingType, cust.billingType);
+          : orderSource === "liff"
+            ? normalizeLineBillingType(null, cust.billingType)
+            : normalizeLineBillingType(l.billingType, cust.billingType);
       const invoiceMode = billingType === "cash" ? l.invoiceMode : null;
       return {
         ...l,
@@ -6775,6 +6789,9 @@ async function createConfirmedSalesOrder(
       })),
     );
     const { subtotal, cashSubtotal, monthlySubtotal } = totals;
+    const pendingPrepaidTopupBarrels = lineCreates
+      .filter((l) => l.linePurpose === "prepaid_barrel_topup")
+      .reduce((s, l) => s + l.qtyOrdered, 0);
 
     const created = await prisma.$transaction(async (tx) => {
       const so = await tx.salesOrder.create({
@@ -6792,6 +6809,7 @@ async function createConfirmedSalesOrder(
           monthlySubtotal,
           orderCashAdjustment,
           cashInvoiceMode: cashInvoiceMode === "none" ? null : cashInvoiceMode,
+          pendingPrepaidTopupBarrels,
           source: orderSource,
           createdByUserId: creatorUserId,
           lines: {

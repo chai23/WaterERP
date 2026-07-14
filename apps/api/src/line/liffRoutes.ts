@@ -61,6 +61,44 @@ function findCustomerByMobile(prisma: PrismaClient, mobile: string) {
   });
 }
 
+type LiffCustomerRow = {
+  id: bigint;
+  customerCode: string | null;
+  name: string;
+  mobile: string | null;
+  phone: string | null;
+  billingType: string;
+  prepaidBarrelBalance: number;
+  addresses: unknown;
+};
+
+async function toLiffCustomerPayload(prisma: PrismaClient, customer: LiffCustomerRow) {
+  const prepaidByProduct = await prisma.customerPrepaidProductBalance.findMany({
+    where: { customerId: customer.id, balanceBarrels: { gt: 0 } },
+    include: { product: { select: { id: true, name: true, unit: true } } },
+    orderBy: [{ productId: "asc" }],
+  });
+  const byProduct = prepaidByProduct.map((r) => ({
+    productId: r.productId.toString(),
+    productName: r.product.name,
+    unit: r.product.unit,
+    barrels: r.balanceBarrels,
+  }));
+  const prepaidBarrelBalance =
+    byProduct.length > 0 ? byProduct.reduce((s, r) => s + r.barrels, 0) : customer.prepaidBarrelBalance;
+  return {
+    id: customer.id.toString(),
+    customerCode: customer.customerCode,
+    name: customer.name,
+    mobile: customer.mobile,
+    phone: customer.phone,
+    billingType: customer.billingType,
+    prepaidBarrelBalance,
+    prepaidBarrelByProduct: byProduct,
+    addresses: customer.addresses,
+  };
+}
+
 export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
   const { prisma, jwtSecret, jwtSignOptions, createSalesOrder, toBigInt } = deps;
 
@@ -175,15 +213,7 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
           bound: true,
           token,
           lineUserId: verified.lineUserId,
-          customer: {
-            id: customer.id.toString(),
-            customerCode: customer.customerCode,
-            name: customer.name,
-            mobile: customer.mobile,
-            phone: customer.phone,
-            billingType: customer.billingType,
-            addresses: customer.addresses,
-          },
+          customer: await toLiffCustomerPayload(prisma, customer),
         },
       });
     } catch (e) {
@@ -226,6 +256,9 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
       const code = typeof req.body?.code === "string" ? req.body.code : "";
       const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
       const addressLine = typeof req.body?.addressLine === "string" ? req.body.addressLine.trim() : "";
+      const billingRaw = typeof req.body?.billingType === "string" ? req.body.billingType.trim() : "";
+      const billingType =
+        billingRaw === "monthly" || billingRaw === "prepaid" || billingRaw === "cash" ? billingRaw : "cash";
       const deliveryFloor =
         req.body?.deliveryFloor != null && String(req.body.deliveryFloor).trim() !== ""
           ? Number(req.body.deliveryFloor)
@@ -265,7 +298,7 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
         if (!name || !addressLine) {
           res.status(400).json({
             ok: false,
-            message: "找不到既有客戶資料，請填寫姓名與配送地址以完成註冊",
+            message: "找不到既有客戶資料，請填寫姓名、結帳方式與配送地址以完成註冊",
             needRegister: true,
           });
           return;
@@ -277,7 +310,7 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
             name,
             mobile: otp.mobile,
             phone: otp.mobile,
-            billingType: "cash",
+            billingType,
             lineUserId: verified.lineUserId,
             lineBoundAt: new Date(),
             addresses: {
@@ -286,7 +319,7 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
                 deliveryFloor: Number.isFinite(deliveryFloor) ? deliveryFloor : null,
                 contactMobile: otp.mobile,
                 isDefault: true,
-                label: "預設",
+                label: "住家",
               },
             },
           },
@@ -309,15 +342,7 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
         ok: true,
         data: {
           token,
-          customer: {
-            id: customer.id.toString(),
-            customerCode: customer.customerCode,
-            name: customer.name,
-            mobile: customer.mobile,
-            phone: customer.phone,
-            billingType: customer.billingType,
-            addresses: customer.addresses,
-          },
+          customer: await toLiffCustomerPayload(prisma, customer),
         },
       });
     } catch (e) {
@@ -338,15 +363,7 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
       }
       res.json({
         ok: true,
-        data: {
-          id: customer.id.toString(),
-          customerCode: customer.customerCode,
-          name: customer.name,
-          mobile: customer.mobile,
-          phone: customer.phone,
-          billingType: customer.billingType,
-          addresses: customer.addresses,
-        },
+        data: await toLiffCustomerPayload(prisma, customer),
       });
     } catch (e) {
       res.status(500).json({ ok: false, message: String(e) });

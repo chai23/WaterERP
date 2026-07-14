@@ -11,6 +11,7 @@ import { useDashboard } from "../DashboardContext";
 
 type PendingOrder = OrderRecord & {
   source?: string;
+  remark?: string | null;
   orderBillableAmount?: string | number;
   customer?: {
     name?: string;
@@ -23,14 +24,32 @@ type PendingOrder = OrderRecord & {
   lines?: Array<{
     qtyOrdered?: number;
     lineAmount?: string | number;
+    linePurpose?: string | null;
     product?: { name?: string } | null;
   }>;
 };
 
+function isTopupOrder(o: PendingOrder): boolean {
+  const lines = Array.isArray(o.lines) ? o.lines : [];
+  return lines.length > 0 && lines.every((l) => (l.linePurpose ?? "delivery") === "prepaid_barrel_topup");
+}
+
+function hasTopupLines(o: PendingOrder): boolean {
+  const lines = Array.isArray(o.lines) ? o.lines : [];
+  return lines.some((l) => (l.linePurpose ?? "delivery") === "prepaid_barrel_topup");
+}
+
 function goodsSummary(o: PendingOrder): string {
   const lines = Array.isArray(o.lines) ? o.lines : [];
   if (lines.length === 0) return "—";
-  return lines.map((l) => `${l.product?.name ?? "商品"}×${l.qtyOrdered ?? 0}`).join("、");
+  return lines
+    .map((l) => {
+      const name = l.product?.name ?? "商品";
+      const qty = l.qtyOrdered ?? 0;
+      const topup = (l.linePurpose ?? "delivery") === "prepaid_barrel_topup" ? "（儲值）" : "";
+      return `${name}×${qty}${topup}`;
+    })
+    .join("、");
 }
 
 export default function OrderLiffReviewPage() {
@@ -68,6 +87,9 @@ export default function OrderLiffReviewPage() {
   const confirmOrder = async (id: string) => {
     setBusyId(id);
     setMessage("");
+    const row = rows.find((r) => String(r.id) === id);
+    const topup = row ? isTopupOrder(row) : false;
+    const mixedTopup = row ? !topup && hasTopupLines(row) : false;
     try {
       const res = await fetch(`/api/sales-orders/${encodeURIComponent(id)}/confirm-review`, {
         method: "POST",
@@ -79,7 +101,13 @@ export default function OrderLiffReviewPage() {
         setMessage(payload.message ?? "確認失敗");
         return;
       }
-      setMessage(`已確認：${payload.data?.orderNo ?? id}，可至分配訂單派車`);
+      setMessage(
+        topup
+          ? `已確認儲值申請：${payload.data?.orderNo ?? id}，請完成現金收款後桶數會自動入帳`
+          : mixedTopup
+            ? `已確認：${payload.data?.orderNo ?? id}（含儲值），請派車；配送收款沖清後入帳`
+            : `已確認：${payload.data?.orderNo ?? id}，可至分配訂單派車`,
+      );
       await load();
       loadDashboard();
     } catch {
@@ -123,7 +151,8 @@ export default function OrderLiffReviewPage() {
       </h2>
       <p className="card__hint">
         客戶自 LINE 下單後會先進入<strong>待確認</strong>，請核對客戶、地址與品項後再確認。
-        確認後訂單才會出現在 <Link to="/orders/assign">分配訂單</Link>；若打錯或異常可駁回（取消）。
+        一般訂水確認後會出現在 <Link to="/orders/assign">分配訂單</Link>；若為<strong>預付儲值</strong>或<strong>配送＋儲值</strong>（品項含儲值），確認後請派車配送並於現場／AR 完成現金收款，沖清後桶數入帳。
+        若打錯或異常可駁回（取消）。
       </p>
 
       <div className="form-actions" style={{ marginBottom: "1rem" }}>
@@ -169,10 +198,26 @@ export default function OrderLiffReviewPage() {
               rows.map((o) => {
                 const id = String(o.id);
                 const busy = busyId === id;
+                const topup = isTopupOrder(o);
+                const mixedTopup = !topup && hasTopupLines(o);
                 return (
                   <tr key={id}>
                     <td>
                       <code style={{ fontSize: "0.8em" }}>{String(o.orderNo ?? "")}</code>
+                      {topup ? (
+                        <div>
+                          <span className="badge badge--pending" style={{ marginTop: "0.25rem" }}>
+                            預付儲值
+                          </span>
+                        </div>
+                      ) : null}
+                      {mixedTopup ? (
+                        <div>
+                          <span className="badge badge--progress" style={{ marginTop: "0.25rem" }}>
+                            配送＋儲值
+                          </span>
+                        </div>
+                      ) : null}
                     </td>
                     <td>
                       {o.customer?.name ?? "—"}
