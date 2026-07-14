@@ -48,18 +48,34 @@ async function api<T>(
   path: string,
   opts: { method?: string; body?: unknown; token?: string | null } = {},
 ): Promise<{ ok: boolean; status: number; data?: T; message?: string; needRegister?: boolean }> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    // ngrok 免費版會對瀏覽器插入警告頁，導致 JSON API 失敗；此標頭可略過
+    "ngrok-skip-browser-warning": "1",
+  };
   if (opts.token) headers.Authorization = `Bearer ${opts.token}`;
   const res = await fetch(path, {
     method: opts.method ?? "GET",
     headers,
     body: opts.body != null ? JSON.stringify(opts.body) : undefined,
   });
-  const payload = await res.json().catch(() => ({}));
+  const raw = await res.text();
+  let payload: { ok?: boolean; data?: T; message?: string; needRegister?: boolean } = {};
+  try {
+    payload = raw ? (JSON.parse(raw) as typeof payload) : {};
+  } catch {
+    return {
+      ok: false,
+      status: res.status,
+      message: res.ok
+        ? "伺服器回應格式錯誤（若使用 ngrok，請確認隧道仍在運作）"
+        : `連線失敗（HTTP ${res.status}）`,
+    };
+  }
   return {
-    ok: Boolean(payload.ok ?? res.ok),
+    ok: Boolean(payload.ok),
     status: res.status,
-    data: payload.data as T | undefined,
+    data: payload.data,
     message: payload.message,
     needRegister: Boolean(payload.needRegister),
   };
@@ -118,6 +134,7 @@ export default function App() {
   const [orderMsg, setOrderMsg] = useState("");
   const [ordering, setOrdering] = useState(false);
   const [orders, setOrders] = useState<OrderRow[]>([]);
+  const [productsError, setProductsError] = useState("");
 
   const selectedLines = useMemo(
     () =>
@@ -142,11 +159,20 @@ export default function App() {
         } else {
           await liff.init({ liffId });
           if (!liff.isLoggedIn()) {
-            liff.login();
+            liff.login({ redirectUri: window.location.href.split("#")[0] });
             return;
           }
           nextIdToken = liff.getIDToken() || "";
-          if (!nextIdToken) throw new Error("無法取得 LIFF ID Token");
+          if (!nextIdToken) {
+            // 常見：Scopes 未開 openid，或舊登入沒帶 openid → 強制重登
+            try {
+              liff.logout();
+            } catch {
+              // ignore
+            }
+            liff.login({ redirectUri: window.location.href.split("#")[0] });
+            return;
+          }
         }
         if (cancelled) return;
         setIdToken(nextIdToken);
@@ -200,11 +226,20 @@ export default function App() {
   useEffect(() => {
     if (!token) return;
     void (async () => {
+      setProductsError("");
       const [prodRes, orderRes] = await Promise.all([
         api<Product[]>("/api/liff/products", { token }),
         api<OrderRow[]>("/api/liff/orders", { token }),
       ]);
-      if (prodRes.ok && prodRes.data) setProducts(prodRes.data);
+      if (prodRes.ok && prodRes.data) {
+        setProducts(prodRes.data);
+        if (prodRes.data.length === 0) {
+          setProductsError("目前沒有開放線上訂購的商品，請至後台商品列表勾選「LINE 訂水可下訂」。");
+        }
+      } else {
+        setProducts([]);
+        setProductsError(prodRes.message || "無法載入商品列表");
+      }
       if (orderRes.ok && orderRes.data) setOrders(orderRes.data);
     })();
   }, [token]);
@@ -213,7 +248,12 @@ export default function App() {
     if (!idToken) return;
     setBindMsg("");
     setOtpHint("");
-    const res = await api<{ expiresAt: string; devCode?: string }>("/api/liff/otp/request", {
+    const res = await api<{
+      expiresAt: string;
+      devCode?: string;
+      skipped?: boolean;
+      delivery?: "line" | "dev" | "skip";
+    }>("/api/liff/otp/request", {
       method: "POST",
       body: { idToken, mobile },
     });
@@ -221,11 +261,14 @@ export default function App() {
       setBindMsg(res.message || "無法寄送驗證碼");
       return;
     }
-    if (res.data?.devCode) {
+    if (res.data?.skipped || res.data?.delivery === "skip") {
+      setOtpHint("測試模式：已略過驗證碼，請直接按「綁定會員」");
+      setOtpCode("");
+    } else if (res.data?.devCode) {
       setOtpHint(`開發模式驗證碼：${res.data.devCode}`);
       setOtpCode(res.data.devCode);
     } else {
-      setOtpHint("驗證碼已產生（正式環境請接簡訊閘道）");
+      setOtpHint("驗證碼已透過 LINE 訊息發送，請到官方帳號聊天室查看後輸入");
     }
   };
 
@@ -388,6 +431,10 @@ export default function App() {
             <input type="date" value={scheduledDate} onChange={(e) => setScheduledDate(e.target.value)} />
           </label>
           <div>
+            {productsError ? <p className="feedback feedback--err">{productsError}</p> : null}
+            {!productsError && products.length === 0 ? (
+              <p className="muted">載入商品中…</p>
+            ) : null}
             {products.map((p) => {
               const id = String(p.id);
               const qty = qtyByProduct[id] ?? 0;

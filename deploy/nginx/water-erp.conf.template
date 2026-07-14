@@ -28,10 +28,9 @@ server {
     }
 
     location /driver/ {
-        rewrite ^/driver/(.*)$ /$1 break;
-        root {{PROJECT_ROOT}}/apps/web-driver/dist;
+        alias {{PROJECT_ROOT}}/apps/web-driver/dist/;
         index index.html;
-        try_files $uri $uri/ /index.html;
+        try_files $uri $uri/ /driver/index.html;
     }
 
     # LINE LIFF 訂水（子路徑 /liff/）
@@ -40,10 +39,9 @@ server {
     }
 
     location /liff/ {
-        rewrite ^/liff/(.*)$ /$1 break;
-        root {{PROJECT_ROOT}}/apps/web-liff/dist;
+        alias {{PROJECT_ROOT}}/apps/web-liff/dist/;
         index index.html;
-        try_files $uri $uri/ /index.html;
+        try_files $uri $uri/ /liff/index.html;
     }
 
     # 後台 SPA 路由

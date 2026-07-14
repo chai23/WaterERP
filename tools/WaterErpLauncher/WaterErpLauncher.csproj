@@ -7,7 +7,7 @@
     <UseWindowsForms>true</UseWindowsForms>
     <AssemblyTitle>超好企業進銷存系統 伺服器啟動器</AssemblyTitle>
     <Product>超好企業進銷存系統 Launcher</Product>
-    <Version>1.5.0</Version>
+    <Version>1.7.0</Version>
     <RootNamespace>WaterErpLauncher</RootNamespace>
     <ApplicationDefaultFont>Microsoft JhengHei UI, 9pt</ApplicationDefaultFont>
   </PropertyGroup>

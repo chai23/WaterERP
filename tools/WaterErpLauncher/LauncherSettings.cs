@@ -24,6 +24,12 @@ internal sealed class LauncherSettings
     /// <summary>開發模式：啟動 API 時是否一併執行 npm run dev:liff（LINE 訂水）。</summary>
     public bool StartLiffDevWithApi { get; set; } = false;
 
+    /// <summary>ngrok 固定免費網域（不含 https://）。</summary>
+    public string NgrokDomain { get; set; } = NgrokHelper.DefaultDomain;
+
+    /// <summary>正式模式啟動服務時是否一併開啟 ngrok HTTPS 隧道（LINE 測試用）。</summary>
+    public bool StartNgrokWithServices { get; set; } = false;
+
     private static string SettingsPath =>
         Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),

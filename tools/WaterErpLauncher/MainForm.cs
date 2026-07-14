@@ -63,6 +63,22 @@ internal sealed class MainForm : Form
     private readonly Button _btnOpenAdmin = new() { Text = "開啟後台 (瀏覽器)" };
     private readonly Button _btnOpenDriver = new() { Text = "開啟司機端 (瀏覽器)" };
     private readonly Button _btnOpenLiff = new() { Text = "開啟 LIFF 訂水 (瀏覽器)" };
+    private readonly Button _btnCheckLine = new() { Text = "檢查 LINE 正式設定" };
+    private readonly TextBox _ngrokDomain = new() { Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top };
+    private readonly CheckBox _chkStartNgrok = new()
+    {
+        Text = "啟動服務時一併開啟 ngrok HTTPS 隧道（LINE 測試）",
+        AutoSize = true
+    };
+    private readonly Button _btnStartNgrok = new() { Text = "啟動 ngrok" };
+    private readonly Button _btnStopNgrok = new() { Text = "停止 ngrok", Enabled = false };
+    private readonly Button _btnOpenNgrokDashboard = new() { Text = "開啟 ngrok 儀表板" };
+    private readonly Label _ngrokHealthLabel = new()
+    {
+        AutoSize = true,
+        Text = "ngrok：尚未檢查",
+        ForeColor = SystemColors.GrayText
+    };
 
     private readonly System.Windows.Forms.Timer _healthTimer = new() { Interval = 3000 };
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(5) };
@@ -71,25 +87,29 @@ internal sealed class MainForm : Form
     private Process? _adminDevProcess;
     private Process? _driverDevProcess;
     private Process? _liffDevProcess;
+    private Process? _ngrokProcess;
     private bool _nginxStartedByLauncher;
+    private bool _ngrokStartedByLauncher;
     private bool _uiBusy;
     private string _gitBranch = "main";
     private readonly FlowLayoutPanel _devOpts;
 
     public MainForm()
     {
-        Text = "超好企業進銷存系統 伺服器啟動器 v1.6";
-        MinimumSize = new Size(720, 680);
-        Size = new Size(900, 740);
+        Text = "超好企業進銷存系統 伺服器啟動器 v1.7";
+        MinimumSize = new Size(720, 760);
+        Size = new Size(900, 820);
         StartPosition = FormStartPosition.CenterScreen;
 
         var root = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 7,
+            RowCount = 8,
             Padding = new Padding(10)
         };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -167,10 +187,63 @@ internal sealed class MainForm : Form
         buttons.Controls.Add(_btnOpenAdmin);
         buttons.Controls.Add(_btnOpenDriver);
         buttons.Controls.Add(_btnOpenLiff);
+        buttons.Controls.Add(_btnCheckLine);
+
+        var ngrokLabel = new Label
+        {
+            Text = "HTTPS 隧道 ngrok（LINE Webhook／LIFF 暫時測試用）",
+            AutoSize = true,
+            Anchor = AnchorStyles.Left | AnchorStyles.Top
+        };
+        var ngrokHint = new Label
+        {
+            Text = "需本機 Nginx:80 與 API 已啟動；首次請先在本機執行 ngrok config add-authtoken。停止服務時若由此啟動器開啟，會一併停止 ngrok。",
+            AutoSize = true,
+            MaximumSize = new Size(860, 0),
+            ForeColor = SystemColors.GrayText
+        };
+        var ngrokDomainRow = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            AutoSize = true
+        };
+        ngrokDomainRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90f));
+        ngrokDomainRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+        ngrokDomainRow.Controls.Add(new Label { Text = "固定網域", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
+        _ngrokDomain.Dock = DockStyle.Fill;
+        ngrokDomainRow.Controls.Add(_ngrokDomain, 1, 0);
+
+        var ngrokButtons = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            WrapContents = true,
+            FlowDirection = FlowDirection.LeftToRight
+        };
+        ngrokButtons.Controls.Add(_btnStartNgrok);
+        ngrokButtons.Controls.Add(_btnStopNgrok);
+        ngrokButtons.Controls.Add(_btnOpenNgrokDashboard);
+
+        var ngrokPanel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            AutoSize = true,
+            RowCount = 5
+        };
+        for (var i = 0; i < 5; i++)
+            ngrokPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        ngrokPanel.Controls.Add(ngrokLabel, 0, 0);
+        ngrokPanel.Controls.Add(ngrokHint, 0, 1);
+        ngrokPanel.Controls.Add(ngrokDomainRow, 0, 2);
+        ngrokPanel.Controls.Add(_chkStartNgrok, 0, 3);
+        ngrokPanel.Controls.Add(ngrokButtons, 0, 4);
 
         var deployHint = new Label
         {
-            Text = "從 GitHub 更新：「Git 拉取最新」只下載程式；「更新並部署」= 停止 → 拉取 → 建置 → 啟動",
+            Text = "從 GitHub 更新：「Git 拉取最新」只下載程式；「更新並部署」= 停止 → 拉取 → 建置 → 啟動。"
+                + " LINE 訂水正式上線前請按「檢查 LINE 正式設定」，確認 .env 與 LIFF ID 後再建置。",
             AutoSize = true,
             MaximumSize = new Size(860, 0),
             ForeColor = SystemColors.GrayText
@@ -260,18 +333,20 @@ internal sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             AutoSize = true,
-            FlowDirection = FlowDirection.LeftToRight,
+            FlowDirection = FlowDirection.TopDown,
             WrapContents = false
         };
         statusPanel.Controls.Add(_healthLabel);
+        statusPanel.Controls.Add(_ngrokHealthLabel);
 
         root.Controls.Add(formPanel, 0, 0);
         root.Controls.Add(buttons, 0, 1);
         root.Controls.Add(deployPanel, 0, 2);
         root.Controls.Add(schemaPanel, 0, 3);
         root.Controls.Add(migratePanel, 0, 4);
-        root.Controls.Add(statusPanel, 0, 5);
-        root.Controls.Add(_log, 0, 6);
+        root.Controls.Add(ngrokPanel, 0, 5);
+        root.Controls.Add(statusPanel, 0, 6);
+        root.Controls.Add(_log, 0, 7);
 
         Controls.Add(root);
 
@@ -282,7 +357,7 @@ internal sealed class MainForm : Form
         _btnStop.Click += async (_, _) => await StopAllAsync().ConfigureAwait(true);
         _btnGitPull.Click += async (_, _) => await GitPullAsync().ConfigureAwait(true);
         _btnDeployUpdate.Click += async (_, _) => await PullAndDeployAsync().ConfigureAwait(true);
-        _btnBuild.Click += async (_, _) => await RunRootNpmCommandAsync("run build").ConfigureAwait(true);
+        _btnBuild.Click += async (_, _) => await BuildForProductionAsync().ConfigureAwait(true);
         _btnPrisma.Click += async (_, _) => await RunRootNpmCommandAsync("run db:generate").ConfigureAwait(true);
         _btnResetData.Click += async (_, _) => await ResetDataAsync().ConfigureAwait(true);
         _btnCheckSchema.Click += async (_, _) => await CheckSchemaAsync().ConfigureAwait(true);
@@ -296,6 +371,10 @@ internal sealed class MainForm : Form
         _btnOpenAdmin.Click += (_, _) => OpenUrl(_adminUrl.Text.Trim());
         _btnOpenDriver.Click += (_, _) => OpenUrl(_driverUrl.Text.Trim());
         _btnOpenLiff.Click += (_, _) => OpenUrl(_liffUrl.Text.Trim());
+        _btnCheckLine.Click += (_, _) => ShowLineProductionCheck(requireBuiltDist: false);
+        _btnStartNgrok.Click += async (_, _) => await StartNgrokAsync(showMessages: true).ConfigureAwait(true);
+        _btnStopNgrok.Click += (_, _) => StopNgrok(showLog: true);
+        _btnOpenNgrokDashboard.Click += (_, _) => OpenUrl(NgrokHelper.LocalApiBase);
 
         _healthTimer.Tick += async (_, _) => await CheckHealthAsync().ConfigureAwait(true);
         Load += OnLoad;
@@ -340,13 +419,19 @@ internal sealed class MainForm : Form
         _chkAdminDev.Checked = s.StartAdminDevWithApi;
         _chkDriverDev.Checked = s.StartDriverDevWithApi;
         _chkLiffDev.Checked = s.StartLiffDevWithApi;
+        _ngrokDomain.Text = string.IsNullOrWhiteSpace(s.NgrokDomain) ? NgrokHelper.DefaultDomain : s.NgrokDomain;
+        _chkStartNgrok.Checked = s.StartNgrokWithServices;
         MigrateSavedUrlsToFixedIpIfNeeded();
         SyncDeploymentModeUi();
         if (s.UseProductionMode)
             NormalizeProductionUrls();
 
         _healthTimer.Start();
-        AppendLog("就緒。正式部署請勾選「Nginx + 靜態前端」，按「啟動服務」會啟動 API 與 Nginx。");
+        AppendLog("就緒。正式部署請勾選「Nginx + 靜態前端」，按「啟動服務」會啟動 API 與 Nginx（含 /liff/）。");
+        AppendLog("LINE 訂水正式上線：先填 apps\\api\\.env 與 apps\\web-liff\\.env，再按「檢查 LINE 正式設定」→「建置專案」→「啟動服務」。");
+        AppendLog("若只測後台／司機端、暫不上 LINE，啟動時可略過檢查提示。");
+        AppendLog("HTTPS 測試：可用下方「啟動 ngrok」建立暫時隧道（Webhook／LIFF 需 https）。");
+        SyncNgrokButtons();
         _ = CheckSchemaQuietlyOnLoadAsync();
     }
 
@@ -417,7 +502,9 @@ internal sealed class MainForm : Form
             GitBranch = _gitBranch,
             StartAdminDevWithApi = _chkAdminDev.Checked,
             StartDriverDevWithApi = _chkDriverDev.Checked,
-            StartLiffDevWithApi = _chkLiffDev.Checked
+            StartLiffDevWithApi = _chkLiffDev.Checked,
+            NgrokDomain = NgrokHelper.NormalizeDomain(_ngrokDomain.Text),
+            StartNgrokWithServices = _chkStartNgrok.Checked
         };
         s.Save();
     }
@@ -723,6 +810,8 @@ internal sealed class MainForm : Form
             _driverDevProcess.Exited -= OnDevProcessExited;
         if (_liffDevProcess != null)
             _liffDevProcess.Exited -= OnDevProcessExited;
+        if (_ngrokProcess != null)
+            _ngrokProcess.Exited -= OnNgrokProcessExited;
     }
 
     /// <summary>同步停止服務，不更新 UI（關閉視窗時使用，避免死結）。</summary>
@@ -732,9 +821,11 @@ internal sealed class MainForm : Form
         var admin = _adminDevProcess;
         var driver = _driverDevProcess;
         var liff = _liffDevProcess;
+        var ngrok = _ngrokProcess;
         var stopNginx = ShouldManageNginx();
+        var stopNgrok = _ngrokStartedByLauncher || NgrokHelper.IsNgrokProcessRunning();
 
-        if (api is null && admin is null && driver is null && liff is null && !stopNginx)
+        if (api is null && admin is null && driver is null && liff is null && ngrok is null && !stopNginx && !stopNgrok)
             return;
 
         DetachManagedProcesses();
@@ -742,11 +833,17 @@ internal sealed class MainForm : Form
         _adminDevProcess = null;
         _driverDevProcess = null;
         _liffDevProcess = null;
+        _ngrokProcess = null;
+
+        // 先停隧道，避免對外還在轉發已關閉的本機服務
+        if (stopNgrok)
+            StopNgrokCore(log);
 
         TryKillAndDisposeApi(api);
         TryKillAndDisposeSimple(admin);
         TryKillAndDisposeSimple(driver);
         TryKillAndDisposeSimple(liff);
+        TryKillAndDisposeSimple(ngrok);
 
         if (stopNginx)
             StopNginxCore(log);
@@ -848,7 +945,197 @@ internal sealed class MainForm : Form
     private void SyncStartStopButtons()
     {
         _btnStart.Enabled = !_uiBusy && !IsAnyServiceRunning();
-        _btnStop.Enabled = !_uiBusy && IsAnyServiceRunning();
+        _btnStop.Enabled = !_uiBusy && (IsAnyServiceRunning() || IsNgrokRunning());
+        SyncNgrokButtons();
+    }
+
+    private bool IsNgrokRunning() =>
+        (_ngrokProcess is { HasExited: false })
+        || _ngrokStartedByLauncher
+        || NgrokHelper.IsNgrokProcessRunning();
+
+    private void SyncNgrokButtons()
+    {
+        var running = IsNgrokRunning();
+        _btnStartNgrok.Enabled = !_uiBusy && !running;
+        _btnStopNgrok.Enabled = !_uiBusy && running;
+        _btnOpenNgrokDashboard.Enabled = !_uiBusy;
+        _ngrokDomain.Enabled = !_uiBusy && !running;
+        _chkStartNgrok.Enabled = !_uiBusy;
+    }
+
+    private int GetNgrokLocalPort()
+    {
+        if (_chkProductionMode.Checked)
+            return GetHttpPort();
+        return PortHelper.ParsePortFromUrl(_apiBaseUrl.Text.Trim(), 3000);
+    }
+
+    private async Task StartNgrokAsync(bool showMessages)
+    {
+        try
+        {
+            ValidateProjectRoot();
+        }
+        catch (InvalidOperationException ex)
+        {
+            if (showMessages)
+                MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            else
+                AppendLogWarning(ex.Message);
+            return;
+        }
+
+        if (IsNgrokRunning())
+        {
+            if (showMessages)
+                MessageBox.Show(this, "ngrok 已在執行中。", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            SyncNgrokButtons();
+            return;
+        }
+
+        var root = _projectRoot.Text.Trim();
+        var exe = NgrokHelper.FindNgrokExe(root);
+        if (exe is null)
+        {
+            var msg = "找不到 tools\\ngrok\\ngrok.exe。\n請將 ngrok 放到專案 tools\\ngrok\\ 目錄。";
+            if (showMessages)
+                MessageBox.Show(this, msg, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            else
+                AppendLogWarning(msg);
+            return;
+        }
+
+        var localPort = GetNgrokLocalPort();
+        if (!PortHelper.IsPortListening(localPort))
+        {
+            var msg = $"本機埠 {localPort} 尚未在聽取。\n請先「啟動服務」（正式模式需 Nginx），再啟動 ngrok。";
+            if (showMessages)
+                MessageBox.Show(this, msg, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            else
+                AppendLogWarning(msg);
+            return;
+        }
+
+        var domain = NgrokHelper.NormalizeDomain(_ngrokDomain.Text);
+        _ngrokDomain.Text = domain;
+
+        try
+        {
+            _btnStartNgrok.Enabled = false;
+            _btnStopNgrok.Enabled = false;
+            var proc = NgrokHelper.Start(exe, localPort, domain, AppendLog);
+            proc.Exited += OnNgrokProcessExited;
+            _ngrokProcess = proc;
+            _ngrokStartedByLauncher = true;
+
+            var status = await NgrokHelper.WaitForPublicUrlAsync(_http, TimeSpan.FromSeconds(12), AppendLogWarning)
+                .ConfigureAwait(true);
+            ApplyNgrokStatusToUi(status);
+
+            if (!string.IsNullOrWhiteSpace(status.PublicUrl))
+            {
+                AppendLog($"ngrok 公開網址：{status.PublicUrl}");
+                AppendLog($"Webhook：{status.PublicUrl.TrimEnd('/')}/api/line/webhook");
+                AppendLog($"LIFF：{status.PublicUrl.TrimEnd('/')}/liff/");
+                if (showMessages)
+                {
+                    MessageBox.Show(
+                        this,
+                        $"ngrok 已啟動。\n\n公開網址：{status.PublicUrl}\n"
+                            + $"Webhook：{status.PublicUrl.TrimEnd('/')}/api/line/webhook\n"
+                            + $"LIFF：{status.PublicUrl.TrimEnd('/')}/liff/\n\n"
+                            + "請確認 LINE Developers 的 Webhook／LIFF Endpoint 與此網址一致。",
+                        Text,
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                }
+            }
+            else if (showMessages)
+            {
+                MessageBox.Show(
+                    this,
+                    "ngrok 行程已啟動，但尚未取得公開網址。\n可按「開啟 ngrok 儀表板」查看，或稍後看下方狀態列。\n"
+                        + (status.Error ?? ""),
+                    Text,
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            StopNgrokCore(AppendLog);
+            AppendLog("ngrok 啟動失敗：" + ex.Message);
+            if (showMessages)
+                MessageBox.Show(this, "ngrok 啟動失敗：\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            SyncStartStopButtons();
+        }
+    }
+
+    private void StopNgrok(bool showLog)
+    {
+        StopNgrokCore(showLog ? AppendLog : null);
+        ApplyNgrokStatusToUi(new NgrokTunnelStatus { Running = false });
+        SyncStartStopButtons();
+    }
+
+    private void StopNgrokCore(Action<string>? log = null)
+    {
+        if (_ngrokProcess != null)
+        {
+            try { _ngrokProcess.Exited -= OnNgrokProcessExited; } catch { /* ignore */ }
+        }
+
+        var owned = _ngrokProcess;
+        _ngrokProcess = null;
+        _ngrokStartedByLauncher = false;
+
+        TryKillAndDisposeSimple(owned);
+        var killed = NgrokHelper.ForceStopAll(log);
+        if (killed > 0 || owned != null)
+            log?.Invoke("已停止 ngrok。");
+    }
+
+    private void OnNgrokProcessExited(object? sender, EventArgs e)
+    {
+        if (sender is not Process p)
+            return;
+        ScheduleOnUiThread(() =>
+        {
+            if (!ReferenceEquals(_ngrokProcess, p))
+                return;
+            TryDisposeProcessNoRedirect(_ngrokProcess);
+            _ngrokProcess = null;
+            _ngrokStartedByLauncher = false;
+            AppendLog("ngrok 行程已結束。");
+            ApplyNgrokStatusToUi(new NgrokTunnelStatus { Running = false });
+            SyncStartStopButtons();
+        });
+    }
+
+    private void ApplyNgrokStatusToUi(NgrokTunnelStatus status)
+    {
+        if (IsDisposed)
+            return;
+        if (!status.Running)
+        {
+            _ngrokHealthLabel.Text = "ngrok：離線";
+            _ngrokHealthLabel.ForeColor = SystemColors.GrayText;
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(status.PublicUrl))
+        {
+            _ngrokHealthLabel.Text = "ngrok：線上 " + status.PublicUrl;
+            _ngrokHealthLabel.ForeColor = Color.DarkGreen;
+            return;
+        }
+
+        _ngrokHealthLabel.Text = "ngrok：執行中（" + (status.Error ?? "等待公開網址") + "）";
+        _ngrokHealthLabel.ForeColor = Color.DarkOrange;
     }
 
     /// <summary>啟動前釋放被殘留行程佔用的埠。</summary>
@@ -960,6 +1247,9 @@ internal sealed class MainForm : Form
             MessageBox.Show(this, "已有服務在執行中，請先按「停止全部」。", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
+
+        if (_chkProductionMode.Checked && !ConfirmLineProductionReady(requireBuiltDist: true, actionLabel: "啟動服務"))
+            return;
 
         var node = FindNodeExe();
         if (string.IsNullOrEmpty(node))
@@ -1088,7 +1378,17 @@ internal sealed class MainForm : Form
                 }
             }
 
+            if (_chkStartNgrok.Checked)
+            {
+                if (!_chkProductionMode.Checked)
+                {
+                    AppendLogWarning("ngrok 建議在正式模式（Nginx:80）下使用；目前為開發模式，仍嘗試轉發本機 HTTP 埠。");
+                }
+                await StartNgrokAsync(showMessages: false).ConfigureAwait(true);
+            }
+
             SyncStartStopButtons();
+            SyncNgrokButtons();
         }
         catch (Exception ex)
         {
@@ -1185,13 +1485,15 @@ internal sealed class MainForm : Form
         var driver = _driverDevProcess;
         var liff = _liffDevProcess;
         var stopNginx = ShouldManageNginx();
+        var stopNgrok = _ngrokStartedByLauncher || NgrokHelper.IsNgrokProcessRunning();
 
-        if (api is null && admin is null && driver is null && liff is null && !stopNginx)
+        if (api is null && admin is null && driver is null && liff is null && !stopNginx && !stopNgrok)
             return;
 
         AppendLog("正在停止服務…");
         _btnStop.Enabled = false;
         _btnStart.Enabled = false;
+        SyncNgrokButtons();
 
         await Task.Run(() => StopServicesCore()).ConfigureAwait(false);
 
@@ -1201,6 +1503,8 @@ internal sealed class MainForm : Form
             {
                 AppendLog("已停止全部服務。");
                 SyncStartStopButtons();
+                SyncNgrokButtons();
+                _ = CheckHealthAsync();
             });
         }
     }
@@ -1448,7 +1752,7 @@ internal sealed class MainForm : Form
         {
             ("install", "安裝依賴"),
             ("run db:generate", "Prisma generate"),
-            ("run build", "建置 API / 後台 / 司機端")
+            ("run build", "建置 API / 後台 / 司機端 / LIFF")
         };
 
         foreach (var (args, label) in steps)
@@ -1512,13 +1816,16 @@ internal sealed class MainForm : Form
             + "3. npm install → db:generate → build\n"
             + "4. 更新 Nginx 設定\n"
             + "5. 重新啟動服務\n\n"
-            + "不會覆蓋 apps\\api\\.env 與資料庫資料。\n\n"
+            + "不會覆蓋 apps\\api\\.env、apps\\web-liff\\.env 與資料庫資料。\n\n"
             + "確定要繼續嗎？",
             "更新並部署",
             MessageBoxButtons.YesNo,
             MessageBoxIcon.Question,
             MessageBoxDefaultButton.Button1);
         if (confirm != DialogResult.Yes)
+            return;
+
+        if (!ConfirmLineProductionReady(requireBuiltDist: false, actionLabel: "更新並部署"))
             return;
 
         SetBusy(true);
@@ -2148,6 +2455,7 @@ internal sealed class MainForm : Form
     private void SetBusy(bool busy)
     {
         _uiBusy = busy;
+        _btnCheckLine.Enabled = !busy;
         _btnBuild.Enabled = !busy;
         _btnGitPull.Enabled = !busy;
         _btnDeployUpdate.Enabled = !busy;
@@ -2165,6 +2473,11 @@ internal sealed class MainForm : Form
         _chkAdminDev.Enabled = !busy && !_chkProductionMode.Checked;
         _chkDriverDev.Enabled = !busy && !_chkProductionMode.Checked;
         _chkLiffDev.Enabled = !busy && !_chkProductionMode.Checked;
+        _btnStartNgrok.Enabled = !busy;
+        _btnStopNgrok.Enabled = !busy;
+        _btnOpenNgrokDashboard.Enabled = !busy;
+        _ngrokDomain.Enabled = !busy;
+        _chkStartNgrok.Enabled = !busy;
         Cursor = busy ? Cursors.WaitCursor : Cursors.Default;
         SyncStartStopButtons();
     }
@@ -2172,33 +2485,153 @@ internal sealed class MainForm : Form
     private async Task CheckHealthAsync()
     {
         var baseUrl = _apiBaseUrl.Text.Trim().TrimEnd('/');
-        if (string.IsNullOrEmpty(baseUrl))
-            return;
+        if (!string.IsNullOrEmpty(baseUrl))
+        {
+            string text;
+            Color color;
+            try
+            {
+                using var resp = await _http.GetAsync(new Uri(new Uri(baseUrl), "/api/health")).ConfigureAwait(true);
+                if (resp.IsSuccessStatusCode)
+                {
+                    text = $"API 狀態：線上 ({(int)resp.StatusCode})";
+                    color = Color.DarkGreen;
+                }
+                else
+                {
+                    text = $"API 狀態：回應異常 ({(int)resp.StatusCode})";
+                    color = Color.DarkOrange;
+                }
+            }
+            catch
+            {
+                text = "API 狀態：離線或無法連線";
+                color = Color.DarkRed;
+            }
 
-        string text;
-        Color color;
+            _healthLabel.Text = text;
+            _healthLabel.ForeColor = color;
+        }
+
         try
         {
-            using var resp = await _http.GetAsync(new Uri(new Uri(baseUrl), "/api/health")).ConfigureAwait(true);
-            if (resp.IsSuccessStatusCode)
-            {
-                text = $"API 狀態：線上 ({(int)resp.StatusCode})";
-                color = Color.DarkGreen;
-            }
-            else
-            {
-                text = $"API 狀態：回應異常 ({(int)resp.StatusCode})";
-                color = Color.DarkOrange;
-            }
+            var ngrokStatus = await NgrokHelper.QueryStatusAsync(_http).ConfigureAwait(true);
+            ApplyNgrokStatusToUi(ngrokStatus);
+            if (!_uiBusy)
+                SyncNgrokButtons();
         }
         catch
         {
-            text = "API 狀態：離線或無法連線";
-            color = Color.DarkRed;
+            // ignore polling errors
+        }
+    }
+
+    private void ShowLineProductionCheck(bool requireBuiltDist)
+    {
+        try
+        {
+            ValidateProjectRoot();
+        }
+        catch (InvalidOperationException ex)
+        {
+            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
         }
 
-        _healthLabel.Text = text;
-        _healthLabel.ForeColor = color;
+        var check = LineProductionHelper.Check(_projectRoot.Text.Trim(), _liffUrl.Text.Trim(), requireBuiltDist);
+        foreach (var e in check.Errors)
+            AppendLogWarning("LINE 檢查：" + e);
+        foreach (var w in check.Warnings)
+            AppendLogWarning("LINE 檢查：" + w);
+        if (check.Ok && check.Warnings.Count == 0)
+            AppendLog("LINE 正式設定檢查通過。");
+
+        MessageBox.Show(
+            this,
+            check.FormatMessage()
+                + "\n\n設定完成後請：建置專案 → 升級結構（035/036）→ 啟動服務。\n"
+                + "LINE Developers：Webhook = 網站基底 URL + /api/line/webhook\n"
+                + "LIFF Endpoint = LIFF 訂水網址（通常 …/liff/）",
+            "檢查 LINE 正式設定",
+            MessageBoxButtons.OK,
+            check.Ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+    }
+
+    /// <summary>
+    /// 正式模式部署 LINE 前確認。若有必須修正項目，詢問是否仍要繼續（方便只跑後台時略過）。
+    /// </summary>
+    private bool ConfirmLineProductionReady(bool requireBuiltDist, string actionLabel)
+    {
+        var check = LineProductionHelper.Check(_projectRoot.Text.Trim(), _liffUrl.Text.Trim(), requireBuiltDist);
+        if (check.Ok)
+        {
+            foreach (var w in check.Warnings)
+                AppendLogWarning("LINE：" + w);
+            return true;
+        }
+
+        foreach (var e in check.Errors)
+            AppendLogWarning("LINE：" + e);
+
+        var answer = MessageBox.Show(
+            this,
+            check.FormatMessage()
+                + $"\n\n若要正式上線 LINE 訂水，請先修正上述項目後再建置／啟動。\n"
+                + $"若本次「{actionLabel}」僅服務後台／司機端、暫不上 LINE，可選「是」繼續。\n\n"
+                + "是否仍要繼續？",
+            "LINE 正式設定尚未完成",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2);
+        return answer == DialogResult.Yes;
+    }
+
+    private async Task BuildForProductionAsync()
+    {
+        try
+        {
+            ValidateProjectRoot();
+        }
+        catch (InvalidOperationException ex)
+        {
+            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        if (_chkProductionMode.Checked && !ConfirmLineProductionReady(requireBuiltDist: false, actionLabel: "建置專案"))
+            return;
+
+        if (!_chkProductionMode.Checked)
+        {
+            await RunRootNpmCommandAsync("run build").ConfigureAwait(true);
+            return;
+        }
+
+        SetBusy(true);
+        try
+        {
+            var root = _projectRoot.Text.Trim();
+            if (!await BuildProductionCoreAsync(root).ConfigureAwait(true))
+            {
+                MessageBox.Show(this, "建置失敗，請查看下方日誌。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            MessageBox.Show(
+                this,
+                "建置完成（含 LIFF 訂水靜態檔）。\n可按「啟動服務」上線。",
+                Text,
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            AppendLog("建置錯誤：" + ex.Message);
+            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            SetBusy(false);
+        }
     }
 
     private static void OpenUrl(string url)

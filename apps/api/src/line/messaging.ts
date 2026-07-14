@@ -58,7 +58,8 @@ export async function verifyLiffIdToken(idToken: string): Promise<
   }
 }
 
-async function pushText(lineUserId: string, text: string): Promise<LinePushResult> {
+/** 對指定 LINE 使用者推播純文字（OTP、訂單通知共用）。 */
+export async function pushLineText(lineUserId: string, text: string): Promise<LinePushResult> {
   const accessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN?.trim();
   if (!accessToken) {
     console.info(`[line-push:skip] to=${lineUserId} text=${text.slice(0, 80)}`);
@@ -84,6 +85,10 @@ async function pushText(lineUserId: string, text: string): Promise<LinePushResul
   } catch (e) {
     return { ok: false, message: String(e) };
   }
+}
+
+async function pushText(lineUserId: string, text: string): Promise<LinePushResult> {
+  return pushLineText(lineUserId, text);
 }
 
 export async function replyText(replyToken: string, text: string): Promise<LinePushResult> {

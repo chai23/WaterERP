@@ -1,5 +1,6 @@
 import { createHash, createHmac, randomInt, timingSafeEqual } from "crypto";
 import type { PrismaClient } from "@prisma/client";
+import { pushLineText } from "./messaging.js";
 
 const OTP_TTL_MS = 10 * 60 * 1000;
 
@@ -18,11 +19,21 @@ function hashOtp(code: string, lineUserId: string): string {
 export async function issueLineOtp(
   prisma: PrismaClient,
   args: { mobile: string; lineUserId: string },
-): Promise<{ ok: true; expiresAt: Date; devCode?: string } | { ok: false; message: string }> {
+): Promise<
+  | { ok: true; expiresAt: Date; devCode?: string; skipped?: boolean; delivery: "line" | "dev" | "skip" }
+  | { ok: false; message: string }
+> {
   const mobile = normalizeMobile(args.mobile);
   if (!mobile) return { ok: false, message: "手機號碼格式錯誤（請用 09 開頭）" };
   const lineUserId = args.lineUserId.trim();
   if (!lineUserId) return { ok: false, message: "缺少 LINE 使用者識別" };
+
+  // 測試用：略過驗證碼（正式上線請關閉 LINE_OTP_SKIP）
+  if (isOtpSkipEnabled()) {
+    const expiresAt = new Date(Date.now() + OTP_TTL_MS);
+    console.info(`[line-otp] SKIP mode mobile=${mobile} lineUserId=${lineUserId}`);
+    return { ok: true, expiresAt, skipped: true, delivery: "skip" };
+  }
 
   const code = String(randomInt(100000, 999999));
   const expiresAt = new Date(Date.now() + OTP_TTL_MS);
@@ -35,18 +46,39 @@ export async function issueLineOtp(
     },
   });
 
-  const devMode =
-    process.env.LINE_OTP_DEV_MODE === "1" ||
-    process.env.LINE_OTP_DEV_MODE === "true" ||
-    !process.env.LINE_CHANNEL_ACCESS_TOKEN;
+  const explicitOtpDev =
+    process.env.LINE_OTP_DEV_MODE === "1" || process.env.LINE_OTP_DEV_MODE === "true";
+  const hasMessagingToken = Boolean(process.env.LINE_CHANNEL_ACCESS_TOKEN?.trim());
+  // 正式：有 Messaging Token 且未強制 OTP 開發模式 → LINE 推播驗證碼
+  // 開發：無 Token 或強制開發模式 → 寫 log，並在 API 回應附驗證碼方便本機測試
+  const useDevOtp = explicitOtpDev || !hasMessagingToken;
+
+  if (!useDevOtp) {
+    const pushed = await pushLineText(
+      lineUserId,
+      `【超好企業】手機驗證碼：${code}\n請於 10 分鐘內輸入，請勿轉發給他人。`,
+    );
+    if (!pushed.ok) {
+      console.error(`[line-otp] push failed mobile=${mobile} lineUserId=${lineUserId}: ${pushed.message}`);
+      return { ok: false, message: `驗證碼推播失敗：${pushed.message}` };
+    }
+    console.info(`[line-otp] pushed mobile=${mobile} lineUserId=${lineUserId}`);
+    return { ok: true, expiresAt, delivery: "line" };
+  }
 
   console.info(`[line-otp] mobile=${mobile} lineUserId=${lineUserId} code=${code} (devLog)`);
 
   return {
     ok: true,
     expiresAt,
-    ...(devMode ? { devCode: code } : {}),
+    devCode: code,
+    delivery: "dev",
   };
+}
+
+export function isOtpSkipEnabled(): boolean {
+  const v = process.env.LINE_OTP_SKIP?.trim();
+  return v === "1" || v === "true" || v === "yes";
 }
 
 export async function verifyLineOtp(
@@ -56,6 +88,12 @@ export async function verifyLineOtp(
   const mobile = normalizeMobile(args.mobile);
   if (!mobile) return { ok: false, message: "手機號碼格式錯誤" };
   const lineUserId = args.lineUserId.trim();
+
+  if (isOtpSkipEnabled()) {
+    console.info(`[line-otp] SKIP verify mobile=${mobile} lineUserId=${lineUserId}`);
+    return { ok: true, mobile };
+  }
+
   const code = String(args.code ?? "").trim();
   if (!/^\d{6}$/.test(code)) return { ok: false, message: "驗證碼須為 6 位數字" };
 

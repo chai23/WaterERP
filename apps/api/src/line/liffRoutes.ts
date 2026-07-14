@@ -209,7 +209,9 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
         ok: true,
         data: {
           expiresAt: issued.expiresAt.toISOString(),
+          delivery: issued.delivery,
           ...(issued.devCode ? { devCode: issued.devCode } : {}),
+          ...(issued.skipped ? { skipped: true } : {}),
         },
       });
     } catch (e) {
