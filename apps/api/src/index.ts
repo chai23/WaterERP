@@ -2181,10 +2181,27 @@ function parseOptionalTargetWaterLevel(raw: unknown): number | null | "INVALID" 
   return n;
 }
 
-/** 二樓以上或地下樓（B1=-1）計入搬運獎金 */
+/** 二樓以上或地下樓（B1=-1）計入搬運獎金／客戶搬運費 */
 function isFloorBonusEligible(floor: number): boolean {
   return floor >= 2 || floor < 0;
 }
+
+function formatFloorLabel(floor: number): string {
+  if (floor < 0) return `地下${Math.abs(floor)}樓`;
+  return `${floor}樓`;
+}
+
+/** 可填寫上樓搬運紀錄的配送商品（押桶或預付扣桶） */
+function productEligibleForFloorBonus(product: {
+  countsDepositBarrel?: boolean;
+  consumesPrepaidBarrel?: boolean;
+} | null | undefined): boolean {
+  if (!product) return false;
+  return product.countsDepositBarrel === true || product.consumesPrepaidBarrel === true;
+}
+
+const FLOOR_FEE_LINE_PURPOSE = "floor_handling_fee";
+const FLOOR_FEE_PRODUCT_SKU = "SYS-FLOOR-FEE";
 
 type ParsedFloorBonusRecord = {
   lineId: bigint;
@@ -2215,6 +2232,40 @@ function parseFloorBonusRecords(raw: unknown): ParsedFloorBonusRecord[] | "INVAL
   return [...map.values()];
 }
 
+async function ensureFloorFeeProduct(tx: Prisma.TransactionClient): Promise<{ id: bigint; name: string; unit: string }> {
+  const existing = await tx.product.findFirst({ where: { sku: FLOOR_FEE_PRODUCT_SKU } });
+  if (existing) {
+    return { id: existing.id, name: existing.name, unit: existing.unit };
+  }
+  const created = await tx.product.create({
+    data: {
+      sku: FLOOR_FEE_PRODUCT_SKU,
+      name: "樓層搬運費",
+      unit: "桶",
+      countsDepositBarrel: false,
+      consumesPrepaidBarrel: false,
+      availableOnLiff: false,
+      salePrice: 0,
+      costPrice: 0,
+      driverDeliveryWage: 0,
+      isActive: true,
+    },
+  });
+  return { id: created.id, name: created.name, unit: created.unit };
+}
+
+/** 月結客戶→月結；現金／預付／混合→現金 */
+function resolveFloorFeeBillingType(customerBillingType: string, orderBillingType: string | null): "cash" | "monthly" {
+  const bt = ((orderBillingType ?? customerBillingType) || "cash").trim();
+  if (bt === "monthly") return "monthly";
+  return "cash";
+}
+
+async function listCustomerFloorFeeRates(tx: Prisma.TransactionClient | PrismaClient = prisma) {
+  const rows = await tx.customerFloorFeeRate.findMany();
+  return sortFloorBonusRates(rows);
+}
+
 async function createFloorBonusRecords(
   tx: Prisma.TransactionClient,
   opts: {
@@ -2226,7 +2277,11 @@ async function createFloorBonusRecords(
         id: bigint;
         productId: bigint;
         linePurpose: string | null;
-        product: { name: string; consumesPrepaidBarrel: boolean } | null;
+        product: {
+          name: string;
+          countsDepositBarrel: boolean;
+          consumesPrepaidBarrel: boolean;
+        } | null;
       }>;
     };
     records: ParsedFloorBonusRecord[];
@@ -2241,7 +2296,8 @@ async function createFloorBonusRecords(
     const line = lineMap.get(record.lineId);
     if (!line) continue;
     if ((line.linePurpose ?? "delivery") === "prepaid_barrel_topup") continue;
-    if (!line.product?.consumesPrepaidBarrel) continue;
+    if ((line.linePurpose ?? "delivery") === FLOOR_FEE_LINE_PURPOSE) continue;
+    if (!productEligibleForFloorBonus(line.product)) continue;
     await tx.floorDeliveryBonusRecord.create({
       data: {
         deliveryAssignmentId: opts.assignment.id,
@@ -2251,7 +2307,7 @@ async function createFloorBonusRecords(
         deliveryDate: opts.assignment.assignmentDate,
         driverId: opts.assignment.driverId,
         productId: line.productId,
-        productName: line.product.name,
+        productName: line.product!.name,
         qty: record.qty,
         floor: record.floor,
       },
@@ -2259,6 +2315,169 @@ async function createFloorBonusRecords(
     created += 1;
   }
   return created;
+}
+
+/**
+ * 依司機回報上樓桶數，將客戶搬運費寫入訂單明細並重算 AR。
+ * 僅能在核銷前呼叫；已沖帳 AR 會拋 AR_ALREADY_ALLOCATED。
+ */
+async function applyCustomerFloorFeesFromRecords(
+  tx: Prisma.TransactionClient,
+  opts: {
+    order: {
+      id: bigint;
+      orderNo: string;
+      customerId: bigint;
+      billingTypeAtOrder: string | null;
+      cashInvoiceMode: string | null;
+      customer: { billingType: string; monthlySettlementDay: number | null };
+      lines: Array<{
+        id: bigint;
+        linePurpose: string | null;
+        product: {
+          countsDepositBarrel: boolean;
+          consumesPrepaidBarrel: boolean;
+        } | null;
+      }>;
+    };
+    records: ParsedFloorBonusRecord[];
+  },
+): Promise<{ feeAmount: Prisma.Decimal; billingType: "cash" | "monthly"; lineCount: number }> {
+  const feeProduct = await ensureFloorFeeProduct(tx);
+  const billingType = resolveFloorFeeBillingType(opts.order.customer.billingType, opts.order.billingTypeAtOrder);
+
+  await tx.salesOrderLine.deleteMany({
+    where: { salesOrderId: opts.order.id, linePurpose: FLOOR_FEE_LINE_PURPOSE },
+  });
+
+  const eligibleLineIds = new Set(
+    opts.order.lines
+      .filter((line) => {
+        const purpose = line.linePurpose ?? "delivery";
+        if (purpose === "prepaid_barrel_topup" || purpose === FLOOR_FEE_LINE_PURPOSE) return false;
+        return productEligibleForFloorBonus(line.product);
+      })
+      .map((line) => line.id.toString()),
+  );
+
+  const qtyByFloor = new Map<number, number>();
+  for (const record of opts.records) {
+    if (!eligibleLineIds.has(record.lineId.toString())) continue;
+    qtyByFloor.set(record.floor, (qtyByFloor.get(record.floor) ?? 0) + record.qty);
+  }
+
+  const rates = await listCustomerFloorFeeRates(tx);
+  const rateMap = new Map(rates.map((r) => [r.floor, new Prisma.Decimal(r.unitPrice.toString())]));
+
+  let feeAmount = new Prisma.Decimal(0);
+  let lineCount = 0;
+  for (const [floor, qty] of [...qtyByFloor.entries()].sort((a, b) => a[0] - b[0])) {
+    if (qty <= 0) continue;
+    const unitPrice = rateMap.get(floor) ?? new Prisma.Decimal(0);
+    if (unitPrice.lessThanOrEqualTo(0)) continue;
+    const lineAmount = unitPrice.mul(qty);
+    feeAmount = feeAmount.add(lineAmount);
+    await tx.salesOrderLine.create({
+      data: {
+        salesOrderId: opts.order.id,
+        productId: feeProduct.id,
+        qtyOrdered: qty,
+        qtyDelivered: qty,
+        unitPrice,
+        lineAmount,
+        billingTypeAtLine: billingType,
+        linePurpose: FLOOR_FEE_LINE_PURPOSE,
+        promotionNote: `${formatFloorLabel(floor)}搬運費`,
+      },
+    });
+    lineCount += 1;
+  }
+
+  const dbLines = await tx.salesOrderLine.findMany({ where: { salesOrderId: opts.order.id } });
+  const totals = computeOrderTotalsFromLineAmounts(
+    dbLines.map((line) => ({
+      lineAmount: new Prisma.Decimal(line.lineAmount.toString()),
+      billingTypeAtLine: line.billingTypeAtLine,
+      linePurpose: line.linePurpose,
+      productId: line.productId,
+    })),
+  );
+  await tx.salesOrder.update({
+    where: { id: opts.order.id },
+    data: {
+      subtotal: totals.subtotal,
+      totalAmount: totals.totalAmount,
+      cashSubtotal: totals.cashSubtotal,
+      monthlySubtotal: totals.monthlySubtotal,
+      lockVersion: { increment: 1 },
+    },
+  });
+
+  await refreshOpenArForSalesOrder(tx, {
+    salesOrderId: opts.order.id,
+    orderNo: opts.order.orderNo,
+    customerId: opts.order.customerId,
+    billingTypeAtOrder: opts.order.billingTypeAtOrder,
+    totalAmount: totals.totalAmount,
+    cashSubtotal: totals.cashSubtotal,
+    monthlySubtotal: totals.monthlySubtotal,
+    monthlySettlementDay: opts.order.customer.monthlySettlementDay ?? null,
+    createdByUserId: DEFAULT_CREATOR_USER_ID,
+    cashInvoiceMode: opts.order.cashInvoiceMode,
+  });
+
+  return { feeAmount, billingType, lineCount };
+}
+
+async function clearCustomerFloorFeeLines(
+  tx: Prisma.TransactionClient,
+  opts: {
+    order: {
+      id: bigint;
+      orderNo: string;
+      customerId: bigint;
+      billingTypeAtOrder: string | null;
+      cashInvoiceMode: string | null;
+      customer: { monthlySettlementDay: number | null };
+    };
+  },
+): Promise<void> {
+  const deleted = await tx.salesOrderLine.deleteMany({
+    where: { salesOrderId: opts.order.id, linePurpose: FLOOR_FEE_LINE_PURPOSE },
+  });
+  if (deleted.count <= 0) return;
+
+  const dbLines = await tx.salesOrderLine.findMany({ where: { salesOrderId: opts.order.id } });
+  const totals = computeOrderTotalsFromLineAmounts(
+    dbLines.map((line) => ({
+      lineAmount: new Prisma.Decimal(line.lineAmount.toString()),
+      billingTypeAtLine: line.billingTypeAtLine,
+      linePurpose: line.linePurpose,
+      productId: line.productId,
+    })),
+  );
+  await tx.salesOrder.update({
+    where: { id: opts.order.id },
+    data: {
+      subtotal: totals.subtotal,
+      totalAmount: totals.totalAmount,
+      cashSubtotal: totals.cashSubtotal,
+      monthlySubtotal: totals.monthlySubtotal,
+      lockVersion: { increment: 1 },
+    },
+  });
+  await refreshOpenArForSalesOrder(tx, {
+    salesOrderId: opts.order.id,
+    orderNo: opts.order.orderNo,
+    customerId: opts.order.customerId,
+    billingTypeAtOrder: opts.order.billingTypeAtOrder,
+    totalAmount: totals.totalAmount,
+    cashSubtotal: totals.cashSubtotal,
+    monthlySubtotal: totals.monthlySubtotal,
+    monthlySettlementDay: opts.order.customer.monthlySettlementDay ?? null,
+    createdByUserId: DEFAULT_CREATOR_USER_ID,
+    cashInvoiceMode: opts.order.cashInvoiceMode,
+  });
 }
 
 function sumAddressBarrelsOnSite(addresses: Array<{ barrelsOnSite?: number }> | undefined): number {
@@ -5418,6 +5637,16 @@ app.post("/api/settlements/approve", async (req, res) => {
         await tx.floorDeliveryBonusRecord.deleteMany({
           where: { deliveryAssignmentId: assignmentId },
         });
+        await clearCustomerFloorFeeLines(tx, {
+          order: {
+            id: order.id,
+            orderNo: order.orderNo,
+            customerId: order.customerId,
+            billingTypeAtOrder: order.billingTypeAtOrder,
+            cashInvoiceMode: order.cashInvoiceMode,
+            customer: { monthlySettlementDay: customerRow.monthlySettlementDay ?? null },
+          },
+        });
 
         await tx.deliveryEvent.create({
           data: {
@@ -5539,6 +5768,9 @@ app.post("/api/settlements/approve", async (req, res) => {
 
       for (const line of assignment.salesOrder.lines) {
         if ((line.linePurpose ?? "delivery") === "prepaid_barrel_topup") {
+          continue;
+        }
+        if ((line.linePurpose ?? "delivery") === FLOOR_FEE_LINE_PURPOSE) {
           continue;
         }
         const qty = effectiveLineDeliveryQty(line);
@@ -5895,7 +6127,11 @@ async function listFloorBonusRates() {
 
 app.get("/api/payroll-settings", async (_req, res) => {
   try {
-    const [row, floorRates] = await Promise.all([ensurePayrollSettings(), listFloorBonusRates()]);
+    const [row, floorRates, customerFloorFeeRates] = await Promise.all([
+      ensurePayrollSettings(),
+      listFloorBonusRates(),
+      listCustomerFloorFeeRates(),
+    ]);
     res.json({
       ok: true,
       data: {
@@ -5903,6 +6139,10 @@ app.get("/api/payroll-settings", async (_req, res) => {
         floorBonusRates: floorRates.map((r) => ({
           floor: r.floor,
           wage: r.wage.toString(),
+        })),
+        customerFloorFeeRates: customerFloorFeeRates.map((r) => ({
+          floor: r.floor,
+          unitPrice: r.unitPrice.toString(),
         })),
         updatedAt: row.updatedAt,
       },
@@ -5918,6 +6158,7 @@ app.patch("/api/payroll-settings", async (req, res) => {
     const body = req.body as {
       emptyBarrelWage?: unknown;
       floorBonusRates?: unknown;
+      customerFloorFeeRates?: unknown;
     };
     const data: { emptyBarrelWage?: Prisma.Decimal } = {};
     if (body.emptyBarrelWage !== undefined) {
@@ -5957,6 +6198,34 @@ app.patch("/api/payroll-settings", async (req, res) => {
       }
     }
 
+    let parsedCustomerFees: Array<{ floor: number; unitPrice: Prisma.Decimal }> | null = null;
+    if (body.customerFloorFeeRates !== undefined) {
+      if (!Array.isArray(body.customerFloorFeeRates)) {
+        res.status(400).json({ ok: false, message: "customerFloorFeeRates 須為陣列" });
+        return;
+      }
+      const seen = new Set<number>();
+      parsedCustomerFees = [];
+      for (const item of body.customerFloorFeeRates) {
+        const floor = Math.trunc(Number((item as { floor?: unknown })?.floor));
+        const priceN = Number((item as { unitPrice?: unknown })?.unitPrice);
+        if (!Number.isFinite(floor) || floor === 0 || floor === 1) {
+          res.status(400).json({ ok: false, message: "客戶搬運費樓層須為整數，且不可為 0 或 1" });
+          return;
+        }
+        if (!Number.isFinite(priceN) || priceN < 0) {
+          res.status(400).json({ ok: false, message: "客戶搬運費單價須為非負數字" });
+          return;
+        }
+        if (seen.has(floor)) {
+          res.status(400).json({ ok: false, message: `客戶搬運費樓層 ${floor} 重複` });
+          return;
+        }
+        seen.add(floor);
+        parsedCustomerFees.push({ floor, unitPrice: new Prisma.Decimal(priceN) });
+      }
+    }
+
     await ensurePayrollSettings();
     const row = await prisma.$transaction(async (tx) => {
       const updated =
@@ -5971,10 +6240,21 @@ app.patch("/api/payroll-settings", async (req, res) => {
           });
         }
       }
+      if (parsedCustomerFees) {
+        await tx.customerFloorFeeRate.deleteMany({});
+        if (parsedCustomerFees.length > 0) {
+          await tx.customerFloorFeeRate.createMany({
+            data: parsedCustomerFees.map((r) => ({ floor: r.floor, unitPrice: r.unitPrice })),
+          });
+        }
+      }
       return updated;
     });
 
-    const floorRates = await listFloorBonusRates();
+    const [floorRates, customerFloorFeeRates] = await Promise.all([
+      listFloorBonusRates(),
+      listCustomerFloorFeeRates(),
+    ]);
     res.json({
       ok: true,
       data: {
@@ -5982,6 +6262,10 @@ app.patch("/api/payroll-settings", async (req, res) => {
         floorBonusRates: floorRates.map((r) => ({
           floor: r.floor,
           wage: r.wage.toString(),
+        })),
+        customerFloorFeeRates: customerFloorFeeRates.map((r) => ({
+          floor: r.floor,
+          unitPrice: r.unitPrice.toString(),
         })),
         updatedAt: row.updatedAt,
       },
@@ -6109,6 +6393,7 @@ app.get("/api/reports/driver-payroll", async (req, res) => {
       for (const line of a.salesOrder?.lines ?? []) {
         const purpose = line.linePurpose ?? "delivery";
         if (purpose === "prepaid_barrel_topup") continue;
+        if (purpose === FLOOR_FEE_LINE_PURPOSE) continue;
         const qty = effectiveLineDeliveryQty(line);
         if (qty <= 0) continue;
         const productId = String(line.productId);
@@ -6217,6 +6502,10 @@ app.get("/api/reports/driver-payroll", async (req, res) => {
           floorBonusRates: floorRates.map((r) => ({
             floor: r.floor,
             wage: r.wage.toString(),
+          })),
+          customerFloorFeeRates: (await listCustomerFloorFeeRates()).map((r) => ({
+            floor: r.floor,
+            unitPrice: r.unitPrice.toString(),
           })),
         },
         products: products.map((p) => ({
@@ -6754,6 +7043,12 @@ app.get("/api/reports/driver-daily-collection", async (req, res) => {
             const productName = ln.product?.name?.trim() || "商品";
             const unit = ln.product?.unit?.trim() || "桶";
             const billing = ln.billingTypeAtLine ?? order.billingTypeAtOrder ?? order.customer.billingType;
+        const label =
+                purpose === "prepaid_barrel_topup"
+                  ? `${productName} 儲值 ${qty} ${unit}`
+                  : purpose === "floor_handling_fee"
+                    ? `${productName} ${qty} ${unit}`
+                    : `${productName} × ${qty} ${unit}`;
             return {
               id: ln.id.toString(),
               productName,
@@ -6763,10 +7058,7 @@ app.get("/api/reports/driver-daily-collection", async (req, res) => {
               lineAmount: ln.lineAmount.toString(),
               billingType: billing,
               linePurpose: purpose,
-              label:
-                purpose === "prepaid_barrel_topup"
-                  ? `${productName} 儲值 ${qty} ${unit}`
-                  : `${productName} × ${qty} ${unit}`,
+              label,
             };
           });
 
@@ -7966,6 +8258,16 @@ app.post("/api/driver/complete", async (req, res) => {
     const result = await prisma.$transaction(async (tx) => {
       let cashDue = new Prisma.Decimal(0);
       if (!delivered) {
+        await clearCustomerFloorFeeLines(tx, {
+          order: {
+            id: order.id,
+            orderNo: order.orderNo,
+            customerId: order.customerId,
+            billingTypeAtOrder: order.billingTypeAtOrder,
+            cashInvoiceMode: order.cashInvoiceMode,
+            customer: { monthlySettlementDay: order.customer.monthlySettlementDay ?? null },
+          },
+        });
         const collectCalc = await calcCashDueByUnifiedRule(tx, {
           customerId: order.customerId,
           currentSalesOrderId: order.id,
@@ -8032,6 +8334,23 @@ app.post("/api/driver/complete", async (req, res) => {
         await applyLineDeliveriesAtReport(tx, order, parsedLineDeliveries);
       }
 
+      const orderForFloor = await tx.salesOrder.findUniqueOrThrow({
+        where: { id: order.id },
+        include: {
+          customer: true,
+          lines: { include: { product: true } },
+        },
+      });
+      const floorBonusCreated = await createFloorBonusRecords(tx, {
+        assignment,
+        order: orderForFloor,
+        records: parsedFloorBonusRecords,
+      });
+      const floorFeeApplied = await applyCustomerFloorFeesFromRecords(tx, {
+        order: orderForFloor,
+        records: parsedFloorBonusRecords,
+      });
+
       const orderAfter = await tx.salesOrder.findUniqueOrThrow({
         where: { id: order.id },
         include: { customer: true },
@@ -8073,11 +8392,6 @@ app.post("/api/driver/complete", async (req, res) => {
           settlementNote: note || null,
         } as Prisma.DeliveryAssignmentUpdateInput,
       });
-      const floorBonusCreated = await createFloorBonusRecords(tx, {
-        assignment,
-        order,
-        records: parsedFloorBonusRecords,
-      });
 
       await tx.deliveryEvent.create({
         data: {
@@ -8107,6 +8421,9 @@ app.post("/api/driver/complete", async (req, res) => {
               qty: r.qty,
             })),
             floorBonusCreated,
+            customerFloorFeeAmount: floorFeeApplied.feeAmount.toString(),
+            customerFloorFeeBillingType: floorFeeApplied.billingType,
+            customerFloorFeeLineCount: floorFeeApplied.lineCount,
             ...reportSourcePayload,
             ...(isAmendPending && amendPrev
               ? {
@@ -8132,7 +8449,10 @@ app.post("/api/driver/complete", async (req, res) => {
     res.json({ ok: true, data: result });
   } catch (e) {
     if (e instanceof Error && e.message === "AR_ALREADY_ALLOCATED") {
-      res.status(400).json({ ok: false, message: "訂單應收已沖帳，無法變更配送數量" });
+      res.status(400).json({
+        ok: false,
+        message: "訂單應收已沖帳，無法變更配送數量或搬運費",
+      });
       return;
     }
     res.status(500).json({ ok: false, message: String(e) });
@@ -8202,6 +8522,11 @@ app.get("/api/driver/today", async (req, res) => {
       orderBy: { id: "desc" },
     });
 
+    const customerFloorFeeRates = await listCustomerFloorFeeRates();
+    const feeRatesPayload = customerFloorFeeRates.map((r) => ({
+      floor: r.floor,
+      unitPrice: r.unitPrice.toString(),
+    }));
     const balanceCache = new Map<string, number>();
     const enriched = await Promise.all(
       rows.map(async (row) => {
@@ -8218,7 +8543,7 @@ app.get("/api/driver/today", async (req, res) => {
           },
           balanceCache,
         });
-        return { ...row, driverBillingHints: hints };
+        return { ...row, driverBillingHints: hints, customerFloorFeeRates: feeRatesPayload };
       }),
     );
 

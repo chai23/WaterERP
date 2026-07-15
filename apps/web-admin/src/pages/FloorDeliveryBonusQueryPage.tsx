@@ -30,12 +30,14 @@ type PayrollDriver = {
 };
 
 type FloorRateRow = { floor: string; wage: string };
+type CustomerFeeRateRow = { floor: string; unitPrice: string };
 
 type PayrollData = {
   yearMonth: string;
   settings: {
     emptyBarrelWage: string;
     floorBonusRates: Array<{ floor: number; wage: string }>;
+    customerFloorFeeRates?: Array<{ floor: number; unitPrice: string }>;
   };
   products: Array<{ id: string; productCode?: string | null; name: string; unit: string; driverDeliveryWage: string }>;
   drivers: PayrollDriver[];
@@ -111,8 +113,11 @@ export default function FloorDeliveryBonusQueryPage() {
 
   const [emptyWage, setEmptyWage] = useState("0");
   const [floorRatesDraft, setFloorRatesDraft] = useState<FloorRateRow[]>([]);
+  const [customerFeeDraft, setCustomerFeeDraft] = useState<CustomerFeeRateRow[]>([]);
   const [newFloor, setNewFloor] = useState("2");
   const [newFloorWage, setNewFloorWage] = useState("0");
+  const [newCustomerFloor, setNewCustomerFloor] = useState("2");
+  const [newCustomerPrice, setNewCustomerPrice] = useState("10");
   const [ratesMsg, setRatesMsg] = useState("");
   const [ratesSaving, setRatesSaving] = useState(false);
   const [baseDraft, setBaseDraft] = useState<Record<string, string>>({});
@@ -137,6 +142,12 @@ export default function FloorDeliveryBonusQueryPage() {
         (data.settings.floorBonusRates ?? []).map((r) => ({
           floor: String(r.floor),
           wage: r.wage,
+        })),
+      );
+      setCustomerFeeDraft(
+        (data.settings.customerFloorFeeRates ?? []).map((r) => ({
+          floor: String(r.floor),
+          unitPrice: r.unitPrice,
         })),
       );
       const base: Record<string, string> = {};
@@ -196,17 +207,21 @@ export default function FloorDeliveryBonusQueryPage() {
         floor: Math.trunc(Number(r.floor)),
         wage: Number(r.wage),
       }));
+      const customerFloorFeeRates = customerFeeDraft.map((r) => ({
+        floor: Math.trunc(Number(r.floor)),
+        unitPrice: Number(r.unitPrice),
+      }));
       const res = await fetch("/api/payroll-settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ emptyBarrelWage: Number(emptyWage), floorBonusRates }),
+        body: JSON.stringify({ emptyBarrelWage: Number(emptyWage), floorBonusRates, customerFloorFeeRates }),
       });
       const payload = await res.json();
       if (!res.ok || !payload.ok) {
         setRatesMsg(payload.message ?? "儲存失敗");
         return;
       }
-      setRatesMsg("已儲存空桶單價與樓層搬運單價");
+      setRatesMsg("已儲存空桶、司機搬運獎金與客戶搬運費單價");
       await loadPayroll();
     } catch {
       setRatesMsg("儲存失敗");
@@ -226,6 +241,20 @@ export default function FloorDeliveryBonusQueryPage() {
       return;
     }
     setFloorRatesDraft((rows) => [...rows, { floor: String(floor), wage: newFloorWage || "0" }]);
+    setRatesMsg("");
+  };
+
+  const addCustomerFeeRate = () => {
+    const floor = Math.trunc(Number(newCustomerFloor));
+    if (!Number.isFinite(floor) || floor === 0 || floor === 1) {
+      setRatesMsg("客戶搬運費樓層須為整數，且不可為 0 或 1");
+      return;
+    }
+    if (customerFeeDraft.some((r) => Number(r.floor) === floor)) {
+      setRatesMsg(`客戶搬運費 ${formatDeliveryFloor(floor)} 已存在`);
+      return;
+    }
+    setCustomerFeeDraft((rows) => [...rows, { floor: String(floor), unitPrice: newCustomerPrice || "0" }]);
     setRatesMsg("");
   };
 
@@ -606,9 +635,9 @@ export default function FloorDeliveryBonusQueryPage() {
             </section>
 
             <section className="payroll-rates__block">
-              <h3 className="payroll-rates__title">上樓搬運單價（依樓層）</h3>
+              <h3 className="payroll-rates__title">司機上樓搬運獎金（依樓層）</h3>
               <p className="card__hint" style={{ marginTop: 0, marginBottom: "0.75rem" }}>
-                預設 3／2／-1 樓；可再新增。地上用正數、地下用負數（-1＝地下一樓）。一樓不計；未設定樓層以 0 計算。
+                此為<strong>司機薪資</strong>單價，與下方「客戶搬運費」分開。預設 3／2／-1 樓；地上用正數、地下用負數（-1＝地下一樓）。一樓不計。
               </p>
               <div className="table-wrap payroll-rates__table">
                 <table className="data-table data-table--compact">
@@ -697,9 +726,99 @@ export default function FloorDeliveryBonusQueryPage() {
               </div>
             </section>
 
+            <section className="payroll-rates__block">
+              <h3 className="payroll-rates__title">客戶搬運費（向客戶收費）</h3>
+              <p className="card__hint" style={{ marginTop: 0, marginBottom: "0.75rem" }}>
+                與上方「司機獎金」分開。預設二樓 $10、三樓 $20、地下一樓 $10。司機回報上樓桶數後，系統會依此單價自動加入訂單（月結併入月結；現金／預付收現金）。
+              </p>
+              <div className="table-wrap payroll-rates__table">
+                <table className="data-table data-table--compact">
+                  <thead>
+                    <tr>
+                      <th style={{ width: "8rem" }}>樓層</th>
+                      <th className="num" style={{ width: "10rem" }}>
+                        客戶單價（元／桶）
+                      </th>
+                      <th style={{ width: "5rem" }}>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {customerFeeDraft.length === 0 ? (
+                      <tr>
+                        <td colSpan={3} className="text-muted">
+                          尚未設定客戶搬運費，請下方新增。
+                        </td>
+                      </tr>
+                    ) : (
+                      customerFeeDraft.map((row, idx) => (
+                        <tr key={`fee-${row.floor}-${idx}`}>
+                          <td>
+                            <strong>{formatDeliveryFloor(Number(row.floor))}</strong>
+                            <span className="text-muted" style={{ marginLeft: "0.4rem", fontSize: "0.78em" }}>
+                              ({row.floor})
+                            </span>
+                          </td>
+                          <td className="num">
+                            <input
+                              type="number"
+                              min={0}
+                              step="0.01"
+                              className="input--compact"
+                              style={{ width: "7rem", textAlign: "right" }}
+                              value={row.unitPrice}
+                              onChange={(e) =>
+                                setCustomerFeeDraft((rows) =>
+                                  rows.map((r, i) => (i === idx ? { ...r, unitPrice: e.target.value } : r)),
+                                )
+                              }
+                            />
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              className="btn btn--danger btn--sm"
+                              onClick={() => setCustomerFeeDraft((rows) => rows.filter((_, i) => i !== idx))}
+                            >
+                              移除
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <div className="payroll-rates__add">
+                <div className="field" style={{ margin: 0 }}>
+                  <span>樓層代碼</span>
+                  <input
+                    type="number"
+                    step={1}
+                    value={newCustomerFloor}
+                    onChange={(e) => setNewCustomerFloor(e.target.value)}
+                    style={{ width: "5.5rem" }}
+                  />
+                </div>
+                <div className="field" style={{ margin: 0 }}>
+                  <span>客戶單價</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={newCustomerPrice}
+                    onChange={(e) => setNewCustomerPrice(e.target.value)}
+                    style={{ width: "6.5rem" }}
+                  />
+                </div>
+                <button type="button" className="btn btn--secondary" onClick={addCustomerFeeRate}>
+                  加入樓層
+                </button>
+              </div>
+            </section>
+
             <div className="form-actions" style={{ marginTop: "0.25rem" }}>
               <button type="button" className="btn btn--primary" disabled={ratesSaving} onClick={() => void saveRates()}>
-                {ratesSaving ? "儲存中…" : "儲存空桶／樓層單價"}
+                {ratesSaving ? "儲存中…" : "儲存空桶／司機獎金／客戶搬運費"}
               </button>
               {ratesMsg ? (
                 <span

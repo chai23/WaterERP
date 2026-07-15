@@ -33,10 +33,16 @@ type OrderLineRow = {
   id: string;
   qtyOrdered?: number;
   qtyDelivered?: number;
+  lineAmount?: string | number;
   linePurpose?: string | null;
   isPromotionGift?: boolean;
   isReplenishment?: boolean;
-  product?: { name?: string; code?: string; consumesPrepaidBarrel?: boolean };
+  product?: {
+    name?: string;
+    code?: string;
+    consumesPrepaidBarrel?: boolean;
+    countsDepositBarrel?: boolean;
+  };
 };
 
 type DriverBillingHints = {
@@ -74,12 +80,14 @@ type AssignmentJob = {
   salesOrder?: {
     orderNo?: string;
     totalAmount?: unknown;
-    customer?: { name?: string };
+    billingTypeAtOrder?: string | null;
+    customer?: { name?: string; billingType?: string };
     deliveryAddress?: { addressLine?: string; barrelsOnSite?: number; deliveryFloor?: number | null };
     lines?: OrderLineRow[];
   };
   vehicle?: { plateNo?: string };
   driverBillingHints?: DriverBillingHints;
+  customerFloorFeeRates?: Array<{ floor: number; unitPrice: string }>;
   floorBonusRecords?: Array<{
     id?: string;
     salesOrderLineId?: string;
@@ -100,8 +108,13 @@ function deliveryLinesFromJob(job: AssignmentJob): OrderLineRow[] {
   return (job.salesOrder?.lines ?? []).filter((l) => (l.linePurpose ?? "delivery") === "delivery");
 }
 
+function productEligibleForFloorBonus(product?: OrderLineRow["product"]): boolean {
+  if (!product) return false;
+  return product.countsDepositBarrel === true || product.consumesPrepaidBarrel === true;
+}
+
 function floorBonusLinesFromJob(job: AssignmentJob): OrderLineRow[] {
-  return deliveryLinesFromJob(job).filter((line) => line.product?.consumesPrepaidBarrel === true);
+  return deliveryLinesFromJob(job).filter((line) => productEligibleForFloorBonus(line.product));
 }
 
 function orderLineDisplayName(line: OrderLineRow): string {
@@ -119,6 +132,42 @@ function formatFloor(floor: number | null | undefined): string {
   if (floor == null) return "未設定";
   if (floor < 0) return `地下${Math.abs(floor)}樓`;
   return `${floor}樓`;
+}
+
+function floorFeeBillingIsCash(job: AssignmentJob): boolean {
+  const bt = (job.salesOrder?.billingTypeAtOrder ?? job.salesOrder?.customer?.billingType ?? "cash").trim();
+  return bt !== "monthly";
+}
+
+function currentFloorFeeOnOrder(job: AssignmentJob): number {
+  return (job.salesOrder?.lines ?? [])
+    .filter((l) => (l.linePurpose ?? "") === "floor_handling_fee")
+    .reduce((sum, l) => sum + Number(l.lineAmount ?? 0), 0);
+}
+
+function estimateCustomerFloorFee(job: AssignmentJob, records: FloorBonusRecordForm[]): number {
+  const validated = validateFloorBonusRecords(records);
+  if (!validated.ok) return 0;
+  const rateMap = new Map((job.customerFloorFeeRates ?? []).map((r) => [r.floor, Number(r.unitPrice)]));
+  const qtyByFloor = new Map<number, number>();
+  for (const r of validated.records) {
+    qtyByFloor.set(r.floor, (qtyByFloor.get(r.floor) ?? 0) + r.qty);
+  }
+  let sum = 0;
+  for (const [floor, qty] of qtyByFloor) {
+    const unit = rateMap.get(floor) ?? 0;
+    if (Number.isFinite(unit) && unit > 0) sum += unit * qty;
+  }
+  return sum;
+}
+
+function projectedCashDue(job: AssignmentJob, records: FloorBonusRecordForm[]): number {
+  const base = Number(job.driverBillingHints?.cashDue ?? 0);
+  if (!floorFeeBillingIsCash(job)) return Number.isFinite(base) ? base : 0;
+  const estimate = estimateCustomerFloorFee(job, records);
+  const existing = currentFloorFeeOnOrder(job);
+  const next = (Number.isFinite(base) ? base : 0) - existing + estimate;
+  return Math.max(0, next);
 }
 
 function buildFloorBonusRecordsFromJob(job?: AssignmentJob): FloorBonusRecordForm[] {
@@ -556,12 +605,16 @@ export default function OrderProxyReportPage() {
           <div className="proxy-report-list">
             {filteredJobs.map((job) => {
               const id = String(job.id);
-              const form = formByJob[id] ?? defaultJobForm();
+              const form = formByJob[id] ?? defaultJobForm(job);
               const locked = isLockedStatus(job.status);
               const pendingOffice = job.status === "pending_settlement";
               const canReport = isReportableStatus(job.status);
               const hints = job.driverBillingHints;
-              const cashDue = hints ? Number(hints.cashDue ?? 0) : null;
+              const feeEst = estimateCustomerFloorFee(job, form.floorBonusRecords);
+              const projected = projectedCashDue(job, form.floorBonusRecords);
+              const cashDueRaw = hints ? Number(hints.cashDue ?? 0) : null;
+              const cashDue =
+                cashDueRaw != null && feeEst > 0 && floorFeeBillingIsCash(job) ? projected : cashDueRaw;
               const barrelsOnSite = job.salesOrder?.deliveryAddress?.barrelsOnSite ?? null;
 
               return (
@@ -600,10 +653,19 @@ export default function OrderProxyReportPage() {
                               （含前期未清 ${hints.cashPriorBalance}）
                             </span>
                           ) : null}
+                          {feeEst > 0 ? (
+                            <div className="proxy-report-card__cash-muted" style={{ marginTop: "0.15rem" }}>
+                              預估搬運費 ${feeEst.toFixed(0)}
+                              {floorFeeBillingIsCash(job) ? "（已計入建議收款）" : "（併入月結）"}
+                            </div>
+                          ) : null}
                         </div>
                       ) : (
                         <div className="proxy-report-card__cash-muted" style={{ marginTop: "0.2rem" }}>
                           本趟應收現金 $0（月結或無現金列；若客戶臨付請照實填寫實收）
+                          {feeEst > 0 && !floorFeeBillingIsCash(job) ? (
+                            <div style={{ marginTop: "0.15rem" }}>預估搬運費 ${feeEst.toFixed(0)}（併入月結）</div>
+                          ) : null}
                         </div>
                       )}
                     </div>
@@ -827,6 +889,9 @@ export default function OrderProxyReportPage() {
                               >
                                 ＋ 新增搬運紀錄
                               </button>
+                              <p className="card__hint" style={{ margin: "0.45rem 0 0" }}>
+                                送出後系統會自動把客戶搬運費加入訂單並重算應收（核銷後不可再改）。
+                              </p>
                             </div>
                           ) : null}
                           <div className="proxy-report-card__form-row proxy-report-card__form-row--cash">

@@ -15,6 +15,8 @@ import { formatDeliveryFloor } from "../floorBonusUtils";
 type SettlementOrderLine = {
   id: string | number;
   linePurpose?: string | null;
+  billingTypeAtLine?: string | null;
+  lineAmount?: string | number | null;
   qtyOrdered?: number | null;
   qtyDelivered?: number | null;
   product?: { name?: string; consumesPrepaidBarrel?: boolean } | null;
@@ -266,8 +268,8 @@ export default function OrderCompletePage() {
           <br />
           <strong>辦公室核銷時間</strong>可於下方自訂（預設為現在），用於測試或補登；月結之 <code>office_settled_at</code>、現金入帳時間與部分流水時間會與之一致。
           <br />
-          <strong>搬運獎金：</strong>搬運紀錄由司機端或代登配送回報填寫；核銷時僅顯示司機回報內容供確認。紀錄請至{" "}
-          <Link to="/orders/floor-bonus">搬運獎金查詢</Link>。
+          <strong>搬運獎金／客戶搬運費：</strong>司機回報上樓桶數後，系統會依「客戶搬運費」單價自動加入訂單（月結併入月結；現金／預付收現金），並重算應收。核銷後不可再改搬運費。司機獎金另計，請至{" "}
+          <Link to="/orders/floor-bonus">搬運獎金／費率</Link>。
         </p>
         {pendingCount > 0 ? (
           <p className="feedback feedback--warn" style={{ marginTop: "0.5rem" }}>
@@ -401,14 +403,33 @@ export default function OrderCompletePage() {
                         待辦公室確認
                       </div>
                     ) : null}
-                    {(row.floorBonusRecords ?? []).length > 0 ? (
+                    {(row.floorBonusRecords ?? []).length > 0 ||
+                    (row.salesOrder?.lines ?? []).some((l) => (l.linePurpose ?? "") === "floor_handling_fee") ? (
                       <div style={{ fontSize: "0.75rem", marginTop: "0.35rem", lineHeight: 1.35 }}>
-                        <strong>搬運：</strong>
-                        {(row.floorBonusRecords ?? []).map((r) => (
-                          <div key={String(r.id ?? `${r.productName}-${r.floor}-${r.qty}`)}>
-                            {r.productName ?? "商品"} · {formatDeliveryFloor(r.floor)} · {r.qty ?? 0}桶
-                          </div>
-                        ))}
+                        {(row.floorBonusRecords ?? []).length > 0 ? (
+                          <>
+                            <strong>搬運：</strong>
+                            {(row.floorBonusRecords ?? []).map((r) => (
+                              <div key={String(r.id ?? `${r.productName}-${r.floor}-${r.qty}`)}>
+                                {r.productName ?? "商品"} · {formatDeliveryFloor(r.floor)} · {r.qty ?? 0}桶
+                              </div>
+                            ))}
+                          </>
+                        ) : null}
+                        {(() => {
+                          const feeLines = (row.salesOrder?.lines ?? []).filter(
+                            (l) => (l.linePurpose ?? "") === "floor_handling_fee",
+                          );
+                          if (feeLines.length === 0) return null;
+                          const amt = feeLines.reduce((s, l) => s + Number(l.lineAmount ?? 0), 0);
+                          const bill = feeLines[0]?.billingTypeAtLine ?? "";
+                          return (
+                            <div style={{ marginTop: "0.2rem" }}>
+                              <strong>客戶搬運費：</strong>${moneyText(amt)}
+                              {bill === "monthly" ? "（月結）" : bill === "cash" ? "（現金）" : ""}
+                            </div>
+                          );
+                        })()}
                       </div>
                     ) : null}
                   </td>

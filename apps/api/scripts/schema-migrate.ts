@@ -122,6 +122,7 @@ const MIGRATION_PROBES: Record<string, MigrationProbe> = {
     `;
     return Number(rows[0]?.cnt ?? 0) === 0;
   },
+  "042_customer_floor_fee_rates.sql": (p) => tableExists(p, "customer_floor_fee_rates"),
 };
 
 async function bootstrapFromExistingDb(prisma: PrismaClient): Promise<void> {

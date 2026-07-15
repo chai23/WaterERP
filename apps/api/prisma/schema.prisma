@@ -300,6 +300,17 @@ model PayrollFloorBonusRate {
   @@map("payroll_floor_bonus_rates")
 }
 
+/// 客戶樓層搬運費（向客戶收費；與司機獎金分離）
+model CustomerFloorFeeRate {
+  id        BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  floor     Int      @unique @db.SmallInt
+  unitPrice Decimal  @default(0) @map("unit_price") @db.Decimal(14, 2)
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  @@map("customer_floor_fee_rates")
+}
+
 /// 優惠活動主檔（各類型開關與參數）
 model PromotionRule {
   id          BigInt   @id @default(autoincrement()) @db.UnsignedBigInt

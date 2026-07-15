@@ -131,10 +131,16 @@ type OrderLineRow = {
   id: string;
   qtyOrdered?: number;
   qtyDelivered?: number;
+  lineAmount?: string | number;
   linePurpose?: string | null;
   isPromotionGift?: boolean;
   isReplenishment?: boolean;
-  product?: { name?: string; code?: string; consumesPrepaidBarrel?: boolean };
+  product?: {
+    name?: string;
+    code?: string;
+    consumesPrepaidBarrel?: boolean;
+    countsDepositBarrel?: boolean;
+  };
 };
 
 type DriverJob = {
@@ -149,12 +155,14 @@ type DriverJob = {
   salesOrder?: {
     orderNo?: string;
     totalAmount?: unknown;
-    customer?: { name?: string };
+    billingTypeAtOrder?: string | null;
+    customer?: { name?: string; billingType?: string };
     deliveryAddress?: { addressLine?: string; deliveryFloor?: number | null };
     lines?: OrderLineRow[];
   };
   vehicle?: { plateNo?: string };
   driverBillingHints?: Record<string, unknown>;
+  customerFloorFeeRates?: Array<{ floor: number; unitPrice: string }>;
   floorBonusRecords?: Array<{
     id?: string;
     salesOrderLineId?: string;
@@ -168,8 +176,13 @@ function deliveryLinesFromJob(job: DriverJob): OrderLineRow[] {
   return (job.salesOrder?.lines ?? []).filter((l) => (l.linePurpose ?? "delivery") === "delivery");
 }
 
+function productEligibleForFloorBonus(product?: OrderLineRow["product"]): boolean {
+  if (!product) return false;
+  return product.countsDepositBarrel === true || product.consumesPrepaidBarrel === true;
+}
+
 function floorBonusLinesFromJob(job: DriverJob): OrderLineRow[] {
-  return deliveryLinesFromJob(job).filter((line) => line.product?.consumesPrepaidBarrel === true);
+  return deliveryLinesFromJob(job).filter((line) => productEligibleForFloorBonus(line.product));
 }
 
 function isFloorBonusEligible(floor: number): boolean {
@@ -180,6 +193,42 @@ function formatFloor(floor: number | null | undefined): string {
   if (floor == null) return "未設定";
   if (floor < 0) return `地下${Math.abs(floor)}樓`;
   return `${floor}樓`;
+}
+
+function floorFeeBillingIsCash(job: DriverJob): boolean {
+  const bt = (job.salesOrder?.billingTypeAtOrder ?? job.salesOrder?.customer?.billingType ?? "cash").trim();
+  return bt !== "monthly";
+}
+
+function currentFloorFeeOnOrder(job: DriverJob): number {
+  return (job.salesOrder?.lines ?? [])
+    .filter((l) => (l.linePurpose ?? "") === "floor_handling_fee")
+    .reduce((sum, l) => sum + Number(l.lineAmount ?? 0), 0);
+}
+
+function estimateCustomerFloorFee(job: DriverJob, records: FloorBonusRecordForm[]): number {
+  const validated = validateFloorBonusRecords(records);
+  if (!validated.ok) return 0;
+  const rateMap = new Map((job.customerFloorFeeRates ?? []).map((r) => [r.floor, Number(r.unitPrice)]));
+  const qtyByFloor = new Map<number, number>();
+  for (const r of validated.records) {
+    qtyByFloor.set(r.floor, (qtyByFloor.get(r.floor) ?? 0) + r.qty);
+  }
+  let sum = 0;
+  for (const [floor, qty] of qtyByFloor) {
+    const unit = rateMap.get(floor) ?? 0;
+    if (Number.isFinite(unit) && unit > 0) sum += unit * qty;
+  }
+  return sum;
+}
+
+function projectedCashDue(job: DriverJob, records: FloorBonusRecordForm[]): number {
+  const base = Number(job.driverBillingHints?.cashDue ?? 0);
+  if (!floorFeeBillingIsCash(job)) return Number.isFinite(base) ? base : 0;
+  const estimate = estimateCustomerFloorFee(job, records);
+  const existing = currentFloorFeeOnOrder(job);
+  const next = (Number.isFinite(base) ? base : 0) - existing + estimate;
+  return Math.max(0, next);
 }
 
 function buildFloorBonusRecordsFromJob(job?: DriverJob): FloorBonusRecordForm[] {
@@ -660,10 +709,14 @@ export default function App() {
                     訂單總額 <strong>${job.driverBillingHints.orderTotal}</strong>
                   </div>
                   {(() => {
+                    const dj = job as DriverJob;
+                    const formForDue = formByJob[id] ?? defaultJobForm(dj);
+                    const feeEst = estimateCustomerFloorFee(dj, formForDue.floorBonusRecords);
+                    const projected = projectedCashDue(dj, formForDue.floorBonusRecords);
                     const due = Number(job.driverBillingHints.cashDue);
                     const cashCol = Number(job.driverBillingHints.cashSubtotal);
                     const otherDue = Number(job.driverBillingHints.cashPriorBalance);
-                    const showCollect = due > 0 || cashCol > 0 || otherDue > 0;
+                    const showCollect = due > 0 || cashCol > 0 || otherDue > 0 || feeEst > 0;
                     if (!showCollect) {
                       return (
                         <div style={{ marginTop: "0.2rem" }}>
@@ -700,8 +753,16 @@ export default function App() {
                           </div>
                         ) : null}
                         <div style={{ marginTop: "0.2rem", padding: "0.35rem 0.45rem", background: "#ecfeff", borderRadius: 6 }}>
-                          <strong style={{ color: "var(--d-accent, #0f766e)" }}>本趟請收 ${job.driverBillingHints.cashDue}</strong>
+                          <strong style={{ color: "var(--d-accent, #0f766e)" }}>
+                            本趟請收 ${feeEst > 0 && floorFeeBillingIsCash(dj) ? projected.toFixed(0) : job.driverBillingHints.cashDue}
+                          </strong>
                           <span style={{ color: "var(--d-muted)" }}>（含本單以外欠款／月結未清等，已扣預收錢包）</span>
+                          {feeEst > 0 ? (
+                            <div style={{ marginTop: "0.2rem", fontSize: "0.78rem" }}>
+                              預估搬運費 ${feeEst.toFixed(0)}
+                              {floorFeeBillingIsCash(dj) ? "（已計入上方請收）" : "（併入月結，不計入當場現金）"}
+                            </div>
+                          ) : null}
                         </div>
                         {otherDue > 0 ? (
                           <div style={{ marginTop: "0.15rem" }}>
@@ -955,6 +1016,14 @@ export default function App() {
                           >
                             ＋ 新增搬運紀錄
                           </button>
+                          <p style={{ margin: "0.45rem 0 0", fontSize: "0.78rem", color: "var(--d-muted)" }}>
+                            有上樓搬運請先填此區：送出後系統會自動把客戶搬運費加入訂單並重算應收（核銷後不可再改）。
+                            {estimateCustomerFloorFee(job as DriverJob, form.floorBonusRecords) > 0
+                              ? ` 目前預估搬運費 $${estimateCustomerFloorFee(job as DriverJob, form.floorBonusRecords).toFixed(0)}${
+                                  floorFeeBillingIsCash(job as DriverJob) ? "（現金）" : "（月結）"
+                                }。`
+                              : ""}
+                          </p>
                         </div>
                       ) : null}
                       <label className="d-inline">
