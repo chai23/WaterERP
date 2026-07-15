@@ -92,6 +92,107 @@ async function sumCashUnpaidTotal(prisma: PrismaClient, customerId: bigint): Pro
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
+async function sumMonthlyUnpaidTotal(prisma: PrismaClient, customerId: bigint): Promise<number> {
+  const agg = await prisma.arOpenItem.aggregate({
+    where: {
+      customerId,
+      outstandingAmount: { gt: 0 },
+      arDocument: { billingType: "monthly", status: { not: "voided" } },
+      OR: [{ salesOrderId: null }, { salesOrder: { status: { not: "cancelled" } } }],
+    },
+    _sum: { outstandingAmount: true },
+  });
+  const n = Number(agg._sum.outstandingAmount ?? 0);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function liffYmd(d: Date | null | undefined): string | null {
+  if (!d) return null;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+async function listLiffMonthlyStatements(prisma: PrismaClient, customerId: bigint) {
+  const statements = await prisma.billingStatement.findMany({
+    where: { customerId, status: { not: "voided" } },
+    include: {
+      orders: {
+        include: {
+          salesOrder: {
+            select: {
+              id: true,
+              orderNo: true,
+              scheduledDeliveryDate: true,
+              officeSettledAt: true,
+              lines: {
+                where: { billingTypeAtLine: "monthly" },
+                include: { product: { select: { name: true, unit: true } } },
+                orderBy: { id: "asc" },
+              },
+            },
+          },
+        },
+        orderBy: { id: "asc" },
+      },
+      arDocuments: {
+        where: { status: { not: "voided" }, billingType: "monthly" },
+        include: { openItems: true },
+      },
+    },
+    orderBy: [{ postedAt: "desc" }, { id: "desc" }],
+    take: 24,
+  });
+
+  return statements.map((stmt) => {
+    let outstanding = 0;
+    let original = 0;
+    for (const doc of stmt.arDocuments) {
+      for (const oi of doc.openItems) {
+        outstanding += Number(oi.outstandingAmount ?? 0);
+        original += Number(oi.originalAmount ?? 0);
+      }
+    }
+    if (!Number.isFinite(outstanding)) outstanding = 0;
+    if (!Number.isFinite(original)) original = 0;
+    const totalWithTax = Number(stmt.totalWithTax ?? 0);
+    const payStatus: "unpaid" | "partial" | "paid" =
+      outstanding <= 0.0001 ? "paid" : outstanding + 0.0001 < Math.max(original, totalWithTax) ? "partial" : "unpaid";
+
+    return {
+      id: stmt.id.toString(),
+      statementNo: stmt.statementNo,
+      cutoffDate: liffYmd(stmt.cutoffDate),
+      postedAt: stmt.postedAt.toISOString(),
+      untaxedTotal: stmt.untaxedTotal.toString(),
+      taxAmount: stmt.taxAmount.toString(),
+      totalWithTax: stmt.totalWithTax.toString(),
+      invoiceMode: stmt.invoiceMode,
+      outstandingAmount: String(Math.max(0, outstanding)),
+      payStatus,
+      payStatusLabel:
+        payStatus === "paid" ? "已結清" : payStatus === "partial" ? "部分付款" : "尚未結清",
+      orders: stmt.orders.map((row) => {
+        const so = row.salesOrder;
+        const lines = (so.lines ?? []).map((l) => ({
+          productName: l.product?.name ?? "商品",
+          unit: l.product?.unit ?? "",
+          qty: l.qtyDelivered > 0 ? l.qtyDelivered : l.qtyOrdered,
+          lineAmount: l.lineAmount.toString(),
+        }));
+        return {
+          salesOrderId: so.id.toString(),
+          orderNo: so.orderNo,
+          monthlyAmount: row.monthlyUntaxedAmount.toString(),
+          deliveryDate: liffYmd(so.officeSettledAt ?? so.scheduledDeliveryDate),
+          lines,
+        };
+      }),
+    };
+  });
+}
+
 async function toLiffCustomerPayload(prisma: PrismaClient, customer: LiffCustomerRow) {
   const prepaidByProduct = await prisma.customerPrepaidProductBalance.findMany({
     where: { customerId: customer.id, balanceBarrels: { gt: 0 } },
@@ -106,7 +207,11 @@ async function toLiffCustomerPayload(prisma: PrismaClient, customer: LiffCustome
   }));
   const prepaidBarrelBalance =
     byProduct.length > 0 ? byProduct.reduce((s, r) => s + r.barrels, 0) : customer.prepaidBarrelBalance;
-  const cashUnpaidTotal = await sumCashUnpaidTotal(prisma, customer.id);
+  const [cashUnpaidTotal, monthlyUnpaidTotal, monthlyStatements] = await Promise.all([
+    sumCashUnpaidTotal(prisma, customer.id),
+    sumMonthlyUnpaidTotal(prisma, customer.id),
+    listLiffMonthlyStatements(prisma, customer.id),
+  ]);
   return {
     id: customer.id.toString(),
     customerCode: customer.customerCode,
@@ -117,6 +222,8 @@ async function toLiffCustomerPayload(prisma: PrismaClient, customer: LiffCustome
     prepaidBarrelBalance,
     prepaidBarrelByProduct: byProduct,
     cashUnpaidTotal: String(cashUnpaidTotal),
+    monthlyUnpaidTotal: String(monthlyUnpaidTotal),
+    monthlyStatements,
     addresses: customer.addresses,
   };
 }
@@ -186,6 +293,7 @@ async function enrichLiffOrders<T extends LiffOrderEnrichInput>(
     .filter((o) => liffCashCap(o) > 0 || (o.billingTypeAtOrder ?? "") === "cash")
     .map((o) => o.id);
   const unpaidByAr = new Set<string>();
+  const statementPaidOrderIds = new Set<string>();
   const cashOutstandingByOrder = new Map<string, number>();
   const cashOriginalByOrder = new Map<string, number>();
 
@@ -204,6 +312,32 @@ async function enrichLiffOrders<T extends LiffOrderEnrichInput>(
       if (r.salesOrderId == null) continue;
       const sum = Number(r._sum.outstandingAmount ?? 0);
       if (sum > 0) unpaidByAr.add(String(r.salesOrderId));
+    }
+
+    // 月結批次 AR（salesOrderId 為 null）：依批次尚欠回填所屬訂單帳款狀態
+    const statementLinks = await prisma.billingStatementOrder.findMany({
+      where: { salesOrderId: { in: monthlyIds } },
+      include: {
+        billingStatement: {
+          include: {
+            arDocuments: {
+              where: { billingType: "monthly", status: { not: "voided" } },
+              include: { openItems: true },
+            },
+          },
+        },
+      },
+    });
+    for (const link of statementLinks) {
+      let outstanding = 0;
+      for (const doc of link.billingStatement.arDocuments) {
+        for (const oi of doc.openItems) {
+          outstanding += Number(oi.outstandingAmount ?? 0);
+        }
+      }
+      const idKey = String(link.salesOrderId);
+      if (outstanding > 0.0001) unpaidByAr.add(idKey);
+      else statementPaidOrderIds.add(idKey);
     }
   }
 
@@ -246,6 +380,7 @@ async function enrichLiffOrders<T extends LiffOrderEnrichInput>(
     } else {
       let paid = Boolean(o.monthlyPeriodPaid);
       if (arUnpaid) paid = false;
+      else if (statementPaidOrderIds.has(idKey)) paid = true;
       else if (!inStatement && cap > 0) paid = false;
       else if (outstandingRaw > 0) paid = false;
 

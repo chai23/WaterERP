@@ -22,6 +22,36 @@ type PrepaidProductBalance = {
   barrels: number;
 };
 
+type MonthlyStatementOrderLine = {
+  productName: string;
+  unit?: string;
+  qty: number;
+  lineAmount: string | number;
+};
+
+type MonthlyStatementOrder = {
+  salesOrderId: string;
+  orderNo: string;
+  monthlyAmount: string | number;
+  deliveryDate?: string | null;
+  lines?: MonthlyStatementOrderLine[];
+};
+
+type MonthlyStatement = {
+  id: string;
+  statementNo: string;
+  cutoffDate?: string | null;
+  postedAt?: string;
+  untaxedTotal: string | number;
+  taxAmount?: string | number;
+  totalWithTax: string | number;
+  invoiceMode?: string;
+  outstandingAmount: string | number;
+  payStatus?: "unpaid" | "partial" | "paid";
+  payStatusLabel?: string;
+  orders?: MonthlyStatementOrder[];
+};
+
 type Customer = {
   id: string;
   customerCode?: string | null;
@@ -33,6 +63,10 @@ type Customer = {
   prepaidBarrelByProduct?: PrepaidProductBalance[];
   /** 現金應收尚未付清合計（含預付儲值待收款） */
   cashUnpaidTotal?: string | number;
+  /** 月結應收尚未付清合計（含已開立批次） */
+  monthlyUnpaidTotal?: string | number;
+  /** 已開立月結批次清單 */
+  monthlyStatements?: MonthlyStatement[];
   addresses: Address[];
 };
 
@@ -228,7 +262,7 @@ function billingLabel(type?: string | null): string {
 function billingHint(type?: string | null): string {
   switch (type) {
     case "monthly":
-      return "依您的會員設定，線上訂單將以「月結」記帳。配送完成後可在訂單頁查看帳款是否結清（與配送進度分開顯示）。";
+      return "依您的會員設定，線上訂單將以「月結」記帳。後台開立月結批次後，可在會員頁查看本期金額與明細，並在訂單頁查看各單帳款狀態。";
     case "prepaid":
       return "依您的會員設定以「預付桶」扣抵。餘額不足時可同單加儲值，配送時一併收款後入帳。儲值款項可在訂單頁查看是否已付清。";
     case "cash":
@@ -385,6 +419,7 @@ export default function App() {
   const [productsError, setProductsError] = useState("");
   const [orderFilter, setOrderFilter] = useState<OrderFilter>("all");
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
+  const [expandedStatementId, setExpandedStatementId] = useState<string | null>(null);
 
   const [newAddrLabel, setNewAddrLabel] = useState("");
   const [newAddrCity, setNewAddrCity] = useState("");
@@ -489,7 +524,16 @@ export default function App() {
     return Number.isFinite(n) && n > 0 ? n : 0;
   }, [customer?.cashUnpaidTotal]);
 
+  const monthlyUnpaidTotal = useMemo(() => {
+    const n = Number(customer?.monthlyUnpaidTotal ?? 0);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }, [customer?.monthlyUnpaidTotal]);
+
+  const monthlyStatements = customer?.monthlyStatements ?? [];
+
   const showCashUnpaid = cashUnpaidTotal > 0 || customer?.billingType === "cash";
+  const showMonthlyBilling =
+    customer?.billingType === "monthly" || monthlyStatements.length > 0 || monthlyUnpaidTotal > 0;
 
   const activeOrderCount = useMemo(() => orders.filter((o) => isActiveStatus(o.status)).length, [orders]);
 
@@ -1043,6 +1087,9 @@ export default function App() {
           {cashUnpaidTotal > 0 ? (
             <span className="chip chip--glass">未付款 ${money(cashUnpaidTotal)}</span>
           ) : null}
+          {monthlyUnpaidTotal > 0 ? (
+            <span className="chip chip--glass">月結尚欠 ${money(monthlyUnpaidTotal)}</span>
+          ) : null}
           {activeOrderCount > 0 ? <span className="chip chip--glass">{activeOrderCount} 筆進行中</span> : null}
         </div>
       </header>
@@ -1063,6 +1110,19 @@ export default function App() {
                   <span>目前尚未付款</span>
                   <strong>{cashUnpaidTotal > 0 ? `$${money(cashUnpaidTotal)}` : "$0"}</strong>
                 </div>
+              </div>
+            ) : null}
+            {showMonthlyBilling ? (
+              <div className="profile-block" style={{ marginTop: "0.75rem" }}>
+                <div className="profile-row">
+                  <span>月結尚欠</span>
+                  <strong>{monthlyUnpaidTotal > 0 ? `$${money(monthlyUnpaidTotal)}` : "$0"}</strong>
+                </div>
+                <p className="muted" style={{ margin: "0.45rem 0 0", fontSize: "0.85rem" }}>
+                  {monthlyStatements.length > 0
+                    ? `已有 ${monthlyStatements.length} 筆月結批次，詳見「會員」頁。`
+                    : "後台開立月結批次後，可於此查看金額與明細。"}
+                </p>
               </div>
             ) : null}
             {customer.billingType === "prepaid" ? (
@@ -1642,6 +1702,134 @@ export default function App() {
                   ? "含尚未收款的訂單／儲值款。明細請到「訂單」查看每筆是否已付清。"
                   : "目前沒有尚未付清的現金帳款。"}
               </p>
+            </section>
+          ) : null}
+
+          {showMonthlyBilling ? (
+            <section className="liff-card">
+              <div className="section-head">
+                <h2>月結帳款</h2>
+                <span className="hint">
+                  {monthlyUnpaidTotal > 0 ? `尚欠 $${money(monthlyUnpaidTotal)}` : "已結清／尚無批次"}
+                </span>
+              </div>
+              <div className="profile-block" style={{ marginBottom: monthlyStatements.length > 0 ? "0.75rem" : 0 }}>
+                <div className="profile-row">
+                  <span>目前尚欠合計</span>
+                  <strong>{monthlyUnpaidTotal > 0 ? `$${money(monthlyUnpaidTotal)}` : "$0"}</strong>
+                </div>
+              </div>
+              {monthlyStatements.length === 0 ? (
+                <p className="muted" style={{ marginBottom: 0 }}>
+                  尚無已開立的月結批次。客服開立後，金額與訂單明細會顯示於此。
+                </p>
+              ) : (
+                <div className="order-list">
+                  {monthlyStatements.map((stmt) => {
+                    const open = expandedStatementId === stmt.id;
+                    const payClass =
+                      stmt.payStatus === "paid"
+                        ? "badge badge--bill-paid"
+                        : stmt.payStatus === "partial"
+                          ? "badge badge--bill-wait"
+                          : "badge badge--bill-unpaid";
+                    return (
+                      <div className="order-card" key={stmt.id}>
+                        <button
+                          type="button"
+                          className="order-card__main"
+                          onClick={() => setExpandedStatementId(open ? null : stmt.id)}
+                          aria-expanded={open}
+                        >
+                          <div>
+                            <div className="order-card__no">{stmt.statementNo}</div>
+                            <div className="order-card__badges">
+                              <span className={payClass}>{stmt.payStatusLabel ?? "帳款"}</span>
+                              {stmt.cutoffDate ? (
+                                <span className="mini-tag">截止 {stmt.cutoffDate}</span>
+                              ) : null}
+                            </div>
+                            <div className="order-card__meta">
+                              <span className="mini-tag">{stmt.orders?.length ?? 0} 筆訂單</span>
+                              {Number(stmt.outstandingAmount) > 0 ? (
+                                <span className="mini-tag mini-tag--accent">
+                                  尚欠 ${money(stmt.outstandingAmount)}
+                                </span>
+                              ) : null}
+                            </div>
+                          </div>
+                          <div className="order-card__amount">
+                            <strong>${money(stmt.totalWithTax)}</strong>
+                            <div className="muted">{open ? "收合明細" : "查看明細"}</div>
+                          </div>
+                        </button>
+                        {open ? (
+                          <div className="order-card__detail">
+                            <dl>
+                              <div className="detail-row">
+                                <dt>批次編號</dt>
+                                <dd>{stmt.statementNo}</dd>
+                              </div>
+                              <div className="detail-row">
+                                <dt>截止日</dt>
+                                <dd>{stmt.cutoffDate ?? "—"}</dd>
+                              </div>
+                              <div className="detail-row">
+                                <dt>未稅合計</dt>
+                                <dd>${money(stmt.untaxedTotal)}</dd>
+                              </div>
+                              {Number(stmt.taxAmount ?? 0) > 0 ? (
+                                <div className="detail-row">
+                                  <dt>稅額</dt>
+                                  <dd>${money(stmt.taxAmount)}</dd>
+                                </div>
+                              ) : null}
+                              <div className="detail-row">
+                                <dt>含稅合計</dt>
+                                <dd>${money(stmt.totalWithTax)}</dd>
+                              </div>
+                              <div className="detail-row">
+                                <dt>尚欠</dt>
+                                <dd>${money(stmt.outstandingAmount)}</dd>
+                              </div>
+                              <div className="detail-row">
+                                <dt>狀態</dt>
+                                <dd>{stmt.payStatusLabel ?? "—"}</dd>
+                              </div>
+                            </dl>
+                            {(stmt.orders?.length ?? 0) > 0 ? (
+                              <table className="line-table">
+                                <thead>
+                                  <tr>
+                                    <th>訂單</th>
+                                    <th>配送日</th>
+                                    <th>品項</th>
+                                    <th>月結金額</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {stmt.orders!.map((o) => (
+                                    <tr key={o.salesOrderId}>
+                                      <td>{o.orderNo}</td>
+                                      <td>{o.deliveryDate ?? "—"}</td>
+                                      <td>
+                                        {(o.lines ?? [])
+                                          .map((l) => `${l.productName}×${l.qty}`)
+                                          .join("、") || "—"}
+                                      </td>
+                                      <td>${money(o.monthlyAmount)}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </section>
           ) : null}
 
