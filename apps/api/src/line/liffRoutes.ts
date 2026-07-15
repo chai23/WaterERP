@@ -106,12 +106,34 @@ async function sumMonthlyUnpaidTotal(prisma: PrismaClient, customerId: bigint): 
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
+/** DateTime：以本地曆日顯示 */
 function liffYmd(d: Date | null | undefined): string | null {
   if (!d) return null;
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+/** Prisma @db.Date：以 UTC 午夜存曆日，讀取時用 UTC 元件避免時區偏一天 */
+function liffDbDateYmd(d: Date | null | undefined): string | null {
+  if (!d) return null;
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** 實際送貨日：司機回報 → 派車日 → 預定配送日（與後台月結清單一致；勿用 officeSettledAt） */
+function liffActualDeliveryYmd(so: {
+  scheduledDeliveryDate: Date | null;
+  assignments?: Array<{ driverReportedAt: Date | null; assignmentDate: Date | null }> | null;
+}): string | null {
+  const a = so.assignments?.[0];
+  if (a?.driverReportedAt) return liffYmd(a.driverReportedAt);
+  if (a?.assignmentDate) return liffDbDateYmd(a.assignmentDate);
+  if (so.scheduledDeliveryDate) return liffDbDateYmd(so.scheduledDeliveryDate);
+  return null;
 }
 
 async function listLiffMonthlyStatements(prisma: PrismaClient, customerId: bigint) {
@@ -125,11 +147,16 @@ async function listLiffMonthlyStatements(prisma: PrismaClient, customerId: bigin
               id: true,
               orderNo: true,
               scheduledDeliveryDate: true,
-              officeSettledAt: true,
               lines: {
                 where: { billingTypeAtLine: "monthly" },
                 include: { product: { select: { name: true, unit: true } } },
                 orderBy: { id: "asc" },
+              },
+              assignments: {
+                where: { status: { in: ["completed", "not_delivered"] } },
+                select: { driverReportedAt: true, assignmentDate: true },
+                orderBy: [{ officeSettledAt: "desc" }, { completedAt: "desc" }, { id: "desc" }],
+                take: 1,
               },
             },
           },
@@ -163,7 +190,7 @@ async function listLiffMonthlyStatements(prisma: PrismaClient, customerId: bigin
     return {
       id: stmt.id.toString(),
       statementNo: stmt.statementNo,
-      cutoffDate: liffYmd(stmt.cutoffDate),
+      cutoffDate: liffDbDateYmd(stmt.cutoffDate),
       postedAt: stmt.postedAt.toISOString(),
       untaxedTotal: stmt.untaxedTotal.toString(),
       taxAmount: stmt.taxAmount.toString(),
@@ -185,7 +212,7 @@ async function listLiffMonthlyStatements(prisma: PrismaClient, customerId: bigin
           salesOrderId: so.id.toString(),
           orderNo: so.orderNo,
           monthlyAmount: row.monthlyUntaxedAmount.toString(),
-          deliveryDate: liffYmd(so.officeSettledAt ?? so.scheduledDeliveryDate),
+          deliveryDate: liffActualDeliveryYmd(so),
           lines,
         };
       }),

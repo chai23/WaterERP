@@ -1809,7 +1809,6 @@ export default function App() {
                               <table className="line-table">
                                 <thead>
                                   <tr>
-                                    <th>訂單</th>
                                     <th>配送日</th>
                                     <th>品項</th>
                                     <th>月結金額</th>
@@ -1818,7 +1817,6 @@ export default function App() {
                                 <tbody>
                                   {stmt.orders!.map((o) => (
                                     <tr key={o.salesOrderId}>
-                                      <td>{o.orderNo}</td>
                                       <td>{o.deliveryDate ?? "—"}</td>
                                       <td>
                                         {(o.lines ?? [])
