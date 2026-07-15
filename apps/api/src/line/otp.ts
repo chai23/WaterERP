@@ -83,15 +83,16 @@ export function isOtpSkipEnabled(): boolean {
 
 export async function verifyLineOtp(
   prisma: PrismaClient,
-  args: { mobile: string; lineUserId: string; code: string },
-): Promise<{ ok: true; mobile: string } | { ok: false; message: string }> {
+  args: { mobile: string; lineUserId: string; code: string; consume?: boolean },
+): Promise<{ ok: true; mobile: string; challengeId: bigint | null } | { ok: false; message: string }> {
   const mobile = normalizeMobile(args.mobile);
   if (!mobile) return { ok: false, message: "手機號碼格式錯誤" };
   const lineUserId = args.lineUserId.trim();
+  const consume = args.consume !== false;
 
   if (isOtpSkipEnabled()) {
     console.info(`[line-otp] SKIP verify mobile=${mobile} lineUserId=${lineUserId}`);
-    return { ok: true, mobile };
+    return { ok: true, mobile, challengeId: null };
   }
 
   const code = String(args.code ?? "").trim();
@@ -114,12 +115,26 @@ export async function verifyLineOtp(
     return { ok: false, message: "驗證碼錯誤" };
   }
 
-  await prisma.lineOtpChallenge.update({
-    where: { id: row.id },
+  if (consume) {
+    await prisma.lineOtpChallenge.update({
+      where: { id: row.id },
+      data: { consumedAt: new Date() },
+    });
+  }
+
+  return { ok: true, mobile, challengeId: row.id };
+}
+
+/** 綁定／註冊成功後才標記驗證碼已使用，避免新會員補填資料前就被消耗。 */
+export async function consumeLineOtp(
+  prisma: PrismaClient,
+  challengeId: bigint | null,
+): Promise<void> {
+  if (challengeId == null) return;
+  await prisma.lineOtpChallenge.updateMany({
+    where: { id: challengeId, consumedAt: null },
     data: { consumedAt: new Date() },
   });
-
-  return { ok: true, mobile };
 }
 
 export function verifyLineWebhookSignature(bodyRaw: Buffer | string, signature: string | undefined): boolean {

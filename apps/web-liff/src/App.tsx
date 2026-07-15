@@ -31,6 +31,8 @@ type Customer = {
   billingType?: string;
   prepaidBarrelBalance?: number;
   prepaidBarrelByProduct?: PrepaidProductBalance[];
+  /** 現金應收尚未付清合計（含預付儲值待收款） */
+  cashUnpaidTotal?: string | number;
   addresses: Address[];
 };
 
@@ -55,6 +57,8 @@ type OrderLine = {
   product?: { name?: string; unit?: string } | null;
 };
 
+type BillSettlementStatus = "none" | "awaiting_delivery" | "unpaid" | "paid";
+
 type OrderRow = {
   id: string | number;
   orderNo: string;
@@ -68,9 +72,13 @@ type OrderRow = {
   createdAt?: string;
   monthlyCapAmount?: string | number;
   monthlyOutstandingAmount?: string | number;
-  monthlySettlementStatus?: "none" | "awaiting_delivery" | "unpaid" | "paid";
+  monthlySettlementStatus?: BillSettlementStatus;
   monthlySettlementLabel?: string;
   monthlyPeriodPaid?: boolean;
+  cashCapAmount?: string | number;
+  cashOutstandingAmount?: string | number;
+  cashSettlementStatus?: BillSettlementStatus;
+  cashSettlementLabel?: string;
   deliveryAddress?: Address | null;
   lines?: OrderLine[];
   assignments?: Array<{
@@ -165,7 +173,7 @@ function statusBadgeClass(status: string): string {
   }
 }
 
-function billBadgeClass(status?: OrderRow["monthlySettlementStatus"]): string {
+function billBadgeClass(status?: BillSettlementStatus): string {
   switch (status) {
     case "unpaid":
       return "badge badge--bill-unpaid";
@@ -185,6 +193,21 @@ function isActiveStatus(status: string): boolean {
 function money(v: string | number | undefined): string {
   const n = Number(v ?? 0);
   return Number.isFinite(n) ? n.toLocaleString("zh-TW") : String(v ?? "0");
+}
+
+function orderBillLabels(o: OrderRow): Array<{ status: BillSettlementStatus; label: string }> {
+  const out: Array<{ status: BillSettlementStatus; label: string }> = [];
+  if (o.monthlySettlementLabel && o.monthlySettlementStatus && o.monthlySettlementStatus !== "none") {
+    out.push({ status: o.monthlySettlementStatus, label: o.monthlySettlementLabel });
+  }
+  if (o.cashSettlementLabel && o.cashSettlementStatus && o.cashSettlementStatus !== "none") {
+    out.push({ status: o.cashSettlementStatus, label: o.cashSettlementLabel });
+  }
+  return out;
+}
+
+function isOrderBillUnpaid(o: OrderRow): boolean {
+  return o.monthlySettlementStatus === "unpaid" || o.cashSettlementStatus === "unpaid";
 }
 
 function billingLabel(type?: string | null): string {
@@ -207,9 +230,9 @@ function billingHint(type?: string | null): string {
     case "monthly":
       return "依您的會員設定，線上訂單將以「月結」記帳。配送完成後可在訂單頁查看帳款是否結清（與配送進度分開顯示）。";
     case "prepaid":
-      return "依您的會員設定以「預付桶」扣抵。餘額不足時可同單加儲值，配送時一併收款後入帳。";
+      return "依您的會員設定以「預付桶」扣抵。餘額不足時可同單加儲值，配送時一併收款後入帳。儲值款項可在訂單頁查看是否已付清。";
     case "cash":
-      return "依您的會員設定，線上訂單為「現金」結算，配送時請備妥貨款。";
+      return "依您的會員設定，線上訂單為「現金」結算。可在此查看尚未付款總額，訂單頁也可看到每筆是否已付清。";
     default:
       return "結帳方式依您的會員主檔設定，無需自行選擇。";
   }
@@ -441,22 +464,32 @@ export default function App() {
     if (orderFilter === "active") return orders.filter((o) => isActiveStatus(o.status));
     if (orderFilter === "done") return orders.filter((o) => !isActiveStatus(o.status));
     if (orderFilter === "bill_unpaid") {
-      return orders.filter((o) => o.monthlySettlementStatus === "unpaid");
+      return orders.filter((o) => isOrderBillUnpaid(o));
     }
     return orders;
   }, [orders, orderFilter]);
 
-  const unpaidBillCount = useMemo(
-    () => orders.filter((o) => o.monthlySettlementStatus === "unpaid").length,
-    [orders],
-  );
+  const unpaidBillCount = useMemo(() => orders.filter((o) => isOrderBillUnpaid(o)).length, [orders]);
 
   const showBillFilter = useMemo(
     () =>
       customer?.billingType === "monthly" ||
-      orders.some((o) => o.monthlySettlementStatus && o.monthlySettlementStatus !== "none"),
-    [customer?.billingType, orders],
+      customer?.billingType === "cash" ||
+      Number(customer?.cashUnpaidTotal ?? 0) > 0 ||
+      orders.some(
+        (o) =>
+          (o.monthlySettlementStatus && o.monthlySettlementStatus !== "none") ||
+          (o.cashSettlementStatus && o.cashSettlementStatus !== "none"),
+      ),
+    [customer?.billingType, customer?.cashUnpaidTotal, orders],
   );
+
+  const cashUnpaidTotal = useMemo(() => {
+    const n = Number(customer?.cashUnpaidTotal ?? 0);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }, [customer?.cashUnpaidTotal]);
+
+  const showCashUnpaid = cashUnpaidTotal > 0 || customer?.billingType === "cash";
 
   const activeOrderCount = useMemo(() => orders.filter((o) => isActiveStatus(o.status)).length, [orders]);
 
@@ -1007,6 +1040,9 @@ export default function App() {
         <div className="liff-hero__meta">
           {customer.customerCode ? <span className="chip chip--glass">編號 {customer.customerCode}</span> : null}
           <span className="chip chip--glass">{billingLabel(customer.billingType)}</span>
+          {cashUnpaidTotal > 0 ? (
+            <span className="chip chip--glass">未付款 ${money(cashUnpaidTotal)}</span>
+          ) : null}
           {activeOrderCount > 0 ? <span className="chip chip--glass">{activeOrderCount} 筆進行中</span> : null}
         </div>
       </header>
@@ -1021,6 +1057,14 @@ export default function App() {
             <p className="muted" style={{ margin: 0 }}>
               {billingHint(customer.billingType)}
             </p>
+            {showCashUnpaid ? (
+              <div className="profile-block" style={{ marginTop: "0.75rem" }}>
+                <div className="profile-row">
+                  <span>目前尚未付款</span>
+                  <strong>{cashUnpaidTotal > 0 ? `$${money(cashUnpaidTotal)}` : "$0"}</strong>
+                </div>
+              </div>
+            ) : null}
             {customer.billingType === "prepaid" ? (
               <div className="billing-prepaid">
                 {(customer.prepaidBarrelByProduct?.length ?? 0) > 0 ? (
@@ -1090,7 +1134,7 @@ export default function App() {
                       <div className="addr-card__meta">
                         {fl ? <span className="mini-tag">{fl}</span> : null}
                         {a.barrelsOnSite != null && a.barrelsOnSite > 0 ? (
-                          <span className="mini-tag">現場空桶 {a.barrelsOnSite}</span>
+                          <span className="mini-tag">現場應存桶數量 {a.barrelsOnSite}</span>
                         ) : null}
                         {a.contactMobile || a.contactPhone ? (
                           <span className="mini-tag">{a.contactMobile || a.contactPhone}</span>
@@ -1342,7 +1386,18 @@ export default function App() {
                 ["all", "全部"],
                 ["active", "配送中"],
                 ["done", "已配送"],
-                ...(showBillFilter ? ([["bill_unpaid", "月結未結清"]] as const) : []),
+                ...(showBillFilter
+                  ? ([
+                      [
+                        "bill_unpaid",
+                        customer.billingType === "monthly" && cashUnpaidTotal <= 0
+                          ? "月結未結清"
+                          : customer.billingType === "cash" || cashUnpaidTotal > 0
+                            ? "尚未付清"
+                            : "帳款未結清",
+                      ],
+                    ] as const)
+                  : []),
               ] as const
             ).map(([key, label]) => (
               <button
@@ -1359,7 +1414,11 @@ export default function App() {
           </div>
           {showBillFilter ? (
             <p className="muted" style={{ marginTop: "-0.25rem", marginBottom: "0.75rem" }}>
-              「配送中／已配送」指送貨進度；「月結未結清」指帳款，與是否已送到無關。
+              「配送中／已配送」指送貨進度；「
+              {customer.billingType === "monthly" && cashUnpaidTotal <= 0
+                ? "月結未結清"
+                : "尚未付清"}
+              」指帳款，與是否已送到無關。
             </p>
           ) : null}
           {filteredOrders.length === 0 ? (
@@ -1367,7 +1426,7 @@ export default function App() {
               <strong>目前沒有訂單</strong>
               <span>
                 {orderFilter === "bill_unpaid"
-                  ? "目前沒有月結未結清的訂單"
+                  ? "目前沒有尚未付清的訂單"
                   : orderFilter === "all"
                     ? "到「訂水」頁面下第一筆訂單吧"
                     : "換個篩選條件看看"}
@@ -1394,11 +1453,11 @@ export default function App() {
                     </div>
                     <div className="order-card__badges">
                       <span className={statusBadgeClass(o.status)}>配送：{statusLabel(o.status)}</span>
-                      {o.monthlySettlementLabel ? (
-                        <span className={billBadgeClass(o.monthlySettlementStatus)}>
-                          {o.monthlySettlementLabel}
+                      {orderBillLabels(o).map((b) => (
+                        <span key={b.label} className={billBadgeClass(b.status)}>
+                          {b.label}
                         </span>
-                      ) : null}
+                      ))}
                     </div>
                     <div className="order-card__lines">
                       {o.lines?.map((l) => lineSummaryText(l)).join("、") || "—"}
@@ -1427,12 +1486,12 @@ export default function App() {
                         <dt>配送狀態</dt>
                         <dd>{statusLabel(o.status)}</dd>
                       </div>
-                      {o.monthlySettlementLabel ? (
-                        <div className="detail-row">
+                      {orderBillLabels(o).map((b) => (
+                        <div className="detail-row" key={`detail-${b.label}`}>
                           <dt>帳款狀態</dt>
-                          <dd>{o.monthlySettlementLabel.replace(/^帳款：/, "")}</dd>
+                          <dd>{b.label.replace(/^帳款：/, "")}</dd>
                         </div>
-                      ) : null}
+                      ))}
                       <div className="detail-row">
                         <dt>下單時間</dt>
                         <dd>{formatDateTime(o.createdAt)}</dd>
@@ -1566,6 +1625,26 @@ export default function App() {
             </p>
           </section>
 
+          {showCashUnpaid ? (
+            <section className="liff-card">
+              <div className="section-head">
+                <h2>尚未付款金額</h2>
+                <span className="hint">現金帳款</span>
+              </div>
+              <div className="profile-block">
+                <div className="profile-row">
+                  <span>目前合計</span>
+                  <strong>{cashUnpaidTotal > 0 ? `$${money(cashUnpaidTotal)}` : "$0"}</strong>
+                </div>
+              </div>
+              <p className="muted" style={{ marginTop: "0.75rem", marginBottom: 0 }}>
+                {cashUnpaidTotal > 0
+                  ? "含尚未收款的訂單／儲值款。明細請到「訂單」查看每筆是否已付清。"
+                  : "目前沒有尚未付清的現金帳款。"}
+              </p>
+            </section>
+          ) : null}
+
           {customer.billingType === "prepaid" || (customer.prepaidBarrelByProduct?.length ?? 0) > 0 ? (
             <section className="liff-card">
               <div className="section-head">
@@ -1606,7 +1685,7 @@ export default function App() {
                 <div className="addr-card__meta">
                   {floorLabel(a.deliveryFloor) ? <span className="mini-tag">{floorLabel(a.deliveryFloor)}</span> : null}
                   {a.barrelsOnSite != null && a.barrelsOnSite > 0 ? (
-                    <span className="mini-tag">現場空桶 {a.barrelsOnSite}</span>
+                    <span className="mini-tag">現場應存桶數量 {a.barrelsOnSite}</span>
                   ) : null}
                   {a.contactName ? <span className="mini-tag">{a.contactName}</span> : null}
                   {a.contactMobile || a.contactPhone ? (

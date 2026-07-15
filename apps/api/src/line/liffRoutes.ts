@@ -8,7 +8,13 @@ import {
   verifyLiffIdToken,
   WELCOME_MESSAGE,
 } from "./messaging.js";
-import { issueLineOtp, normalizeMobile, verifyLineOtp, verifyLineWebhookSignature } from "./otp.js";
+import {
+  consumeLineOtp,
+  issueLineOtp,
+  normalizeMobile,
+  verifyLineOtp,
+  verifyLineWebhookSignature,
+} from "./otp.js";
 
 export type LiffMember = {
   customerId: bigint;
@@ -72,6 +78,20 @@ type LiffCustomerRow = {
   addresses: unknown;
 };
 
+async function sumCashUnpaidTotal(prisma: PrismaClient, customerId: bigint): Promise<number> {
+  const agg = await prisma.arOpenItem.aggregate({
+    where: {
+      customerId,
+      outstandingAmount: { gt: 0 },
+      arDocument: { billingType: "cash", status: { not: "voided" } },
+      OR: [{ salesOrderId: null }, { salesOrder: { status: { not: "cancelled" } } }],
+    },
+    _sum: { outstandingAmount: true },
+  });
+  const n = Number(agg._sum.outstandingAmount ?? 0);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 async function toLiffCustomerPayload(prisma: PrismaClient, customer: LiffCustomerRow) {
   const prepaidByProduct = await prisma.customerPrepaidProductBalance.findMany({
     where: { customerId: customer.id, balanceBarrels: { gt: 0 } },
@@ -86,6 +106,7 @@ async function toLiffCustomerPayload(prisma: PrismaClient, customer: LiffCustome
   }));
   const prepaidBarrelBalance =
     byProduct.length > 0 ? byProduct.reduce((s, r) => s + r.barrels, 0) : customer.prepaidBarrelBalance;
+  const cashUnpaidTotal = await sumCashUnpaidTotal(prisma, customer.id);
   return {
     id: customer.id.toString(),
     customerCode: customer.customerCode,
@@ -95,6 +116,7 @@ async function toLiffCustomerPayload(prisma: PrismaClient, customer: LiffCustome
     billingType: customer.billingType,
     prepaidBarrelBalance,
     prepaidBarrelByProduct: byProduct,
+    cashUnpaidTotal: String(cashUnpaidTotal),
     addresses: customer.addresses,
   };
 }
@@ -113,16 +135,33 @@ function liffMonthlyCap(o: {
   return 0;
 }
 
+function liffCashCap(o: {
+  cashSubtotal?: { toString(): string } | string | number | null;
+  totalAmount: { toString(): string } | string | number;
+  billingTypeAtOrder: string | null;
+}): number {
+  const cs = Number(o.cashSubtotal ?? 0);
+  if (Number.isFinite(cs) && cs > 0) return cs;
+  if ((o.billingTypeAtOrder ?? "") === "cash") {
+    const t = Number(o.totalAmount);
+    return Number.isFinite(t) ? t : 0;
+  }
+  return 0;
+}
+
 type LiffOrderEnrichInput = {
   id: bigint;
   status: string;
   totalAmount: { toString(): string } | string | number;
+  cashSubtotal?: { toString(): string } | string | number | null;
   monthlySubtotal?: { toString(): string } | string | number | null;
   monthlyReceivedAmount?: { toString(): string } | string | number | null;
   monthlyPeriodPaid?: boolean;
   billingTypeAtOrder: string | null;
   billingStatementOrder?: { id: bigint } | null;
 };
+
+type LiffBillStatus = "none" | "awaiting_delivery" | "unpaid" | "paid";
 
 async function enrichLiffOrders<T extends LiffOrderEnrichInput>(
   prisma: PrismaClient,
@@ -133,13 +172,23 @@ async function enrichLiffOrders<T extends LiffOrderEnrichInput>(
     T & {
       monthlyCapAmount: string;
       monthlyOutstandingAmount: string;
-      monthlySettlementStatus: "none" | "awaiting_delivery" | "unpaid" | "paid";
+      monthlySettlementStatus: LiffBillStatus;
       monthlySettlementLabel: string;
+      cashCapAmount: string;
+      cashOutstandingAmount: string;
+      cashSettlementStatus: LiffBillStatus;
+      cashSettlementLabel: string;
     }
   >
 > {
   const monthlyIds = rows.filter((o) => liffMonthlyCap(o) > 0).map((o) => o.id);
+  const cashIds = rows
+    .filter((o) => liffCashCap(o) > 0 || (o.billingTypeAtOrder ?? "") === "cash")
+    .map((o) => o.id);
   const unpaidByAr = new Set<string>();
+  const cashOutstandingByOrder = new Map<string, number>();
+  const cashOriginalByOrder = new Map<string, number>();
+
   if (monthlyIds.length > 0) {
     const unpaid = await prisma.arOpenItem.groupBy({
       by: ["salesOrderId"],
@@ -147,7 +196,7 @@ async function enrichLiffOrders<T extends LiffOrderEnrichInput>(
         customerId,
         salesOrderId: { in: monthlyIds },
         outstandingAmount: { gt: 0 },
-        arDocument: { billingType: "monthly" },
+        arDocument: { billingType: "monthly", status: { not: "voided" } },
       },
       _sum: { outstandingAmount: true },
     });
@@ -155,6 +204,24 @@ async function enrichLiffOrders<T extends LiffOrderEnrichInput>(
       if (r.salesOrderId == null) continue;
       const sum = Number(r._sum.outstandingAmount ?? 0);
       if (sum > 0) unpaidByAr.add(String(r.salesOrderId));
+    }
+  }
+
+  if (cashIds.length > 0) {
+    const cashRows = await prisma.arOpenItem.groupBy({
+      by: ["salesOrderId"],
+      where: {
+        customerId,
+        salesOrderId: { in: cashIds },
+        arDocument: { billingType: "cash", status: { not: "voided" } },
+      },
+      _sum: { outstandingAmount: true, originalAmount: true },
+    });
+    for (const r of cashRows) {
+      if (r.salesOrderId == null) continue;
+      const key = String(r.salesOrderId);
+      cashOutstandingByOrder.set(key, Number(r._sum.outstandingAmount ?? 0));
+      cashOriginalByOrder.set(key, Number(r._sum.originalAmount ?? 0));
     }
   }
 
@@ -166,7 +233,7 @@ async function enrichLiffOrders<T extends LiffOrderEnrichInput>(
     const inStatement = o.billingStatementOrder != null;
     const arUnpaid = unpaidByAr.has(idKey);
 
-    let monthlySettlementStatus: "none" | "awaiting_delivery" | "unpaid" | "paid" = "none";
+    let monthlySettlementStatus: LiffBillStatus = "none";
     let monthlySettlementLabel = "";
     let monthlyOutstandingAmount = "0";
     let monthlyPeriodPaid = o.monthlyPeriodPaid;
@@ -196,6 +263,35 @@ async function enrichLiffOrders<T extends LiffOrderEnrichInput>(
       }
     }
 
+    const cashCap = liffCashCap(o);
+    const cashOutstandingAr = cashOutstandingByOrder.get(idKey);
+    const cashOriginalAr = cashOriginalByOrder.get(idKey) ?? 0;
+    const hasCashAr = cashOutstandingAr != null || cashOriginalAr > 0;
+    const cashOutstanding =
+      cashOutstandingAr != null && Number.isFinite(cashOutstandingAr)
+        ? Math.max(0, cashOutstandingAr)
+        : cashCap > 0
+          ? cashCap
+          : 0;
+
+    let cashSettlementStatus: LiffBillStatus = "none";
+    let cashSettlementLabel = "";
+    let cashOutstandingAmount = "0";
+
+    if (o.status === "cancelled" || o.status === "not_delivered") {
+      cashSettlementStatus = "none";
+    } else if (cashCap > 0 || hasCashAr) {
+      if (cashOutstanding > 0.0001) {
+        cashSettlementStatus = "unpaid";
+        cashSettlementLabel = `帳款：尚未付清（尚欠 $${Math.round(cashOutstanding).toLocaleString("zh-TW")}）`;
+        cashOutstandingAmount = String(cashOutstanding);
+      } else if (hasCashAr || cashCap > 0) {
+        cashSettlementStatus = "paid";
+        cashSettlementLabel = "帳款：已付清";
+        cashOutstandingAmount = "0";
+      }
+    }
+
     return {
       ...o,
       monthlyCapAmount: String(cap),
@@ -203,6 +299,10 @@ async function enrichLiffOrders<T extends LiffOrderEnrichInput>(
       monthlySettlementStatus,
       monthlySettlementLabel,
       monthlyPeriodPaid,
+      cashCapAmount: String(cashCap),
+      cashOutstandingAmount,
+      cashSettlementStatus,
+      cashSettlementLabel,
     };
   });
 }
@@ -378,10 +478,12 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
         return;
       }
 
+      // 先驗證、成功綁定／註冊後才消耗，避免新會員補填資料時被迫重送驗證碼
       const otp = await verifyLineOtp(prisma, {
         mobile: mobileRaw,
         lineUserId: verified.lineUserId,
         code,
+        consume: false,
       });
       if (!otp.ok) {
         res.status(400).json({ ok: false, message: otp.message });
@@ -411,6 +513,7 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
           });
           return;
         }
+        await consumeLineOtp(prisma, otp.challengeId);
         const customerCode = await allocateCustomerCode(prisma);
         customer = await prisma.customer.create({
           data: {
@@ -434,6 +537,7 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
           include: { addresses: { orderBy: { id: "asc" } } },
         });
       } else {
+        await consumeLineOtp(prisma, otp.challengeId);
         customer = await prisma.customer.update({
           where: { id: customer.id },
           data: {
