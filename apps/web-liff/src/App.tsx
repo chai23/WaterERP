@@ -390,7 +390,15 @@ export default function App() {
   const [idToken, setIdToken] = useState<string | null>(null);
   const [token, setToken] = useState<string | null>(() => localStorage.getItem(TOKEN_KEY));
   const [customer, setCustomer] = useState<Customer | null>(null);
-  const [tab, setTab] = useState<Tab>("order");
+  const [tab, setTab] = useState<Tab>(() => {
+    try {
+      const q = new URLSearchParams(window.location.search).get("tab")?.trim().toLowerCase();
+      if (q === "orders" || q === "order" || q === "account") return q;
+    } catch {
+      // ignore
+    }
+    return "order";
+  });
 
   const [mobile, setMobile] = useState("");
   const [otpCode, setOtpCode] = useState("");

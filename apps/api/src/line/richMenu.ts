@@ -1,22 +1,23 @@
 /**
- * Rich Menu 設定輔助（需已設定 LINE_CHANNEL_ACCESS_TOKEN）。
+ * LINE 官方帳號圖文選單（Rich Menu）
  *
- * 建議在 LINE Official Account Manager 建立圖文選單：
- * - 訂水 → LIFF URL（https://你的網域/liff/）
- * - 我的訂單 → 同一 LIFF（客戶開啟後點訂單分頁）
- * - 客服 → 切換至聊天
+ * 正式 LIFF：https://liff.line.me/2010707717-Z1PnsVQn
+ * 佈署腳本：apps/api/scripts/setup-rich-menu.mjs
+ * 圖檔：tools/line-assets/richmenu-2500x1686.jpg（2500×1686）
  *
- * 或以 Messaging API 建立：
- * POST https://api.line.me/v2/bot/richmenu
- * 再上傳圖片與連結 default rich menu。
- *
- * Webhook 已於加好友時回覆 WELCOME_MESSAGE；完整 Rich Menu 圖檔
- * 請於官方後台設定並指向 LIFF Endpoint。
+ * 三欄（左→右）：
+ * - 線上訂水 → LIFF?tab=order
+ * - 我的訂單 → LIFF?tab=orders
+ * - 會員中心 → LIFF?tab=account
  */
+export const LIFF_ENTRY_URL = "https://liff.line.me/2010707717-Z1PnsVQn";
+
 export const RICH_MENU_HINT = {
+  size: { width: 2500, height: 1686 },
+  chatBarText: "選單",
   areas: [
-    { label: "訂水", action: "uri", uriEnv: "PUBLIC_LIFF_URL" },
-    { label: "我的訂單", action: "uri", uriEnv: "PUBLIC_LIFF_URL" },
-    { label: "客服", action: "message", text: "我想聯絡客服" },
+    { label: "線上訂水", action: "uri", uri: `${LIFF_ENTRY_URL}?tab=order` },
+    { label: "我的訂單", action: "uri", uri: `${LIFF_ENTRY_URL}?tab=orders` },
+    { label: "會員中心", action: "uri", uri: `${LIFF_ENTRY_URL}?tab=account` },
   ],
 } as const;
