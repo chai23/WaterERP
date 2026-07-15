@@ -5,6 +5,13 @@ build
 .env.local
 *.log
 .DS_Store
+
+# Let's Encrypt / win-acme（勿提交私鑰）
+deploy/certs/
+deploy/acme-www/
+deploy/acme-challenge/
+tools/win-acme/
+tools/ngrok/
 apps/api/prisma/*.db
 apps/api/prisma/*.db-journal
 
