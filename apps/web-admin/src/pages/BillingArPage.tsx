@@ -162,6 +162,8 @@ export default function BillingArPage() {
   const [statementRows, setStatementRows] = useState<StatementRow[]>([]);
   const [statementPostMode, setStatementPostMode] = useState<"tax_exclusive" | "tax_inclusive" | "none">("tax_exclusive");
   const [statementPosting, setStatementPosting] = useState(false);
+  const [statementLoading, setStatementLoading] = useState(false);
+  const [statementPreviewed, setStatementPreviewed] = useState(false);
   const [invoiceTitle, setInvoiceTitle] = useState("");
 
   const selectedCustomer = useMemo(() => customers.find((c) => String(c.id) === customerId), [customers, customerId]);
@@ -218,6 +220,7 @@ export default function BillingArPage() {
     setWalletBalance("0");
     setAgingSummary(null);
     setStatementRows([]);
+    setStatementPreviewed(false);
     setApplyOpenItemId("");
     setMsg("");
   };
@@ -310,6 +313,7 @@ export default function BillingArPage() {
     setCustomerPickerOpen(false);
     setWorkspaceTab("open");
     setStatementRows([]);
+    setStatementPreviewed(false);
     setMsg("");
   };
 
@@ -428,16 +432,33 @@ export default function BillingArPage() {
 
   const loadStatement = async () => {
     if (!customerId) return;
-    const q = new URLSearchParams({ customerId, cutoffDate: statementCutoffDate });
-    const res = await fetch(`/api/billing/statements?${q.toString()}`);
-    const payload = await res.json();
-    if (!res.ok || !payload.ok) {
-      setMsg(payload.message ?? "產生對帳清單失敗");
-      return;
-    }
-    setStatementRows(payload.data?.rows ?? []);
-    if (!invoiceTitle.trim() && selectedCustomer?.name) {
-      setInvoiceTitle(`${selectedCustomer.name} 請款單`);
+    setStatementLoading(true);
+    setMsg("");
+    try {
+      const q = new URLSearchParams({ customerId, cutoffDate: statementCutoffDate });
+      const res = await fetch(`/api/billing/statements?${q.toString()}`);
+      const payload = await res.json();
+      if (!res.ok || !payload.ok) {
+        setMsg(payload.message ?? "產生對帳清單失敗");
+        setStatementRows([]);
+        setStatementPreviewed(false);
+        return;
+      }
+      const rows = payload.data?.rows ?? [];
+      setStatementRows(rows);
+      setStatementPreviewed(true);
+      if (rows.length === 0) {
+        setMsg("此截止日沒有可對帳的月結訂單／未沖清 AR");
+      }
+      if (!invoiceTitle.trim() && selectedCustomer?.name) {
+        setInvoiceTitle(`${selectedCustomer.name} 請款單`);
+      }
+    } catch {
+      setMsg("無法連線 API");
+      setStatementRows([]);
+      setStatementPreviewed(false);
+    } finally {
+      setStatementLoading(false);
     }
   };
 
@@ -901,8 +922,8 @@ export default function BillingArPage() {
                   </div>
                 </div>
                 <div className="form-actions ar-statement-actions">
-                  <button type="button" className="btn" onClick={() => void loadStatement()}>
-                    預覽對帳清單
+                  <button type="button" className="btn" onClick={() => void loadStatement()} disabled={statementLoading}>
+                    {statementLoading ? "載入中…" : "預覽對帳清單"}
                   </button>
                   <button type="button" className="btn btn--primary" onClick={() => void postMonthlyStatement()} disabled={statementPosting}>
                     {statementPosting ? "開立中…" : "開立月結批次"}
@@ -911,12 +932,87 @@ export default function BillingArPage() {
                     匯出 CSV
                   </button>
                 </div>
-                {statementRows.length > 0 ? (
-                  <p className="card__hint ar-panel-block__foot">
-                    預覽 {statementRows.length} 筆，請款總額 $ {moneyText(statementTotal)}
-                    {statementPostMode !== "none" ? `（${cashInvoiceModeLabel(statementPostMode)}）` : ""}
-                  </p>
-                ) : null}
+                {statementPreviewed ? (
+                  <div className="ar-statement-preview" style={{ marginTop: "0.85rem" }}>
+                    <h4 className="ar-panel-block__title" style={{ fontSize: "0.95rem", marginBottom: "0.45rem" }}>
+                      對帳清單預覽
+                      {statementRows.length > 0 ? (
+                        <span className="card__title-count" style={{ marginLeft: "0.35rem" }}>
+                          {statementRows.length} 筆 · $ {moneyText(statementTotal)}
+                          {statementPostMode !== "none" ? ` · ${cashInvoiceModeLabel(statementPostMode)}` : ""}
+                        </span>
+                      ) : null}
+                    </h4>
+                    <div className="table-wrap">
+                      <table className="data-table data-table--compact">
+                        <thead>
+                          <tr>
+                            <th>類型</th>
+                            <th>AR 單號</th>
+                            <th>訂單</th>
+                            <th>實際配送日</th>
+                            <th>品項摘要</th>
+                            <th>狀態</th>
+                            <th className="num">尚欠</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {statementRows.length === 0 ? (
+                            <tr>
+                              <td colSpan={7} className="text-muted">
+                                此截止日沒有可對帳資料
+                              </td>
+                            </tr>
+                          ) : (
+                            statementRows.map((r, idx) => {
+                              const lineSummary =
+                                (r.lineItems ?? [])
+                                  .map((l) => `${l.productName}×${l.qty}`)
+                                  .join("、") || "—";
+                              const kindLabel =
+                                r.rowKind === "pending_statement"
+                                  ? "待開立批次"
+                                  : r.rowKind === "legacy_monthly_ar"
+                                    ? "已立帳未沖"
+                                    : r.rowKind ?? "—";
+                              return (
+                                <tr key={`${r.openItemId ?? r.salesOrderId ?? r.orderNo ?? "row"}-${idx}`}>
+                                  <td>
+                                    <span className="pill pill--subtle">{kindLabel}</span>
+                                  </td>
+                                  <td className="mono-text">{r.arNo || "—"}</td>
+                                  <td className="mono-text">{r.orderNo ?? "—"}</td>
+                                  <td>{r.actualDeliveryDate ?? "—"}</td>
+                                  <td style={{ maxWidth: "14rem", fontSize: "0.8125rem" }} title={lineSummary}>
+                                    {lineSummary}
+                                  </td>
+                                  <td>{arStatusLabel(r.status)}</td>
+                                  <td className="num">
+                                    <strong>{moneyText(r.outstandingAmount)}</strong>
+                                  </td>
+                                </tr>
+                              );
+                            })
+                          )}
+                        </tbody>
+                        {statementRows.length > 0 ? (
+                          <tfoot>
+                            <tr>
+                              <td colSpan={6} className="num">
+                                <strong>合計</strong>
+                              </td>
+                              <td className="num">
+                                <strong>$ {moneyText(statementTotal)}</strong>
+                              </td>
+                            </tr>
+                          </tfoot>
+                        ) : null}
+                      </table>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="card__hint ar-panel-block__foot">按「預覽對帳清單」後，下方會顯示本期可對帳／請款明細。</p>
+                )}
                 <p className="card__hint ar-panel-block__foot">
                   開票請至
                   <Link to="/reports/tax-invoices" style={{ marginLeft: "0.25rem" }}>
