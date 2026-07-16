@@ -32,6 +32,11 @@ const navGroups: { id: string; title: string; items: { to: string; label: string
     ],
   },
   {
+    id: "service-tickets",
+    title: "飲水機服務",
+    items: [{ to: "/orders/service-tickets", label: "服務單管理" }],
+  },
+  {
     id: "data",
     title: "主檔資料",
     items: [
@@ -89,6 +94,7 @@ const PRINT_SETTING_PATHS = ["/settings/order-print", "/settings/print-slogans",
 
 function groupIdFromPath(pathname: string): string | null {
   if (pathname.startsWith("/orders/barrel-pickup")) return "barrel-pickup";
+  if (pathname.startsWith("/orders/service-tickets")) return "service-tickets";
   if (pathname.startsWith("/orders/floor-bonus")) return "reports";
   if (pathname.startsWith("/orders")) return "orders";
   if (pathname.startsWith("/data")) return "data";

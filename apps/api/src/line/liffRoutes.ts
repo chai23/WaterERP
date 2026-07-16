@@ -15,6 +15,13 @@ import {
   verifyLineOtp,
   verifyLineWebhookSignature,
 } from "./otp.js";
+import {
+  createServiceTicket,
+  isServiceType,
+  serializeServiceTicket,
+  serviceTicketInclude,
+  serviceTypeLabel,
+} from "../serviceTickets.js";
 
 export type LiffMember = {
   customerId: bigint;
@@ -470,7 +477,7 @@ async function enrichLiffOrders<T extends LiffOrderEnrichInput>(
 }
 
 export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
-  const { prisma, jwtSecret, jwtSignOptions, createSalesOrder, toBigInt } = deps;
+  const { prisma, jwtSecret, jwtSignOptions, createSalesOrder, toBigInt, parseLocalYmdRange } = deps;
 
   const signMemberToken = (member: LiffMember) =>
     jwt.sign(
@@ -898,6 +905,215 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
           }),
         }).catch((err) => console.error("[line-notify] order_created", err));
       }
+    } catch (e) {
+      res.status(500).json({ ok: false, message: String(e) });
+    }
+  });
+
+  app.get("/api/liff/service-tickets", requireMember, async (req, res) => {
+    try {
+      const member = getLiffMember(req)!;
+      const rows = await prisma.serviceTicket.findMany({
+        where: { customerId: member.customerId },
+        include: serviceTicketInclude,
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: 50,
+      });
+      res.json({ ok: true, data: rows.map(serializeServiceTicket) });
+    } catch (e) {
+      res.status(500).json({ ok: false, message: String(e) });
+    }
+  });
+
+  app.get("/api/liff/service-tickets/:ticketId", requireMember, async (req, res) => {
+    try {
+      const member = getLiffMember(req)!;
+      const ticketId = toBigInt(req.params.ticketId);
+      if (!ticketId) {
+        res.status(400).json({ ok: false, message: "參數錯誤" });
+        return;
+      }
+      const row = await prisma.serviceTicket.findFirst({
+        where: { id: ticketId, customerId: member.customerId },
+        include: serviceTicketInclude,
+      });
+      if (!row) {
+        res.status(404).json({ ok: false, message: "找不到服務單" });
+        return;
+      }
+      res.json({ ok: true, data: serializeServiceTicket(row) });
+    } catch (e) {
+      res.status(500).json({ ok: false, message: String(e) });
+    }
+  });
+
+  app.post("/api/liff/service-tickets", requireMember, async (req, res) => {
+    try {
+      const member = getLiffMember(req)!;
+      const serviceTypeRaw = req.body?.serviceType;
+      if (!isServiceType(serviceTypeRaw)) {
+        res.status(400).json({ ok: false, message: "請選擇服務類型（清洗／維修／兩者）" });
+        return;
+      }
+      const deliveryAddressId = toBigInt(req.body?.deliveryAddressId);
+      if (!deliveryAddressId) {
+        res.status(400).json({ ok: false, message: "請選擇服務地址" });
+        return;
+      }
+      const addr = await prisma.deliveryAddress.findFirst({
+        where: { id: deliveryAddressId, customerId: member.customerId },
+        select: { id: true },
+      });
+      if (!addr) {
+        res.status(400).json({ ok: false, message: "地址不屬於此會員" });
+        return;
+      }
+
+      const preferredDateRaw =
+        typeof req.body?.preferredDate === "string" ? req.body.preferredDate.trim() : "";
+      let preferredDate: Date | null = null;
+      if (preferredDateRaw) {
+        const range = parseLocalYmdRange(preferredDateRaw);
+        if (!range) {
+          res.status(400).json({ ok: false, message: "希望日期格式須為 YYYY-MM-DD" });
+          return;
+        }
+        const [y, mo, d] = preferredDateRaw.split("-").map(Number);
+        preferredDate = new Date(Date.UTC(y, mo - 1, d));
+      }
+
+      const preferredSlot =
+        typeof req.body?.preferredSlot === "string" ? req.body.preferredSlot.trim() || null : null;
+      const problemNote =
+        typeof req.body?.problemNote === "string" ? req.body.problemNote.trim() || null : null;
+      const customerNote =
+        typeof req.body?.customerNote === "string" ? req.body.customerNote.trim() || null : null;
+
+      if (!problemNote) {
+        res.status(400).json({ ok: false, message: "請填寫問題說明" });
+        return;
+      }
+
+      const created = await createServiceTicket(prisma, {
+        customerId: member.customerId,
+        deliveryAddressId,
+        serviceType: serviceTypeRaw,
+        preferredDate,
+        preferredSlot,
+        problemNote,
+        customerNote,
+        source: "liff",
+      });
+
+      void notifyCustomerViaLine(prisma, {
+        customerId: member.customerId,
+        eventType: "service_ticket_created",
+        text: `已收到您的飲水機服務回報（${created.ticketNo}｜${serviceTypeLabel(created.serviceType)}），客服受理後會安排人員評估，謝謝。`,
+        payload: { serviceTicketId: created.id.toString(), ticketNo: created.ticketNo },
+      }).catch((err) => console.error("[line-notify] service_ticket_created", err));
+
+      res.status(201).json({ ok: true, data: serializeServiceTicket(created) });
+    } catch (e) {
+      res.status(500).json({ ok: false, message: String(e) });
+    }
+  });
+
+  app.post("/api/liff/service-tickets/:ticketId/request-loaner", requireMember, async (req, res) => {
+    try {
+      const member = getLiffMember(req)!;
+      const ticketId = toBigInt(req.params.ticketId);
+      if (!ticketId) {
+        res.status(400).json({ ok: false, message: "參數錯誤" });
+        return;
+      }
+      const note = typeof req.body?.note === "string" ? req.body.note.trim() || null : null;
+      const existing = await prisma.serviceTicket.findFirst({
+        where: { id: ticketId, customerId: member.customerId },
+      });
+      if (!existing) {
+        res.status(404).json({ ok: false, message: "找不到服務單" });
+        return;
+      }
+      if (!["pending_pickup", "pending_loaner"].includes(existing.status)) {
+        res.status(400).json({ ok: false, message: "目前狀態無法申請臨時機（需為待載回）" });
+        return;
+      }
+      const now = new Date();
+      const updated = await prisma.$transaction(async (tx) => {
+        await tx.serviceTicket.update({
+          where: { id: ticketId },
+          data: {
+            status: "pending_loaner",
+            needLoaner: true,
+            loanerNote: note,
+            loanerRequestedAt: existing.loanerRequestedAt ?? now,
+          },
+        });
+        await tx.serviceTicketEvent.create({
+          data: {
+            serviceTicketId: ticketId,
+            eventType: "loaner_requested_by_customer",
+            payloadJson: { note },
+          },
+        });
+        return tx.serviceTicket.findUniqueOrThrow({
+          where: { id: ticketId },
+          include: serviceTicketInclude,
+        });
+      });
+      void notifyCustomerViaLine(prisma, {
+        customerId: member.customerId,
+        eventType: "service_ticket_loaner_needed",
+        text: `已收到您的臨時機需求（${existing.ticketNo}），客服會安排司機攜帶臨時機前往換機。`,
+        payload: { serviceTicketId: existing.id.toString(), ticketNo: existing.ticketNo },
+      }).catch((err) => console.error("[line-notify] loaner_requested_by_customer", err));
+      res.json({ ok: true, data: serializeServiceTicket(updated) });
+    } catch (e) {
+      res.status(500).json({ ok: false, message: String(e) });
+    }
+  });
+
+  app.post("/api/liff/service-tickets/:ticketId/quote-respond", requireMember, async (req, res) => {
+    try {
+      const member = getLiffMember(req)!;
+      const ticketId = toBigInt(req.params.ticketId);
+      const accept = req.body?.accept === true || req.body?.accept === "true";
+      if (!ticketId) {
+        res.status(400).json({ ok: false, message: "參數錯誤" });
+        return;
+      }
+      const existing = await prisma.serviceTicket.findFirst({
+        where: { id: ticketId, customerId: member.customerId },
+      });
+      if (!existing || existing.status !== "quote_pending") {
+        res.status(400).json({ ok: false, message: "目前沒有待確認的報價" });
+        return;
+      }
+      const now = new Date();
+      const nextStatus = accept ? "quote_accepted" : "quote_rejected";
+      const updated = await prisma.$transaction(async (tx) => {
+        await tx.serviceTicket.update({
+          where: { id: ticketId },
+          data: {
+            status: nextStatus,
+            quoteStatus: accept ? "accepted" : "rejected",
+            quoteRespondedAt: now,
+            chargeAmount: accept ? existing.quoteAmount : existing.chargeAmount,
+          },
+        });
+        await tx.serviceTicketEvent.create({
+          data: {
+            serviceTicketId: ticketId,
+            eventType: accept ? "quote_accepted" : "quote_rejected",
+            payloadJson: { via: "liff" },
+          },
+        });
+        return tx.serviceTicket.findUniqueOrThrow({
+          where: { id: ticketId },
+          include: serviceTicketInclude,
+        });
+      });
+      res.json({ ok: true, data: serializeServiceTicket(updated) });
     } catch (e) {
       res.status(500).json({ ok: false, message: String(e) });
     }

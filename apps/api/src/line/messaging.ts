@@ -123,7 +123,16 @@ export type NotifyEventType =
   | "order_delivered"
   | "order_not_delivered"
   | "order_rejected"
-  | "welcome";
+  | "welcome"
+  | "service_ticket_created"
+  | "service_ticket_assess_assigned"
+  | "service_ticket_assess_reported"
+  | "service_ticket_loaner_needed"
+  | "service_ticket_in_workshop"
+  | "service_ticket_workshop_updated"
+  | "service_ticket_quote"
+  | "service_ticket_returned"
+  | "service_ticket_closed";
 
 export async function notifyCustomerViaLine(
   prisma: PrismaClient,

@@ -5,6 +5,7 @@ export type PermModule =
   | "orders"
   | "assign"
   | "barrelPickup"
+  | "serviceTickets"
   | "expenses"
   | "expenseVerify"
   | "masters"
@@ -28,6 +29,7 @@ export const PERM_MODULES: {
   { key: "orders", label: "訂單新增/查詢/修改", admin: true, accounting: true, dispatcher: true, warehouse: false },
   { key: "assign", label: "派車與核銷", admin: true, accounting: true, dispatcher: true, warehouse: false },
   { key: "barrelPickup", label: "收空桶作業", admin: true, accounting: true, dispatcher: true, warehouse: true },
+  { key: "serviceTickets", label: "飲水機服務單", admin: true, accounting: true, dispatcher: true, warehouse: false },
   { key: "expenses", label: "公司支出登錄與查詢", admin: true, accounting: true, dispatcher: true, warehouse: true },
   { key: "expenseVerify", label: "支出會計核銷", admin: true, accounting: true, dispatcher: false, warehouse: false },
   { key: "masters", label: "客戶/商品/車輛主檔", admin: true, accounting: true, dispatcher: true, warehouse: true },
@@ -51,6 +53,7 @@ const PATH_PERMISSION: Record<string, PermModule> = {
   "/orders/barrel-pickup/new": "barrelPickup",
   "/orders/barrel-pickup/settle": "barrelPickup",
   "/orders/barrel-pickup/query": "barrelPickup",
+  "/orders/service-tickets": "serviceTickets",
   "/orders/floor-bonus": "accounting",
   "/data/customers": "masters",
   "/data/products": "masters",

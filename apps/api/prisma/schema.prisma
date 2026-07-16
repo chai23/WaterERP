@@ -34,6 +34,11 @@ model User {
   expenseVouchersCreated   ExpenseVoucher[]       @relation("ExpenseVoucherCreator")
   expenseVouchersVerified  ExpenseVoucher[]       @relation("ExpenseVoucherVerifier")
   barrelMovementsCreated   BarrelMovement[]       @relation("BarrelMovementCreator")
+  serviceTicketsAccepted   ServiceTicket[]        @relation("ServiceTicketAcceptor")
+  serviceTicketsAssessAssigned ServiceTicket[]    @relation("ServiceTicketAssessAssigner")
+  serviceTicketsWorkshopUpdated ServiceTicket[]   @relation("ServiceTicketWorkshopUpdater")
+  serviceTicketsReturnAssigned ServiceTicket[]    @relation("ServiceTicketReturnAssigner")
+  serviceTicketEventsCreated ServiceTicketEvent[] @relation("ServiceTicketEventCreator")
 
   @@map("users")
 }
@@ -50,6 +55,8 @@ model Vehicle {
   deliveryAssignments DeliveryAssignment[]
   barrelPickups       BarrelPickup[]
   barrelMovements     BarrelMovement[]
+  serviceTicketsAssess ServiceTicket[] @relation("ServiceTicketAssessVehicle")
+  serviceTicketsReturn ServiceTicket[] @relation("ServiceTicketReturnVehicle")
 
   @@map("vehicles")
 }
@@ -73,6 +80,8 @@ model Driver {
   barrelPickups BarrelPickup[]
   floorBonusRecords FloorDeliveryBonusRecord[]
   barrelMovements BarrelMovement[]
+  serviceTicketsAssess ServiceTicket[] @relation("ServiceTicketAssessDriver")
+  serviceTicketsReturn ServiceTicket[] @relation("ServiceTicketReturnDriver")
 
   @@map("drivers")
 }
@@ -187,6 +196,7 @@ model Customer {
   barrelPickups     BarrelPickup[]
   expenseLines      ExpenseLine[]
   barrelMovements   BarrelMovement[]
+  serviceTickets    ServiceTicket[]
 
   @@map("customers")
 }
@@ -237,6 +247,7 @@ model DeliveryAddress {
   salesOrders   SalesOrder[]
   barrelPickups BarrelPickup[]
   barrelMovements BarrelMovement[]
+  serviceTickets ServiceTicket[]
 
   @@index([patrolWeekday], map: "idx_addr_patrol_weekday")
   @@map("delivery_addresses")
@@ -396,6 +407,7 @@ model SalesOrder {
   taxInvoices          TaxInvoice[]
   floorBonusRecords    FloorDeliveryBonusRecord[]
   barrelMovements      BarrelMovement[]
+  serviceTickets       ServiceTicket[]
 
   @@index([customerId, officeSettledAt])
   @@map("sales_orders")
@@ -1087,4 +1099,97 @@ model ExpenseLine {
 
   @@index([expenseVoucherId])
   @@map("expense_lines")
+}
+
+/// 飲水機清洗／維修服務單
+model ServiceTicket {
+  id                     BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  ticketNo               String    @unique @map("ticket_no") @db.VarChar(24)
+  customerId             BigInt    @map("customer_id") @db.UnsignedBigInt
+  deliveryAddressId      BigInt    @map("delivery_address_id") @db.UnsignedBigInt
+  /// cleaning | repair | both
+  serviceType            String    @map("service_type") @db.VarChar(32)
+  /// reported | accepted | assess_assigned | onsite_completed | pending_pickup | pending_loaner | in_workshop | quote_pending | quote_accepted | quote_rejected | pending_return | returned | closed | cancelled | unable
+  status                 String    @default("reported") @db.VarChar(32)
+  preferredDate          DateTime? @map("preferred_date") @db.Date
+  preferredSlot          String?   @map("preferred_slot") @db.VarChar(120)
+  problemNote            String?   @map("problem_note") @db.Text
+  customerNote           String?   @map("customer_note") @db.VarChar(500)
+  needLoaner             Boolean   @default(false) @map("need_loaner")
+  loanerRequestedAt      DateTime? @map("loaner_requested_at") @db.DateTime(3)
+  loanerNote             String?   @map("loaner_note") @db.VarChar(500)
+  acceptedByUserId       BigInt?   @map("accepted_by_user_id") @db.UnsignedBigInt
+  acceptedAt             DateTime? @map("accepted_at") @db.DateTime(3)
+  assessDriverId         BigInt?   @map("assess_driver_id") @db.UnsignedBigInt
+  assessVehicleId        BigInt?   @map("assess_vehicle_id") @db.UnsignedBigInt
+  assessDate             DateTime? @map("assess_date") @db.Date
+  assessSlot             String?   @map("assess_slot") @db.VarChar(120)
+  assessAssignedByUserId BigInt?   @map("assess_assigned_by_user_id") @db.UnsignedBigInt
+  assessAssignedAt       DateTime? @map("assess_assigned_at") @db.DateTime(3)
+  /// onsite_fixed | bring_back | unable | cancelled
+  assessOutcome          String?   @map("assess_outcome") @db.VarChar(40)
+  assessDriverNote       String?   @map("assess_driver_note") @db.VarChar(500)
+  assessFeeAmount        Decimal?  @map("assess_fee_amount") @db.Decimal(14, 2)
+  assessCustomerAgreed   Boolean?  @map("assess_customer_agreed")
+  assessReportedAt       DateTime? @map("assess_reported_at") @db.DateTime(3)
+  /// received | diagnosing | in_progress | done_pending_return
+  workshopStatus         String?   @map("workshop_status") @db.VarChar(40)
+  workshopNote           String?   @map("workshop_note") @db.Text
+  workshopUpdatedAt      DateTime? @map("workshop_updated_at") @db.DateTime(3)
+  workshopUpdatedByUserId BigInt?  @map("workshop_updated_by_user_id") @db.UnsignedBigInt
+  quoteAmount            Decimal?  @map("quote_amount") @db.Decimal(14, 2)
+  quoteDetail            String?   @map("quote_detail") @db.Text
+  /// none | pending | accepted | rejected
+  quoteStatus            String?   @map("quote_status") @db.VarChar(32)
+  quoteSentAt            DateTime? @map("quote_sent_at") @db.DateTime(3)
+  quoteRespondedAt       DateTime? @map("quote_responded_at") @db.DateTime(3)
+  returnDriverId         BigInt?   @map("return_driver_id") @db.UnsignedBigInt
+  returnVehicleId        BigInt?   @map("return_vehicle_id") @db.UnsignedBigInt
+  returnDate             DateTime? @map("return_date") @db.Date
+  returnAssignedByUserId BigInt?   @map("return_assigned_by_user_id") @db.UnsignedBigInt
+  returnAssignedAt       DateTime? @map("return_assigned_at") @db.DateTime(3)
+  returnedAt             DateTime? @map("returned_at") @db.DateTime(3)
+  /// cash | monthly
+  billingType            String?   @map("billing_type") @db.VarChar(32)
+  chargeAmount           Decimal?  @map("charge_amount") @db.Decimal(14, 2)
+  salesOrderId           BigInt?   @map("sales_order_id") @db.UnsignedBigInt
+  closedAt               DateTime? @map("closed_at") @db.DateTime(3)
+  cancelledReason        String?   @map("cancelled_reason") @db.VarChar(500)
+  /// liff | admin
+  source                 String    @default("liff") @db.VarChar(16)
+  createdAt              DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt              DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+
+  customer            Customer        @relation(fields: [customerId], references: [id])
+  deliveryAddress     DeliveryAddress @relation(fields: [deliveryAddressId], references: [id])
+  acceptedBy          User?           @relation("ServiceTicketAcceptor", fields: [acceptedByUserId], references: [id], onDelete: SetNull)
+  assessDriver        Driver?         @relation("ServiceTicketAssessDriver", fields: [assessDriverId], references: [id], onDelete: SetNull)
+  assessVehicle       Vehicle?        @relation("ServiceTicketAssessVehicle", fields: [assessVehicleId], references: [id], onDelete: SetNull)
+  assessAssignedBy    User?           @relation("ServiceTicketAssessAssigner", fields: [assessAssignedByUserId], references: [id], onDelete: SetNull)
+  workshopUpdatedBy   User?           @relation("ServiceTicketWorkshopUpdater", fields: [workshopUpdatedByUserId], references: [id], onDelete: SetNull)
+  returnDriver        Driver?         @relation("ServiceTicketReturnDriver", fields: [returnDriverId], references: [id], onDelete: SetNull)
+  returnVehicle       Vehicle?        @relation("ServiceTicketReturnVehicle", fields: [returnVehicleId], references: [id], onDelete: SetNull)
+  returnAssignedBy    User?           @relation("ServiceTicketReturnAssigner", fields: [returnAssignedByUserId], references: [id], onDelete: SetNull)
+  salesOrder          SalesOrder?     @relation(fields: [salesOrderId], references: [id], onDelete: SetNull)
+  events              ServiceTicketEvent[]
+
+  @@index([customerId, status])
+  @@index([status, createdAt])
+  @@index([assessDriverId, assessDate])
+  @@map("service_tickets")
+}
+
+model ServiceTicketEvent {
+  id               BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  serviceTicketId  BigInt   @map("service_ticket_id") @db.UnsignedBigInt
+  eventType        String   @map("event_type") @db.VarChar(40)
+  payloadJson      Json?    @map("payload_json")
+  createdByUserId  BigInt?  @map("created_by_user_id") @db.UnsignedBigInt
+  createdAt        DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  serviceTicket ServiceTicket @relation(fields: [serviceTicketId], references: [id], onDelete: Cascade)
+  createdBy     User?         @relation("ServiceTicketEventCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([serviceTicketId])
+  @@map("service_ticket_events")
 }

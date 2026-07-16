@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import "./driver-ui.css";
 import BarrelPickupTab from "./BarrelPickupTab";
+import ServiceTicketTab from "./ServiceTicketTab";
 
 function todayYmd(): string {
   const d = new Date();
@@ -334,7 +335,7 @@ export default function App() {
     varianceDriverVsExpected: number;
     varianceCashierVsDriver: number;
   } | null>(null);
-  const [mainTab, setMainTab] = useState<"delivery" | "barrel">("delivery");
+  const [mainTab, setMainTab] = useState<"delivery" | "barrel" | "service">("delivery");
 
   const authHeaders = useCallback((): Record<string, string> => {
     const token = getDriverToken();
@@ -593,6 +594,15 @@ export default function App() {
           >
             收空桶
           </button>
+          <button
+            type="button"
+            role="tab"
+            className={`d-btn${mainTab === "service" ? "" : " d-btn--ghost"}`}
+            aria-selected={mainTab === "service"}
+            onClick={() => setMainTab("service")}
+          >
+            飲水機服務
+          </button>
         </div>
         <div className="driver-header__user">
           <span>{authUser.name}（{authUser.employeeCode}）</span>
@@ -607,9 +617,13 @@ export default function App() {
               <br />
               <strong>實際送達／回報日</strong>預設與配送日相同；測試時可改成指定日期，系統會以此寫入司機回報時間（非一律用現在時間）。
             </>
-          ) : (
+          ) : mainTab === "barrel" ? (
             <>
               <strong>收空桶</strong>分頁：僅收空桶、不送貨的任務。須與後台「預定收桶日」一致；回報後待辦公室核銷，核銷後才減少送貨點在場空桶數。
+            </>
+          ) : (
+            <>
+              <strong>飲水機服務</strong>分頁：到場評估後回報「現場修好／需載回／無法處理／客戶取消」。現場修好須勾選已詢問客戶同意。
             </>
           )}
         </p>
@@ -617,6 +631,8 @@ export default function App() {
 
       {mainTab === "barrel" ? (
         <BarrelPickupTab authHeaders={authHeaders} />
+      ) : mainTab === "service" ? (
+        <ServiceTicketTab authHeaders={authHeaders} />
       ) : (
         <>
       <section className="driver-panel">

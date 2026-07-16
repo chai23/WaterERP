@@ -70,6 +70,30 @@ type Customer = {
   addresses: Address[];
 };
 
+type ServiceTicket = {
+  id: string;
+  ticketNo: string;
+  serviceType: string;
+  serviceTypeLabel?: string;
+  status: string;
+  statusLabel?: string;
+  preferredDate?: string | null;
+  preferredSlot?: string | null;
+  problemNote?: string | null;
+  customerNote?: string | null;
+  assessDate?: string | null;
+  assessSlot?: string | null;
+  needLoaner?: boolean;
+  workshopStatus?: string | null;
+  workshopStatusLabel?: string | null;
+  workshopNote?: string | null;
+  quoteAmount?: string | number | null;
+  quoteDetail?: string | null;
+  quoteStatus?: string | null;
+  createdAt?: string;
+  deliveryAddress?: { id: string; label?: string | null; addressLine: string } | null;
+};
+
 type Product = {
   id: string | number;
   productCode?: string | null;
@@ -428,6 +452,15 @@ export default function App() {
   const [orderFilter, setOrderFilter] = useState<OrderFilter>("all");
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
   const [expandedStatementId, setExpandedStatementId] = useState<string | null>(null);
+  const [serviceTickets, setServiceTickets] = useState<ServiceTicket[]>([]);
+  const [svcType, setSvcType] = useState<"cleaning" | "repair" | "both">("repair");
+  const [svcAddressId, setSvcAddressId] = useState("");
+  const [svcPreferredDate, setSvcPreferredDate] = useState("");
+  const [svcPreferredSlot, setSvcPreferredSlot] = useState("");
+  const [svcProblemNote, setSvcProblemNote] = useState("");
+  const [svcMsg, setSvcMsg] = useState("");
+  const [svcSubmitting, setSvcSubmitting] = useState(false);
+  const [expandedTicketId, setExpandedTicketId] = useState<string | null>(null);
 
   const [newAddrLabel, setNewAddrLabel] = useState("");
   const [newAddrCity, setNewAddrCity] = useState("");
@@ -691,10 +724,104 @@ export default function App() {
   useEffect(() => {
     if (!token || tab !== "account") return;
     void (async () => {
-      const me = await api<Customer>("/api/liff/me", { token });
-      if (me.ok && me.data) setCustomer(me.data);
+      const [me, tickets] = await Promise.all([
+        api<Customer>("/api/liff/me", { token }),
+        api<ServiceTicket[]>("/api/liff/service-tickets", { token }),
+      ]);
+      if (me.ok && me.data) {
+        setCustomer(me.data);
+        if (!svcAddressId && me.data.addresses?.length) {
+          const def = me.data.addresses.find((a) => a.isDefault) ?? me.data.addresses[0];
+          setSvcAddressId(String(def.id));
+        }
+      }
+      if (tickets.ok && tickets.data) setServiceTickets(tickets.data);
     })();
   }, [token, tab]);
+
+  const submitServiceTicket = async () => {
+    if (!token) return;
+    setSvcMsg("");
+    if (!svcAddressId) {
+      setSvcMsg("請選擇服務地址");
+      return;
+    }
+    if (!svcProblemNote.trim()) {
+      setSvcMsg("請填寫問題說明");
+      return;
+    }
+    setSvcSubmitting(true);
+    try {
+      const res = await api<ServiceTicket>("/api/liff/service-tickets", {
+        method: "POST",
+        token,
+        body: {
+          serviceType: svcType,
+          deliveryAddressId: svcAddressId,
+          preferredDate: svcPreferredDate || undefined,
+          preferredSlot: svcPreferredSlot.trim() || undefined,
+          problemNote: svcProblemNote.trim(),
+        },
+      });
+      if (!res.ok || !res.data) {
+        setSvcMsg(res.message || "送出失敗");
+        return;
+      }
+      setSvcMsg(`已送出：${res.data.ticketNo}`);
+      setSvcProblemNote("");
+      setSvcPreferredSlot("");
+      setSvcPreferredDate("");
+      const list = await api<ServiceTicket[]>("/api/liff/service-tickets", { token });
+      if (list.ok && list.data) setServiceTickets(list.data);
+      setExpandedTicketId(res.data.id);
+    } finally {
+      setSvcSubmitting(false);
+    }
+  };
+
+  const requestLoaner = async (ticketId: string) => {
+    if (!token) return;
+    setSvcSubmitting(true);
+    setSvcMsg("");
+    try {
+      const res = await api<ServiceTicket>(`/api/liff/service-tickets/${ticketId}/request-loaner`, {
+        method: "POST",
+        token,
+        body: { note: "客戶申請臨時機" },
+      });
+      if (!res.ok || !res.data) {
+        setSvcMsg(res.message || "申請臨時機失敗");
+        return;
+      }
+      setSvcMsg(`已申請臨時機：${res.data.ticketNo}`);
+      const list = await api<ServiceTicket[]>("/api/liff/service-tickets", { token });
+      if (list.ok && list.data) setServiceTickets(list.data);
+    } finally {
+      setSvcSubmitting(false);
+    }
+  };
+
+  const respondQuote = async (ticketId: string, accept: boolean) => {
+    if (!token) return;
+    setSvcSubmitting(true);
+    setSvcMsg("");
+    try {
+      const res = await api<ServiceTicket>(`/api/liff/service-tickets/${ticketId}/quote-respond`, {
+        method: "POST",
+        token,
+        body: { accept },
+      });
+      if (!res.ok || !res.data) {
+        setSvcMsg(res.message || "回覆報價失敗");
+        return;
+      }
+      setSvcMsg(accept ? `已同意報價：${res.data.ticketNo}` : `已拒絕報價：${res.data.ticketNo}`);
+      const list = await api<ServiceTicket[]>("/api/liff/service-tickets", { token });
+      if (list.ok && list.data) setServiceTickets(list.data);
+    } finally {
+      setSvcSubmitting(false);
+    }
+  };
 
   const requestOtp = async () => {
     if (!idToken) return;
@@ -1691,6 +1818,196 @@ export default function App() {
             <p className="muted" style={{ marginTop: "0.75rem", marginBottom: 0 }}>
               {billingHint(customer.billingType)}
             </p>
+          </section>
+
+          <section className="liff-card">
+            <div className="section-head">
+              <h2>飲水機服務</h2>
+              <span className="hint">清洗／維修回報</span>
+            </div>
+            <p className="muted" style={{ marginTop: 0 }}>
+              需清洗或維修飲水機時可由此回報，客服受理後會安排人員到場評估。
+            </p>
+            <div className="mode-toggle" role="tablist" aria-label="服務類型" style={{ marginBottom: "0.75rem" }}>
+              {(
+                [
+                  ["repair", "維修"],
+                  ["cleaning", "清洗"],
+                  ["both", "清洗＋維修"],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  role="tab"
+                  className={svcType === value ? "is-on" : ""}
+                  aria-selected={svcType === value}
+                  onClick={() => setSvcType(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <label className="field">
+              <span>服務地址</span>
+              <select value={svcAddressId} onChange={(e) => setSvcAddressId(e.target.value)}>
+                <option value="">請選擇</option>
+                {customer.addresses.map((a) => (
+                  <option key={String(a.id)} value={String(a.id)}>
+                    {(a.label?.trim() || "配送點") + "｜" + a.addressLine}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>希望日期（可略）</span>
+              <input type="date" value={svcPreferredDate} onChange={(e) => setSvcPreferredDate(e.target.value)} />
+            </label>
+            <label className="field">
+              <span>希望時段（可略）</span>
+              <input
+                type="text"
+                placeholder="例如：上午、下午 2 點後"
+                value={svcPreferredSlot}
+                onChange={(e) => setSvcPreferredSlot(e.target.value)}
+              />
+            </label>
+            <label className="field">
+              <span>問題說明</span>
+              <textarea
+                rows={3}
+                placeholder="例如：不出水、漏水、異音、需定期清洗…"
+                value={svcProblemNote}
+                onChange={(e) => setSvcProblemNote(e.target.value)}
+              />
+            </label>
+            {svcMsg ? <p className="muted">{svcMsg}</p> : null}
+            <button type="button" className="btn-primary" disabled={svcSubmitting} onClick={() => void submitServiceTicket()}>
+              {svcSubmitting ? "送出中…" : "送出服務回報"}
+            </button>
+
+            {serviceTickets.length > 0 ? (
+              <div className="order-list" style={{ marginTop: "1rem" }}>
+                {serviceTickets.map((t) => {
+                  const open = expandedTicketId === t.id;
+                  return (
+                    <div className="order-card" key={t.id}>
+                      <button
+                        type="button"
+                        className="order-card__main"
+                        onClick={() => setExpandedTicketId(open ? null : t.id)}
+                        aria-expanded={open}
+                      >
+                        <div>
+                          <div className="order-card__no">{t.ticketNo}</div>
+                          <div className="order-card__badges">
+                            <span className="badge badge--progress">{t.statusLabel ?? t.status}</span>
+                            <span className="mini-tag">{t.serviceTypeLabel ?? t.serviceType}</span>
+                          </div>
+                        </div>
+                        <div className="order-card__amount">
+                          <div className="muted">{open ? "收合" : "明細"}</div>
+                        </div>
+                      </button>
+                      {open ? (
+                        <div className="order-card__detail">
+                          <dl>
+                            <div className="detail-row">
+                              <dt>類型</dt>
+                              <dd>{t.serviceTypeLabel ?? t.serviceType}</dd>
+                            </div>
+                            <div className="detail-row">
+                              <dt>狀態</dt>
+                              <dd>{t.statusLabel ?? t.status}</dd>
+                            </div>
+                            <div className="detail-row">
+                              <dt>地址</dt>
+                              <dd>{t.deliveryAddress?.addressLine ?? "—"}</dd>
+                            </div>
+                            <div className="detail-row">
+                              <dt>希望日期</dt>
+                              <dd>{t.preferredDate ?? "—"}</dd>
+                            </div>
+                            <div className="detail-row">
+                              <dt>希望時段</dt>
+                              <dd>{t.preferredSlot ?? "—"}</dd>
+                            </div>
+                            <div className="detail-row">
+                              <dt>問題說明</dt>
+                              <dd>{t.problemNote ?? "—"}</dd>
+                            </div>
+                            {t.assessDate ? (
+                              <div className="detail-row">
+                                <dt>評估安排</dt>
+                                <dd>
+                                  {t.assessDate}
+                                  {t.assessSlot ? ` ${t.assessSlot}` : ""}
+                                </dd>
+                              </div>
+                            ) : null}
+                          </dl>
+                          {t.status === "pending_pickup" ? (
+                            <button
+                              type="button"
+                              className="btn-primary"
+                              style={{ marginTop: "0.75rem" }}
+                              disabled={svcSubmitting}
+                              onClick={() => void requestLoaner(t.id)}
+                            >
+                              需要臨時機（換機）
+                            </button>
+                          ) : null}
+                          {t.status === "pending_loaner" || t.needLoaner ? (
+                            <p className="muted" style={{ marginBottom: 0, marginTop: "0.5rem" }}>
+                              已登記需要臨時機，客服會安排司機攜帶臨時機前往。
+                            </p>
+                          ) : null}
+                          {t.workshopStatus ? (
+                            <div className="detail-row" style={{ marginTop: "0.5rem" }}>
+                              <dt>廠內進度</dt>
+                              <dd>
+                                {t.workshopStatusLabel ?? t.workshopStatus}
+                                {t.workshopNote ? `｜${t.workshopNote}` : ""}
+                              </dd>
+                            </div>
+                          ) : null}
+                          {t.status === "quote_pending" ? (
+                            <div style={{ marginTop: "0.75rem" }}>
+                              <p style={{ margin: "0 0 0.5rem" }}>
+                                報價 ${money(t.quoteAmount ?? 0)}
+                                {t.quoteDetail ? `（${t.quoteDetail}）` : ""}
+                              </p>
+                              <div style={{ display: "flex", gap: "0.5rem" }}>
+                                <button
+                                  type="button"
+                                  className="btn-primary"
+                                  disabled={svcSubmitting}
+                                  onClick={() => void respondQuote(t.id, true)}
+                                >
+                                  同意報價
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn--outline"
+                                  disabled={svcSubmitting}
+                                  onClick={() => void respondQuote(t.id, false)}
+                                >
+                                  拒絕
+                                </button>
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="muted" style={{ marginBottom: 0, marginTop: "0.75rem" }}>
+                尚無服務回報紀錄。
+              </p>
+            )}
           </section>
 
           {showCashUnpaid ? (

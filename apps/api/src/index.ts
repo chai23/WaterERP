@@ -19,6 +19,12 @@ import {
   formatOrderAssignedMessage,
   notifyCustomerViaLine,
 } from "./line/messaging.js";
+import {
+  serializeServiceTicketAdmin,
+  serviceTicketAdminInclude,
+  serviceTicketStatusLabel,
+  serviceTypeLabel,
+} from "./serviceTickets.js";
 
 const prisma = new PrismaClient();
 const app = express();
@@ -10109,6 +10115,705 @@ app.get("/api/barrel-pickups", async (req, res) => {
   }
 });
 
+/** 飲水機服務單列表（後台） */
+app.get("/api/service-tickets", async (req, res) => {
+  try {
+    const status = typeof req.query.status === "string" ? req.query.status.trim() : "";
+    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    const where: Prisma.ServiceTicketWhereInput = {};
+    if (status) where.status = status;
+    if (q) {
+      where.OR = [
+        { ticketNo: { contains: q } },
+        { problemNote: { contains: q } },
+        { customer: { name: { contains: q } } },
+        { customer: { customerCode: { contains: q } } },
+        { customer: { mobile: { contains: q } } },
+      ];
+    }
+    const rows = await prisma.serviceTicket.findMany({
+      where,
+      include: serviceTicketAdminInclude,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: 100,
+    });
+    res.json({ ok: true, data: rows.map(serializeServiceTicketAdmin) });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+app.get("/api/service-tickets/:ticketId", async (req, res) => {
+  try {
+    const ticketId = toBigInt(req.params.ticketId);
+    if (!ticketId) {
+      res.status(400).json({ ok: false, message: "參數錯誤" });
+      return;
+    }
+    const row = await prisma.serviceTicket.findUnique({
+      where: { id: ticketId },
+      include: serviceTicketAdminInclude,
+    });
+    if (!row) {
+      res.status(404).json({ ok: false, message: "找不到服務單" });
+      return;
+    }
+    res.json({ ok: true, data: serializeServiceTicketAdmin(row) });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+/** 受理服務單 */
+app.post("/api/service-tickets/:ticketId/accept", async (req, res) => {
+  try {
+    const auth = getAuthUser(req);
+    const ticketId = toBigInt(req.params.ticketId);
+    if (!ticketId) {
+      res.status(400).json({ ok: false, message: "參數錯誤" });
+      return;
+    }
+    const existing = await prisma.serviceTicket.findUnique({ where: { id: ticketId } });
+    if (!existing) {
+      res.status(404).json({ ok: false, message: "找不到服務單" });
+      return;
+    }
+    if (existing.status !== "reported") {
+      res.status(400).json({ ok: false, message: `目前狀態「${serviceTicketStatusLabel(existing.status)}」無法受理` });
+      return;
+    }
+    const userId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
+    const updated = await prisma.$transaction(async (tx) => {
+      const row = await tx.serviceTicket.update({
+        where: { id: ticketId },
+        data: {
+          status: "accepted",
+          acceptedByUserId: userId,
+          acceptedAt: new Date(),
+        },
+        include: serviceTicketAdminInclude,
+      });
+      await tx.serviceTicketEvent.create({
+        data: {
+          serviceTicketId: ticketId,
+          eventType: "accepted",
+          createdByUserId: userId,
+        },
+      });
+      return tx.serviceTicket.findUniqueOrThrow({
+        where: { id: ticketId },
+        include: serviceTicketAdminInclude,
+      });
+    });
+    res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+/** 派司機外出評估（可從已回報直接派，會一併受理） */
+app.post("/api/service-tickets/:ticketId/assign-assess", async (req, res) => {
+  try {
+    const auth = getAuthUser(req);
+    const ticketId = toBigInt(req.params.ticketId);
+    if (!ticketId) {
+      res.status(400).json({ ok: false, message: "參數錯誤" });
+      return;
+    }
+    const body = req.body as {
+      driverId?: unknown;
+      vehicleId?: unknown;
+      assessDateYmd?: unknown;
+      assessSlot?: unknown;
+    };
+    const driverId = toBigInt(body.driverId);
+    const vehicleId = body.vehicleId != null && body.vehicleId !== "" ? toBigInt(body.vehicleId) : null;
+    const assessDateYmd = typeof body.assessDateYmd === "string" ? body.assessDateYmd.trim() : "";
+    const assessSlot = typeof body.assessSlot === "string" ? body.assessSlot.trim() || null : null;
+    if (!driverId || !assessDateYmd) {
+      res.status(400).json({ ok: false, message: "請指定司機與評估日期" });
+      return;
+    }
+    const assessDate = parseLocalYmdToDbDate(assessDateYmd);
+    if (!assessDate) {
+      res.status(400).json({ ok: false, message: "assessDateYmd 須為 YYYY-MM-DD" });
+      return;
+    }
+
+    const existing = await prisma.serviceTicket.findUnique({ where: { id: ticketId } });
+    if (!existing) {
+      res.status(404).json({ ok: false, message: "找不到服務單" });
+      return;
+    }
+    if (!["reported", "accepted", "assess_assigned"].includes(existing.status)) {
+      res.status(400).json({
+        ok: false,
+        message: `目前狀態「${serviceTicketStatusLabel(existing.status)}」無法派評估`,
+      });
+      return;
+    }
+
+    const driver = await prisma.driver.findFirst({
+      where: { id: driverId, isActive: true },
+      include: { user: true, vehicle: true },
+    });
+    if (!driver) {
+      res.status(400).json({ ok: false, message: "找不到有效司機" });
+      return;
+    }
+    const resolvedVehicleId = vehicleId ?? driver.vehicleId ?? null;
+    if (resolvedVehicleId) {
+      const vehicle = await prisma.vehicle.findFirst({ where: { id: resolvedVehicleId, isActive: true } });
+      if (!vehicle) {
+        res.status(400).json({ ok: false, message: "找不到有效車輛" });
+        return;
+      }
+    }
+
+    const userId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
+    const now = new Date();
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.serviceTicket.update({
+        where: { id: ticketId },
+        data: {
+          status: "assess_assigned",
+          acceptedByUserId: existing.acceptedByUserId ?? userId,
+          acceptedAt: existing.acceptedAt ?? now,
+          assessDriverId: driverId,
+          assessVehicleId: resolvedVehicleId,
+          assessDate,
+          assessSlot,
+          assessAssignedByUserId: userId,
+          assessAssignedAt: now,
+        },
+      });
+      await tx.serviceTicketEvent.create({
+        data: {
+          serviceTicketId: ticketId,
+          eventType: "assess_assigned",
+          createdByUserId: userId,
+          payloadJson: {
+            driverId: driverId.toString(),
+            vehicleId: resolvedVehicleId?.toString() ?? null,
+            assessDateYmd,
+            assessSlot,
+          },
+        },
+      });
+      return tx.serviceTicket.findUniqueOrThrow({
+        where: { id: ticketId },
+        include: serviceTicketAdminInclude,
+      });
+    });
+
+    void notifyCustomerViaLine(prisma, {
+      customerId: existing.customerId,
+      eventType: "service_ticket_assess_assigned",
+      text: `您的飲水機服務單 ${existing.ticketNo}（${serviceTypeLabel(existing.serviceType)}）已安排評估：${assessDateYmd}${assessSlot ? ` ${assessSlot}` : ""}，司機將前往查看，謝謝。`,
+      payload: { serviceTicketId: existing.id.toString(), ticketNo: existing.ticketNo, assessDateYmd },
+    }).catch((err) => console.error("[line-notify] service_ticket_assess_assigned", err));
+
+    res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+/** 後台／客戶：標記需要臨時機（載回換機） */
+app.post("/api/service-tickets/:ticketId/mark-loaner", async (req, res) => {
+  try {
+    const auth = getAuthUser(req);
+    const ticketId = toBigInt(req.params.ticketId);
+    if (!ticketId) {
+      res.status(400).json({ ok: false, message: "參數錯誤" });
+      return;
+    }
+    const body = req.body as { note?: unknown; swapDateYmd?: unknown; driverId?: unknown };
+    const note = typeof body.note === "string" ? body.note.trim() || null : null;
+    const swapDateYmd = typeof body.swapDateYmd === "string" ? body.swapDateYmd.trim() : "";
+    const driverId = body.driverId != null && body.driverId !== "" ? toBigInt(body.driverId) : null;
+
+    const existing = await prisma.serviceTicket.findUnique({ where: { id: ticketId } });
+    if (!existing) {
+      res.status(404).json({ ok: false, message: "找不到服務單" });
+      return;
+    }
+    if (!["pending_pickup", "pending_loaner", "assess_assigned"].includes(existing.status)) {
+      res.status(400).json({
+        ok: false,
+        message: `目前狀態「${serviceTicketStatusLabel(existing.status)}」無法標記臨時機`,
+      });
+      return;
+    }
+
+    let swapDate = existing.assessDate;
+    if (swapDateYmd) {
+      const parsed = parseLocalYmdToDbDate(swapDateYmd);
+      if (!parsed) {
+        res.status(400).json({ ok: false, message: "swapDateYmd 須為 YYYY-MM-DD" });
+        return;
+      }
+      swapDate = parsed;
+    }
+    if (driverId) {
+      const driver = await prisma.driver.findFirst({ where: { id: driverId, isActive: true } });
+      if (!driver) {
+        res.status(400).json({ ok: false, message: "找不到有效司機" });
+        return;
+      }
+    }
+
+    const userId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
+    const now = new Date();
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.serviceTicket.update({
+        where: { id: ticketId },
+        data: {
+          status: "pending_loaner",
+          needLoaner: true,
+          loanerNote: note,
+          loanerRequestedAt: existing.loanerRequestedAt ?? now,
+          assessDriverId: driverId ?? existing.assessDriverId,
+          assessDate: swapDate,
+        },
+      });
+      await tx.serviceTicketEvent.create({
+        data: {
+          serviceTicketId: ticketId,
+          eventType: "loaner_needed",
+          createdByUserId: userId,
+          payloadJson: {
+            note,
+            swapDateYmd: swapDateYmd || null,
+            driverId: (driverId ?? existing.assessDriverId)?.toString() ?? null,
+          },
+        },
+      });
+      return tx.serviceTicket.findUniqueOrThrow({
+        where: { id: ticketId },
+        include: serviceTicketAdminInclude,
+      });
+    });
+
+    void notifyCustomerViaLine(prisma, {
+      customerId: existing.customerId,
+      eventType: "service_ticket_loaner_needed",
+      text: `您的服務單 ${existing.ticketNo} 已登記需要臨時機，我們會安排司機攜帶臨時機前往換機。`,
+      payload: { serviceTicketId: existing.id.toString(), ticketNo: existing.ticketNo },
+    }).catch((err) => console.error("[line-notify] service_ticket_loaner_needed", err));
+
+    res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+/** 後台：確認已載回入廠（無臨時機或已換機完成後） */
+app.post("/api/service-tickets/:ticketId/confirm-workshop-received", async (req, res) => {
+  try {
+    const auth = getAuthUser(req);
+    const ticketId = toBigInt(req.params.ticketId);
+    if (!ticketId) {
+      res.status(400).json({ ok: false, message: "參數錯誤" });
+      return;
+    }
+    const note = typeof req.body?.note === "string" ? req.body.note.trim() || null : null;
+    const existing = await prisma.serviceTicket.findUnique({ where: { id: ticketId } });
+    if (!existing) {
+      res.status(404).json({ ok: false, message: "找不到服務單" });
+      return;
+    }
+    if (!["pending_pickup", "pending_loaner"].includes(existing.status)) {
+      res.status(400).json({
+        ok: false,
+        message: `目前狀態「${serviceTicketStatusLabel(existing.status)}」無法確認入廠`,
+      });
+      return;
+    }
+    const userId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
+    const now = new Date();
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.serviceTicket.update({
+        where: { id: ticketId },
+        data: {
+          status: "in_workshop",
+          workshopStatus: "received",
+          workshopNote: note,
+          workshopUpdatedAt: now,
+          workshopUpdatedByUserId: userId,
+        },
+      });
+      await tx.serviceTicketEvent.create({
+        data: {
+          serviceTicketId: ticketId,
+          eventType: "workshop_received",
+          createdByUserId: userId,
+          payloadJson: { note, fromStatus: existing.status },
+        },
+      });
+      return tx.serviceTicket.findUniqueOrThrow({
+        where: { id: ticketId },
+        include: serviceTicketAdminInclude,
+      });
+    });
+
+    void notifyCustomerViaLine(prisma, {
+      customerId: existing.customerId,
+      eventType: "service_ticket_in_workshop",
+      text: `您的飲水機（服務單 ${existing.ticketNo}）已入廠處理，後續進度可於 LINE 會員頁查看。`,
+      payload: { serviceTicketId: existing.id.toString(), ticketNo: existing.ticketNo },
+    }).catch((err) => console.error("[line-notify] service_ticket_in_workshop", err));
+
+    res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+const WORKSHOP_STATUSES = ["received", "diagnosing", "in_progress", "done_pending_return"] as const;
+
+function workshopStatusLabel(s: string): string {
+  switch (s) {
+    case "received":
+      return "已入廠";
+    case "diagnosing":
+      return "診斷中";
+    case "in_progress":
+      return "清洗／維修中";
+    case "done_pending_return":
+      return "已完工待送回";
+    default:
+      return s;
+  }
+}
+
+/** 後台：更新廠內進度（司機不可改） */
+app.post("/api/service-tickets/:ticketId/workshop-progress", async (req, res) => {
+  try {
+    const auth = getAuthUser(req);
+    const ticketId = toBigInt(req.params.ticketId);
+    if (!ticketId) {
+      res.status(400).json({ ok: false, message: "參數錯誤" });
+      return;
+    }
+    const workshopStatus = typeof req.body?.workshopStatus === "string" ? req.body.workshopStatus.trim() : "";
+    const note = typeof req.body?.note === "string" ? req.body.note.trim() || null : null;
+    if (!(WORKSHOP_STATUSES as readonly string[]).includes(workshopStatus)) {
+      res.status(400).json({ ok: false, message: "workshopStatus 無效" });
+      return;
+    }
+    const existing = await prisma.serviceTicket.findUnique({ where: { id: ticketId } });
+    if (!existing) {
+      res.status(404).json({ ok: false, message: "找不到服務單" });
+      return;
+    }
+    if (!["in_workshop", "quote_pending", "quote_accepted"].includes(existing.status)) {
+      res.status(400).json({
+        ok: false,
+        message: `目前狀態「${serviceTicketStatusLabel(existing.status)}」無法更新廠內進度`,
+      });
+      return;
+    }
+    const userId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
+    const now = new Date();
+    const nextTicketStatus =
+      workshopStatus === "done_pending_return" && existing.status === "quote_accepted"
+        ? "pending_return"
+        : existing.status;
+
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.serviceTicket.update({
+        where: { id: ticketId },
+        data: {
+          status: nextTicketStatus,
+          workshopStatus,
+          workshopNote: note ?? existing.workshopNote,
+          workshopUpdatedAt: now,
+          workshopUpdatedByUserId: userId,
+        },
+      });
+      await tx.serviceTicketEvent.create({
+        data: {
+          serviceTicketId: ticketId,
+          eventType: "workshop_progress",
+          createdByUserId: userId,
+          payloadJson: { workshopStatus, note, nextTicketStatus },
+        },
+      });
+      return tx.serviceTicket.findUniqueOrThrow({
+        where: { id: ticketId },
+        include: serviceTicketAdminInclude,
+      });
+    });
+
+    void notifyCustomerViaLine(prisma, {
+      customerId: existing.customerId,
+      eventType: "service_ticket_workshop_updated",
+      text: `服務單 ${existing.ticketNo} 廠內進度更新：${workshopStatusLabel(workshopStatus)}${note ? `（${note}）` : ""}`,
+      payload: { serviceTicketId: existing.id.toString(), workshopStatus },
+    }).catch((err) => console.error("[line-notify] workshop_updated", err));
+
+    res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+/** 後台：開立報價 */
+app.post("/api/service-tickets/:ticketId/quote", async (req, res) => {
+  try {
+    const auth = getAuthUser(req);
+    const ticketId = toBigInt(req.params.ticketId);
+    if (!ticketId) {
+      res.status(400).json({ ok: false, message: "參數錯誤" });
+      return;
+    }
+    const amountRaw = req.body?.amount;
+    const detail = typeof req.body?.detail === "string" ? req.body.detail.trim() || null : null;
+    const n = Number(amountRaw);
+    if (!Number.isFinite(n) || n < 0) {
+      res.status(400).json({ ok: false, message: "報價金額無效" });
+      return;
+    }
+    const existing = await prisma.serviceTicket.findUnique({ where: { id: ticketId } });
+    if (!existing) {
+      res.status(404).json({ ok: false, message: "找不到服務單" });
+      return;
+    }
+    if (!["in_workshop", "quote_pending", "quote_rejected"].includes(existing.status)) {
+      res.status(400).json({
+        ok: false,
+        message: `目前狀態「${serviceTicketStatusLabel(existing.status)}」無法開報價`,
+      });
+      return;
+    }
+    const userId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
+    const now = new Date();
+    const amount = new Prisma.Decimal(String(n));
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.serviceTicket.update({
+        where: { id: ticketId },
+        data: {
+          status: "quote_pending",
+          quoteAmount: amount,
+          quoteDetail: detail,
+          quoteStatus: "pending",
+          quoteSentAt: now,
+          quoteRespondedAt: null,
+        },
+      });
+      await tx.serviceTicketEvent.create({
+        data: {
+          serviceTicketId: ticketId,
+          eventType: "quote_sent",
+          createdByUserId: userId,
+          payloadJson: { amount: amount.toString(), detail },
+        },
+      });
+      return tx.serviceTicket.findUniqueOrThrow({
+        where: { id: ticketId },
+        include: serviceTicketAdminInclude,
+      });
+    });
+
+    void notifyCustomerViaLine(prisma, {
+      customerId: existing.customerId,
+      eventType: "service_ticket_quote",
+      text: `服務單 ${existing.ticketNo} 有新報價：$${amount.toString()}${detail ? `（${detail}）` : ""}，請至會員頁確認同意或拒絕。`,
+      payload: { serviceTicketId: existing.id.toString(), amount: amount.toString() },
+    }).catch((err) => console.error("[line-notify] quote", err));
+
+    res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+/** 後台：代客戶同意／拒絕報價 */
+app.post("/api/service-tickets/:ticketId/quote-respond", async (req, res) => {
+  try {
+    const auth = getAuthUser(req);
+    const ticketId = toBigInt(req.params.ticketId);
+    const accept = req.body?.accept === true || req.body?.accept === "true";
+    if (!ticketId) {
+      res.status(400).json({ ok: false, message: "參數錯誤" });
+      return;
+    }
+    const existing = await prisma.serviceTicket.findUnique({ where: { id: ticketId } });
+    if (!existing || existing.status !== "quote_pending") {
+      res.status(400).json({ ok: false, message: "目前沒有待確認的報價" });
+      return;
+    }
+    const userId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
+    const now = new Date();
+    const nextStatus = accept ? "quote_accepted" : "quote_rejected";
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.serviceTicket.update({
+        where: { id: ticketId },
+        data: {
+          status: nextStatus,
+          quoteStatus: accept ? "accepted" : "rejected",
+          quoteRespondedAt: now,
+          chargeAmount: accept ? existing.quoteAmount : existing.chargeAmount,
+        },
+      });
+      await tx.serviceTicketEvent.create({
+        data: {
+          serviceTicketId: ticketId,
+          eventType: accept ? "quote_accepted" : "quote_rejected",
+          createdByUserId: userId,
+          payloadJson: { via: "admin" },
+        },
+      });
+      return tx.serviceTicket.findUniqueOrThrow({
+        where: { id: ticketId },
+        include: serviceTicketAdminInclude,
+      });
+    });
+    res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+/** 後台：派送回 */
+app.post("/api/service-tickets/:ticketId/assign-return", async (req, res) => {
+  try {
+    const auth = getAuthUser(req);
+    const ticketId = toBigInt(req.params.ticketId);
+    const driverId = toBigInt(req.body?.driverId);
+    const vehicleId = req.body?.vehicleId != null && req.body.vehicleId !== "" ? toBigInt(req.body.vehicleId) : null;
+    const returnDateYmd = typeof req.body?.returnDateYmd === "string" ? req.body.returnDateYmd.trim() : "";
+    if (!ticketId || !driverId || !returnDateYmd) {
+      res.status(400).json({ ok: false, message: "請指定司機與送回日期" });
+      return;
+    }
+    const returnDate = parseLocalYmdToDbDate(returnDateYmd);
+    if (!returnDate) {
+      res.status(400).json({ ok: false, message: "returnDateYmd 須為 YYYY-MM-DD" });
+      return;
+    }
+    const existing = await prisma.serviceTicket.findUnique({ where: { id: ticketId } });
+    if (!existing) {
+      res.status(404).json({ ok: false, message: "找不到服務單" });
+      return;
+    }
+    if (!["quote_accepted", "pending_return", "in_workshop"].includes(existing.status)) {
+      res.status(400).json({
+        ok: false,
+        message: `目前狀態「${serviceTicketStatusLabel(existing.status)}」無法派送回（廠內完工且報價同意後）`,
+      });
+      return;
+    }
+    const driver = await prisma.driver.findFirst({ where: { id: driverId, isActive: true } });
+    if (!driver) {
+      res.status(400).json({ ok: false, message: "找不到有效司機" });
+      return;
+    }
+    const userId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
+    const now = new Date();
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.serviceTicket.update({
+        where: { id: ticketId },
+        data: {
+          status: "pending_return",
+          returnDriverId: driverId,
+          returnVehicleId: vehicleId ?? driver.vehicleId,
+          returnDate,
+          returnAssignedByUserId: userId,
+          returnAssignedAt: now,
+          workshopStatus: existing.workshopStatus ?? "done_pending_return",
+        },
+      });
+      await tx.serviceTicketEvent.create({
+        data: {
+          serviceTicketId: ticketId,
+          eventType: "return_assigned",
+          createdByUserId: userId,
+          payloadJson: { driverId: driverId.toString(), returnDateYmd },
+        },
+      });
+      return tx.serviceTicket.findUniqueOrThrow({
+        where: { id: ticketId },
+        include: serviceTicketAdminInclude,
+      });
+    });
+    res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+/** 後台：結案入帳（現金／月結標記；實際 AR 可後續再串訂單） */
+app.post("/api/service-tickets/:ticketId/close", async (req, res) => {
+  try {
+    const auth = getAuthUser(req);
+    const ticketId = toBigInt(req.params.ticketId);
+    const billingType = typeof req.body?.billingType === "string" ? req.body.billingType.trim() : "";
+    if (!ticketId || !["cash", "monthly"].includes(billingType)) {
+      res.status(400).json({ ok: false, message: "請指定 billingType：cash 或 monthly" });
+      return;
+    }
+    const existing = await prisma.serviceTicket.findUnique({ where: { id: ticketId } });
+    if (!existing) {
+      res.status(404).json({ ok: false, message: "找不到服務單" });
+      return;
+    }
+    if (!["returned", "onsite_completed", "quote_accepted"].includes(existing.status)) {
+      res.status(400).json({
+        ok: false,
+        message: `目前狀態「${serviceTicketStatusLabel(existing.status)}」無法結案`,
+      });
+      return;
+    }
+    let charge = existing.chargeAmount ?? existing.quoteAmount ?? existing.assessFeeAmount;
+    if (req.body?.chargeAmount != null && req.body.chargeAmount !== "") {
+      const n = Number(req.body.chargeAmount);
+      if (!Number.isFinite(n) || n < 0) {
+        res.status(400).json({ ok: false, message: "chargeAmount 無效" });
+        return;
+      }
+      charge = new Prisma.Decimal(String(n));
+    }
+    const userId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
+    const now = new Date();
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.serviceTicket.update({
+        where: { id: ticketId },
+        data: {
+          status: "closed",
+          billingType,
+          chargeAmount: charge,
+          closedAt: now,
+        },
+      });
+      await tx.serviceTicketEvent.create({
+        data: {
+          serviceTicketId: ticketId,
+          eventType: "closed",
+          createdByUserId: userId,
+          payloadJson: { billingType, chargeAmount: charge?.toString() ?? null },
+        },
+      });
+      return tx.serviceTicket.findUniqueOrThrow({
+        where: { id: ticketId },
+        include: serviceTicketAdminInclude,
+      });
+    });
+
+    void notifyCustomerViaLine(prisma, {
+      customerId: existing.customerId,
+      eventType: "service_ticket_closed",
+      text: `服務單 ${existing.ticketNo} 已結案${charge && Number(charge) > 0 ? `，費用 $${charge.toString()}（${billingType === "monthly" ? "月結" : "現金"}）` : ""}。`,
+      payload: { serviceTicketId: existing.id.toString(), billingType },
+    }).catch((err) => console.error("[line-notify] closed", err));
+
+    res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
 /** 建立收空桶任務 */
 app.post("/api/barrel-pickups", async (req, res) => {
   try {
@@ -10520,6 +11225,276 @@ app.get("/api/driver/barrel-pickups", async (req, res) => {
     });
 
     res.json(rows);
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+/** 司機：當日飲水機評估任務 */
+app.get("/api/driver/service-tickets", async (req, res) => {
+  try {
+    const auth = getAuthUser(req);
+    if (!auth?.driverId) {
+      res.status(403).json({ ok: false, message: "僅司機可查看評估任務" });
+      return;
+    }
+    const dateParam = typeof req.query.date === "string" ? req.query.date.trim() : "";
+    const ymd = dateParam || toLocalYmd(new Date());
+    const day = parseLocalYmdToDbDate(ymd);
+    if (!day) {
+      res.status(400).json({ ok: false, message: "date 格式須為 YYYY-MM-DD" });
+      return;
+    }
+    const next = new Date(day);
+    next.setUTCDate(next.getUTCDate() + 1);
+
+    const rows = await prisma.serviceTicket.findMany({
+      where: {
+        OR: [
+          {
+            assessDriverId: auth.driverId,
+            assessDate: { gte: day, lt: next },
+            status: {
+              in: [
+                "assess_assigned",
+                "onsite_completed",
+                "pending_pickup",
+                "pending_loaner",
+                "in_workshop",
+                "unable",
+                "cancelled",
+              ],
+            },
+          },
+          {
+            returnDriverId: auth.driverId,
+            returnDate: { gte: day, lt: next },
+            status: { in: ["pending_return", "returned"] },
+          },
+        ],
+      },
+      include: serviceTicketAdminInclude,
+      orderBy: [{ id: "asc" }],
+    });
+    res.json({ ok: true, data: rows.map(serializeServiceTicketAdmin) });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+/** 司機：現場評估回報／臨時機換機回報 */
+app.post("/api/driver/service-tickets/:ticketId/assess-report", async (req, res) => {
+  try {
+    const auth = getAuthUser(req);
+    if (!auth?.driverId) {
+      res.status(403).json({ ok: false, message: "僅司機可回報評估" });
+      return;
+    }
+    const ticketId = toBigInt(req.params.ticketId);
+    if (!ticketId) {
+      res.status(400).json({ ok: false, message: "參數錯誤" });
+      return;
+    }
+    const body = req.body as {
+      outcome?: unknown;
+      note?: unknown;
+      feeAmount?: unknown;
+      customerAgreed?: unknown;
+    };
+    const outcome = typeof body.outcome === "string" ? body.outcome.trim() : "";
+    if (!["onsite_fixed", "bring_back", "unable", "cancelled", "loaner_swapped"].includes(outcome)) {
+      res.status(400).json({
+        ok: false,
+        message: "outcome 須為 onsite_fixed｜bring_back｜unable｜cancelled｜loaner_swapped",
+      });
+      return;
+    }
+    const note = typeof body.note === "string" ? body.note.trim() || null : null;
+    const customerAgreed = body.customerAgreed === true || body.customerAgreed === "true" || body.customerAgreed === 1;
+
+    let feeAmount: Prisma.Decimal | null = null;
+    if (body.feeAmount != null && body.feeAmount !== "") {
+      const n = Number(body.feeAmount);
+      if (!Number.isFinite(n) || n < 0) {
+        res.status(400).json({ ok: false, message: "費用須為非負數字" });
+        return;
+      }
+      feeAmount = new Prisma.Decimal(String(n));
+    }
+
+    if (outcome === "onsite_fixed" && !customerAgreed) {
+      res.status(400).json({ ok: false, message: "現場維修須確認已詢問客戶同意" });
+      return;
+    }
+
+    const existing = await prisma.serviceTicket.findUnique({ where: { id: ticketId } });
+    if (!existing) {
+      res.status(404).json({ ok: false, message: "找不到服務單" });
+      return;
+    }
+    if (existing.assessDriverId !== auth.driverId) {
+      res.status(403).json({ ok: false, message: "此服務單未分派給您" });
+      return;
+    }
+
+    if (outcome === "loaner_swapped") {
+      if (existing.status !== "pending_loaner") {
+        res.status(400).json({
+          ok: false,
+          message: `目前狀態「${serviceTicketStatusLabel(existing.status)}」無法回報換機`,
+        });
+        return;
+      }
+    } else if (existing.status !== "assess_assigned") {
+      res.status(400).json({
+        ok: false,
+        message: `目前狀態「${serviceTicketStatusLabel(existing.status)}」無法回報評估`,
+      });
+      return;
+    }
+
+    const nextStatus =
+      outcome === "onsite_fixed"
+        ? "onsite_completed"
+        : outcome === "bring_back"
+          ? "pending_pickup"
+          : outcome === "loaner_swapped"
+            ? "in_workshop"
+            : outcome === "unable"
+              ? "unable"
+              : "cancelled";
+
+    const now = new Date();
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.serviceTicket.update({
+        where: { id: ticketId },
+        data: {
+          status: nextStatus,
+          assessOutcome: outcome === "loaner_swapped" ? existing.assessOutcome ?? "bring_back" : outcome,
+          assessDriverNote: note ?? existing.assessDriverNote,
+          assessFeeAmount: outcome === "loaner_swapped" ? existing.assessFeeAmount : feeAmount,
+          assessCustomerAgreed: outcome === "onsite_fixed" ? true : existing.assessCustomerAgreed,
+          assessReportedAt: outcome === "loaner_swapped" ? existing.assessReportedAt ?? now : now,
+          cancelledReason: outcome === "cancelled" || outcome === "unable" ? note : existing.cancelledReason,
+          closedAt: nextStatus === "unable" || nextStatus === "cancelled" ? now : null,
+          chargeAmount: outcome === "onsite_fixed" ? feeAmount : existing.chargeAmount,
+          workshopStatus: outcome === "loaner_swapped" ? "received" : existing.workshopStatus,
+          workshopUpdatedAt: outcome === "loaner_swapped" ? now : existing.workshopUpdatedAt,
+          workshopNote: outcome === "loaner_swapped" ? note ?? existing.workshopNote : existing.workshopNote,
+        },
+      });
+      await tx.serviceTicketEvent.create({
+        data: {
+          serviceTicketId: ticketId,
+          eventType: outcome === "loaner_swapped" ? "loaner_swapped" : "assess_reported",
+          createdByUserId: auth.id,
+          payloadJson: {
+            outcome,
+            note,
+            feeAmount: feeAmount?.toString() ?? null,
+            customerAgreed: outcome === "onsite_fixed" ? true : null,
+            nextStatus,
+          },
+        },
+      });
+      return tx.serviceTicket.findUniqueOrThrow({
+        where: { id: ticketId },
+        include: serviceTicketAdminInclude,
+      });
+    });
+
+    if (outcome === "loaner_swapped") {
+      void notifyCustomerViaLine(prisma, {
+        customerId: existing.customerId,
+        eventType: "service_ticket_in_workshop",
+        text: `已為您換上臨時機，原機（服務單 ${existing.ticketNo}）已載回廠內處理。`,
+        payload: { serviceTicketId: existing.id.toString(), ticketNo: existing.ticketNo, outcome },
+      }).catch((err) => console.error("[line-notify] loaner_swapped", err));
+    } else {
+      const outcomeLabel =
+        outcome === "onsite_fixed"
+          ? "現場已維修完工"
+          : outcome === "bring_back"
+            ? "需載回廠內處理"
+            : outcome === "unable"
+              ? "無法處理"
+              : "已取消";
+      void notifyCustomerViaLine(prisma, {
+        customerId: existing.customerId,
+        eventType: "service_ticket_assess_reported",
+        text: `您的飲水機服務單 ${existing.ticketNo} 評估結果：${outcomeLabel}${note ? `（${note}）` : ""}。`,
+        payload: { serviceTicketId: existing.id.toString(), ticketNo: existing.ticketNo, outcome, nextStatus },
+      }).catch((err) => console.error("[line-notify] service_ticket_assess_reported", err));
+    }
+
+    res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+/** 司機：送回安裝回報 */
+app.post("/api/driver/service-tickets/:ticketId/return-report", async (req, res) => {
+  try {
+    const auth = getAuthUser(req);
+    if (!auth?.driverId) {
+      res.status(403).json({ ok: false, message: "僅司機可回報送回" });
+      return;
+    }
+    const ticketId = toBigInt(req.params.ticketId);
+    if (!ticketId) {
+      res.status(400).json({ ok: false, message: "參數錯誤" });
+      return;
+    }
+    const note = typeof req.body?.note === "string" ? req.body.note.trim() || null : null;
+    const existing = await prisma.serviceTicket.findUnique({ where: { id: ticketId } });
+    if (!existing) {
+      res.status(404).json({ ok: false, message: "找不到服務單" });
+      return;
+    }
+    if (existing.returnDriverId !== auth.driverId) {
+      res.status(403).json({ ok: false, message: "此送回任務未分派給您" });
+      return;
+    }
+    if (existing.status !== "pending_return") {
+      res.status(400).json({
+        ok: false,
+        message: `目前狀態「${serviceTicketStatusLabel(existing.status)}」無法回報送回`,
+      });
+      return;
+    }
+    const now = new Date();
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.serviceTicket.update({
+        where: { id: ticketId },
+        data: {
+          status: "returned",
+          returnedAt: now,
+          workshopNote: note ? `${existing.workshopNote ?? ""}\n送回：${note}`.trim() : existing.workshopNote,
+        },
+      });
+      await tx.serviceTicketEvent.create({
+        data: {
+          serviceTicketId: ticketId,
+          eventType: "returned",
+          createdByUserId: auth.id,
+          payloadJson: { note },
+        },
+      });
+      return tx.serviceTicket.findUniqueOrThrow({
+        where: { id: ticketId },
+        include: serviceTicketAdminInclude,
+      });
+    });
+
+    void notifyCustomerViaLine(prisma, {
+      customerId: existing.customerId,
+      eventType: "service_ticket_returned",
+      text: `服務單 ${existing.ticketNo} 飲水機已送回安裝完成。`,
+      payload: { serviceTicketId: existing.id.toString() },
+    }).catch((err) => console.error("[line-notify] returned", err));
+
+    res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
   } catch (e) {
     res.status(500).json({ ok: false, message: String(e) });
   }
