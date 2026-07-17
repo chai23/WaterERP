@@ -24,7 +24,8 @@
     "db:migrate-products": "npm run migrate:legacy-products -w apps/api",
     "deploy:build": "powershell -ExecutionPolicy Bypass -File deploy/scripts/build-production.ps1",
     "deploy:nginx": "powershell -ExecutionPolicy Bypass -File deploy/scripts/generate-nginx-config.ps1",
-    "mac:launcher": "bash tools/WaterErpMacLauncher/build.sh"
+    "mac:launcher": "bash tools/WaterErpMacLauncher/build.sh",
+    "win:launcher": "powershell -ExecutionPolicy Bypass -File tools/WaterErpLauncher/build.ps1"
   },
   "engines": {
     "node": ">=18"

@@ -1,4 +1,29 @@
-# 超好企業進銷存系統 啟動器 — 資料庫結構升級
+# 超好企業進銷存系統 Windows 啟動器
+
+## 一鍵重新建置
+
+每次 `git pull` 拿到新版程式碼後，重新建置啟動器：
+
+- **雙擊**：`tools/WaterErpLauncher/建置啟動器.cmd`
+- 或 PowerShell：`powershell -ExecutionPolicy Bypass -File tools\WaterErpLauncher\build.ps1`
+- 或在專案根目錄：`npm run win:launcher`
+
+建置腳本會：
+
+1. **先清除**舊建置輸出（`bin/`、`obj/`、`publish/`），確保磁碟上只留最新版
+2. 以 `dotnet publish` 產生**單一 exe**（self-contained，免另裝 .NET 執行階段）
+3. 完成後自動開啟啟動器
+
+產出位置：`tools/WaterErpLauncher/publish/WaterErpLauncher.exe`
+
+> 需求：本機安裝 **.NET 8 SDK**（`dotnet --version` 可確認）。
+> 這三個輸出資料夾已列入 `.gitignore`，不會被提交；舊版本只會出現在本機磁碟，靠上述腳本每次清理。
+
+參數：`-NoLaunch`（建置後不自動開啟）、`-Runtime win-x64`（預設）。
+
+---
+
+# 資料庫結構升級
 
 ## 與「舊庫轉換」的差別
 
