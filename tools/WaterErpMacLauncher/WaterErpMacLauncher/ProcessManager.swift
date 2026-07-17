@@ -123,12 +123,29 @@ final class ProcessManager: ObservableObject {
         log.success("全部服務已啟動")
     }
 
-    func stopAll(settings: LauncherSettings, log: LogStore) async {
-        log.info("正在停止全部服務…")
+    /// 停止 API 與各 Web 開發服務，但保留 MySQL。
+    /// 資料庫升級／舊庫轉換時必須使用此方法，避免中途失去資料庫連線。
+    func stopApplicationServices(settings: LauncherSettings, log: LogStore) async {
+        log.info("正在停止應用服務（保留 MySQL）…")
         for id in [ServiceId.liff, .driver, .admin, .api] {
             await stopService(id, log: log)
         }
         await PortHelper.stopOrphanedDevProcesses(projectRoot: settings.projectRoot, log: log)
+
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        let stillRunning = await HealthService.statuses(settings: settings)
+            .filter { $0.id != .mysql && $0.running }
+        if stillRunning.isEmpty {
+            log.success("應用服務已停止，MySQL 保持運行")
+        } else {
+            let names = stillRunning.map(\.id.displayName).joined(separator: "、")
+            log.warn("以下應用服務可能仍在運行：\(names)")
+        }
+    }
+
+    func stopAll(settings: LauncherSettings, log: LogStore) async {
+        log.info("正在停止全部服務…")
+        await stopApplicationServices(settings: settings, log: log)
         await stopMysql(settings: settings, log: log)
 
         try? await Task.sleep(nanoseconds: 500_000_000)

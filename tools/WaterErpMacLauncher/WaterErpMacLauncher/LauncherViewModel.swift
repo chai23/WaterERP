@@ -161,12 +161,15 @@ final class LauncherViewModel: ObservableObject {
         guard confirm(title: task.title, message: task.confirmMessage) else { return }
 
         runTask {
-            if self.services.contains(where: { $0.id == .api && $0.running }) {
+            if self.services.contains(where: { $0.id != .mysql && $0.running }) {
                 if self.confirm(
-                    title: "停止 API",
-                    message: "目前有服務在執行中。轉換資料前建議先停止 API，是否現在停止全部服務？"
+                    title: "停止應用服務",
+                    message: "目前有應用服務在執行中。轉換資料前建議先停止 API 與網頁服務；MySQL 會保持運行。是否現在停止應用服務？"
                 ) {
-                    await self.processManager.stopAll(settings: self.settings, log: self.logStore)
+                    await self.processManager.stopApplicationServices(
+                        settings: self.settings,
+                        log: self.logStore
+                    )
                 }
             }
             try self.persistLegacyDatabaseURL()
@@ -203,21 +206,29 @@ final class LauncherViewModel: ObservableObject {
             \(listText)
 
             建議先備份資料庫（mysqldump）。
-            升級前會建議停止 API。
+            升級前會建議停止 API 與網頁服務，但 MySQL 會保持運行。
 
             確定繼續？
             """
             guard self.confirm(title: "升級資料庫結構", message: message) else { return }
 
-            if self.services.contains(where: { $0.id == .api && $0.running }) {
+            if self.services.contains(where: { $0.id != .mysql && $0.running }) {
                 if self.confirm(
-                    title: "停止 API",
-                    message: "目前有服務在執行中。升級結構前建議先停止 API，是否現在停止全部服務？"
+                    title: "停止應用服務",
+                    message: "目前有應用服務在執行中。升級結構前建議先停止 API 與網頁服務；MySQL 會保持運行。是否現在停止應用服務？"
                 ) {
-                    await self.processManager.stopAll(settings: self.settings, log: self.logStore)
+                    await self.processManager.stopApplicationServices(
+                        settings: self.settings,
+                        log: self.logStore
+                    )
                 }
             }
 
+            guard await HealthService.isMysqlRunning(settings: self.settings) else {
+                self.logStore.error("MySQL 未在運行，無法升級資料庫結構。請先啟動 MySQL。")
+                throw LauncherError.timeout("MySQL 未在運行，資料庫結構升級已中止")
+            }
+            self.logStore.success("已確認 MySQL 保持運行，開始升級結構")
             try await self.executeNpmScript("db:schema-apply", label: "升級資料庫結構")
             _ = await self.executeNpmScriptOptional("db:generate", label: "Prisma generate")
             await self.refreshSchemaStatus(showDialog: true)

@@ -147,7 +147,7 @@ type OrderRow = {
   }>;
 };
 
-type Tab = "order" | "orders" | "account";
+type Tab = "order" | "orders" | "service" | "account";
 type OrderFilter = "all" | "active" | "done" | "bill_unpaid";
 
 const TOKEN_KEY = "water_liff_member_token";
@@ -408,6 +408,28 @@ function IconUser({ active }: { active?: boolean }) {
   );
 }
 
+function IconService({ active }: { active?: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M13.8 3.6a1 1 0 0 1 1.6-.4l.9.7a2 2 0 0 0 2 .28l1-.45a1 1 0 0 1 1.33.54l.5 1.02a2 2 0 0 0 1.53 1.08l1.12.16a1 1 0 0 1 .82 1.43l-.5 1.02a2 2 0 0 0 0 1.78l.5 1.02a1 1 0 0 1-.82 1.43l-1.12.16a2 2 0 0 0-1.53 1.08l-.5 1.02a1 1 0 0 1-1.33.54l-1-.45a2 2 0 0 0-2 .28l-.9.7a1 1 0 0 1-1.6-.4l-.34-1.08a2 2 0 0 0-1.47-1.28l-1.1-.27a1 1 0 0 1-.46-1.68l.8-.82a2 2 0 0 0 .54-1.94l-.2-1.12a1 1 0 0 1 1.14-1.29l1.12.2a2 2 0 0 0 1.94-.54l.82-.8Z"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+        opacity={active ? 1 : 0.85}
+      />
+      <circle cx="15.8" cy="10.3" r="2.1" stroke="currentColor" strokeWidth="1.6" opacity={active ? 1 : 0.85} />
+      <path
+        d="M3.5 20.5l6.2-6.2"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        opacity={active ? 1 : 0.85}
+      />
+    </svg>
+  );
+}
+
 export default function App() {
   const [bootError, setBootError] = useState("");
   const [booting, setBooting] = useState(true);
@@ -417,7 +439,7 @@ export default function App() {
   const [tab, setTab] = useState<Tab>(() => {
     try {
       const q = new URLSearchParams(window.location.search).get("tab")?.trim().toLowerCase();
-      if (q === "orders" || q === "order" || q === "account") return q;
+      if (q === "orders" || q === "order" || q === "service" || q === "account") return q;
     } catch {
       // ignore
     }
@@ -458,6 +480,7 @@ export default function App() {
   const [svcPreferredDate, setSvcPreferredDate] = useState("");
   const [svcPreferredSlot, setSvcPreferredSlot] = useState("");
   const [svcProblemNote, setSvcProblemNote] = useState("");
+  const [svcNeedLoaner, setSvcNeedLoaner] = useState(false);
   const [svcMsg, setSvcMsg] = useState("");
   const [svcSubmitting, setSvcSubmitting] = useState(false);
   const [expandedTicketId, setExpandedTicketId] = useState<string | null>(null);
@@ -761,6 +784,7 @@ export default function App() {
           preferredDate: svcPreferredDate || undefined,
           preferredSlot: svcPreferredSlot.trim() || undefined,
           problemNote: svcProblemNote.trim(),
+          needLoaner: svcNeedLoaner,
         },
       });
       if (!res.ok || !res.data) {
@@ -769,6 +793,7 @@ export default function App() {
       }
       setSvcMsg(`已送出：${res.data.ticketNo}`);
       setSvcProblemNote("");
+      setSvcNeedLoaner(false);
       setSvcPreferredSlot("");
       setSvcPreferredDate("");
       const list = await api<ServiceTicket[]>("/api/liff/service-tickets", { token });
@@ -1819,7 +1844,11 @@ export default function App() {
               {billingHint(customer.billingType)}
             </p>
           </section>
+        </>
+      ) : null}
 
+      {tab === "service" ? (
+        <>
           <section className="liff-card">
             <div className="section-head">
               <h2>飲水機服務</h2>
@@ -1828,19 +1857,29 @@ export default function App() {
             <p className="muted" style={{ marginTop: 0 }}>
               需清洗或維修飲水機時可由此回報，客服受理後會安排人員到場評估。
             </p>
-            <div className="mode-toggle" role="tablist" aria-label="服務類型" style={{ marginBottom: "0.75rem" }}>
+            <div className="svc-form">
+            <div className="field" style={{ marginBottom: "0.5rem" }}>
+              <span>服務類型</span>
+              <p className="muted" style={{ margin: "0.25rem 0 0", fontSize: "0.85rem" }}>
+                目前選擇：
+                <strong style={{ marginLeft: "0.35rem", color: "var(--accent)" }}>
+                  {svcType === "repair" ? "維修" : svcType === "cleaning" ? "清洗" : "維修＋清洗"}
+                </strong>
+              </p>
+            </div>
+            <div className="mode-toggle mode-toggle--3" role="tablist" aria-label="服務類型" style={{ marginBottom: "0.75rem" }}>
               {(
                 [
                   ["repair", "維修"],
                   ["cleaning", "清洗"],
-                  ["both", "清洗＋維修"],
+                  ["both", "維修＋清洗"],
                 ] as const
               ).map(([value, label]) => (
                 <button
                   key={value}
                   type="button"
                   role="tab"
-                  className={svcType === value ? "is-on" : ""}
+                  className={`mode-toggle__btn${svcType === value ? " is-on" : ""}`}
                   aria-selected={svcType === value}
                   onClick={() => setSvcType(value)}
                 >
@@ -1881,10 +1920,24 @@ export default function App() {
                 onChange={(e) => setSvcProblemNote(e.target.value)}
               />
             </label>
-            {svcMsg ? <p className="muted">{svcMsg}</p> : null}
-            <button type="button" className="btn-primary" disabled={svcSubmitting} onClick={() => void submitServiceTicket()}>
-              {svcSubmitting ? "送出中…" : "送出服務回報"}
-            </button>
+            <label className={`option-check${svcNeedLoaner ? " is-on" : ""}`}>
+              <input
+                type="checkbox"
+                checked={svcNeedLoaner}
+                onChange={(e) => setSvcNeedLoaner(e.target.checked)}
+              />
+              <span className="option-check__body">
+                <span className="option-check__title">若需載回廠維修，請提供備用機</span>
+                <span className="option-check__hint">勾選後，客服派司機評估時會知道需攜帶備用機。</span>
+              </span>
+            </label>
+            <div className="svc-form-actions">
+              {svcMsg ? <p className="feedback feedback--info">{svcMsg}</p> : null}
+              <button type="button" className="btn btn--primary" disabled={svcSubmitting} onClick={() => void submitServiceTicket()}>
+                {svcSubmitting ? "送出中…" : "送出服務回報"}
+              </button>
+            </div>
+            </div>
 
             {serviceTickets.length > 0 ? (
               <div className="order-list" style={{ marginTop: "1rem" }}>
@@ -1946,10 +1999,10 @@ export default function App() {
                               </div>
                             ) : null}
                           </dl>
-                          {t.status === "pending_pickup" ? (
+                          {t.status === "pending_pickup" && !t.needLoaner ? (
                             <button
                               type="button"
-                              className="btn-primary"
+                              className="btn btn--primary"
                               style={{ marginTop: "0.75rem" }}
                               disabled={svcSubmitting}
                               onClick={() => void requestLoaner(t.id)}
@@ -1957,9 +2010,11 @@ export default function App() {
                               需要臨時機（換機）
                             </button>
                           ) : null}
-                          {t.status === "pending_loaner" || t.needLoaner ? (
+                          {t.needLoaner ? (
                             <p className="muted" style={{ marginBottom: 0, marginTop: "0.5rem" }}>
-                              已登記需要臨時機，客服會安排司機攜帶臨時機前往。
+                              {t.status === "pending_loaner" || t.status === "pending_pickup"
+                                ? "已登記需要備用機，客服會安排司機攜帶備用機前往換機。"
+                                : "已登記：若需載回廠維修，請提供備用機（派評估時司機會攜帶）。"}
                             </p>
                           ) : null}
                           {t.workshopStatus ? (
@@ -1977,10 +2032,10 @@ export default function App() {
                                 報價 ${money(t.quoteAmount ?? 0)}
                                 {t.quoteDetail ? `（${t.quoteDetail}）` : ""}
                               </p>
-                              <div style={{ display: "flex", gap: "0.5rem" }}>
+                              <div className="btn-row" style={{ marginBottom: 0 }}>
                                 <button
                                   type="button"
-                                  className="btn-primary"
+                                  className="btn btn--primary"
                                   disabled={svcSubmitting}
                                   onClick={() => void respondQuote(t.id, true)}
                                 >
@@ -2009,7 +2064,11 @@ export default function App() {
               </p>
             )}
           </section>
+        </>
+      ) : null}
 
+      {tab === "account" ? (
+        <>
           {showCashUnpaid ? (
             <section className="liff-card">
               <div className="section-head">
@@ -2321,6 +2380,10 @@ export default function App() {
         >
           <IconList active={tab === "orders"} />
           訂單
+        </button>
+        <button type="button" className={tab === "service" ? "is-active" : ""} onClick={() => setTab("service")}>
+          <IconService active={tab === "service"} />
+          服務
         </button>
         <button type="button" className={tab === "account" ? "is-active" : ""} onClick={() => setTab("account")}>
           <IconUser active={tab === "account"} />

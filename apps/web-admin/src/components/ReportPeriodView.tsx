@@ -65,6 +65,7 @@ export default function ReportPeriodView({
 
   const summary = detail?.summary;
   const deliveries = detail?.deliveries ?? [];
+  const serviceTickets = detail?.serviceTickets ?? [];
   const payments = detail?.payments ?? [];
 
   const paymentGroups = useMemo(() => {
@@ -136,7 +137,10 @@ export default function ReportPeriodView({
             <div className="report-flow__step report-flow__step--revenue">
               <span className="report-flow__label">① 營收（應收合計）</span>
               <span className="report-flow__value">{moneyText(summary.periodRevenue)}</span>
-              <span className="report-flow__hint">{summary.todayCompletedCount} 筆 · 含稅現金＋月結份額</span>
+              <span className="report-flow__hint">
+                {summary.todayCompletedCount} 筆 · 配送 {moneyText(summary.deliveryRevenue ?? summary.periodRevenue)}
+                {(summary.serviceRevenue ?? 0) > 0 ? ` ＋ 服務 ${moneyText(summary.serviceRevenue)}` : ""}
+              </span>
             </div>
             <span className="report-flow__arrow" aria-hidden>→</span>
             <div className="report-flow__step report-flow__step--collected">
@@ -251,7 +255,9 @@ export default function ReportPeriodView({
       <section className="card">
         <h2 className="card__title card__title--stacked">
           {periodLabel}配送完成
-          <span className="card__title-count">{deliveries.length} 筆 · 應收 {moneyText(summary?.periodRevenue ?? 0)}</span>
+          <span className="card__title-count">
+            {deliveries.length} 筆 · 應收 {moneyText(summary?.deliveryRevenue ?? 0)}
+          </span>
         </h2>
         <p className="card__hint">
           依核銷完成時間列出。「本單應收」為向客戶收取金額（現金列含稅＋月結份額），非未稅明細合計。
@@ -301,9 +307,60 @@ export default function ReportPeriodView({
               <tfoot>
                 <tr className="data-table__foot">
                   <td colSpan={4}>合計</td>
-                  <td className="num">{moneyText(summary?.periodRevenue)}</td>
+                  <td className="num">{moneyText(summary?.deliveryRevenue)}</td>
                   <td className="num">{moneyText(summary?.driverCashCollected)}</td>
                   <td />
+                </tr>
+              </tfoot>
+            ) : null}
+          </table>
+        </div>
+      </section>
+
+      <section className="card">
+        <h2 className="card__title card__title--stacked">
+          {periodLabel}飲水機服務結案
+          <span className="card__title-count">
+            {serviceTickets.length} 筆 · 應收 {moneyText(summary?.serviceRevenue ?? 0)}
+          </span>
+        </h2>
+        <p className="card__hint">
+          依服務單結案時間列入營收。現金結案會同步產生收款入帳；月結則進入月結批次，不在此重複立 AR。
+        </p>
+        <div className="table-wrap">
+          <table className="data-table data-table--compact">
+            <thead>
+              <tr>
+                <th>結案時間</th>
+                <th>服務單</th>
+                <th>帳務訂單</th>
+                <th>客戶</th>
+                <th>帳務</th>
+                <th className="num">應收</th>
+              </tr>
+            </thead>
+            <tbody>
+              {serviceTickets.map((row) => (
+                <tr key={row.id}>
+                  <td><DateTimeCell value={row.closedAt} /></td>
+                  <td>{row.ticketNo}</td>
+                  <td>{row.salesOrder?.orderNo ?? "—"}</td>
+                  <td>{row.customer?.name ?? "—"}</td>
+                  <td>{row.billingType === "monthly" ? "月結" : row.billingType === "cash" ? "現金" : "—"}</td>
+                  <td className="num">{moneyText(row.salesOrder?.orderBillableAmount ?? row.chargeAmount)}</td>
+                </tr>
+              ))}
+              {serviceTickets.length === 0 ? (
+                <tr>
+                  <td colSpan={6}>此區間無服務單結案入帳</td>
+                </tr>
+              ) : null}
+            </tbody>
+            {serviceTickets.length > 0 ? (
+              <tfoot>
+                <tr className="data-table__foot">
+                  <td colSpan={5}>合計</td>
+                  <td className="num">{moneyText(summary?.serviceRevenue)}</td>
                 </tr>
               </tfoot>
             ) : null}

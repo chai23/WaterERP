@@ -8261,3 +8261,221 @@ body,
     border-bottom-color: rgba(33, 199, 177, 0.18);
   }
 }
+
+/* ─── 飲水機服務單：流程工作區 ─── */
+.svc-workspace-card .card__hint {
+  margin-bottom: 1rem;
+}
+
+.svc-flow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 0.35rem 0.25rem;
+  margin-bottom: 1.1rem;
+}
+
+.svc-flow__group {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex: 1 1 120px;
+  min-width: 0;
+}
+
+.svc-flow__arrow {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  flex-shrink: 0;
+  padding: 0 0.1rem;
+}
+
+.svc-flow__step {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.7rem 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-subtle, #f8fafc);
+}
+
+.svc-flow__step.is-active {
+  border-color: color-mix(in srgb, var(--brand) 55%, var(--border));
+  background: color-mix(in srgb, var(--brand) 10%, var(--bg-card, #fff));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand) 20%, transparent);
+}
+
+.svc-flow__step.is-done {
+  border-left: 3px solid var(--success, #059669);
+}
+
+.svc-flow__no {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  margin-right: 0.35rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  background: color-mix(in srgb, var(--brand) 14%, var(--bg-card, #fff));
+  color: var(--brand);
+}
+
+.svc-flow__step.is-active .svc-flow__no {
+  background: var(--brand);
+  color: #fff;
+}
+
+.svc-flow__label {
+  display: block;
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.svc-flow__hint {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
+.svc-workspace-empty {
+  margin: 0;
+  padding: 1.25rem 1rem;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  text-align: center;
+}
+
+.svc-selected {
+  margin-bottom: 1rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle, #f8fafc);
+}
+
+.svc-selected__main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.5rem;
+  font-size: 0.92rem;
+}
+
+.svc-selected__sep {
+  color: var(--text-muted);
+}
+
+.svc-selected__meta {
+  margin-top: 0.35rem;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.svc-alert {
+  margin-top: 0.65rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.84rem;
+  line-height: 1.45;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.5rem;
+}
+
+.svc-alert--warn {
+  background: color-mix(in srgb, var(--warn, #d97706) 12%, var(--bg-card, #fff));
+  border: 1px solid color-mix(in srgb, var(--warn, #d97706) 35%, var(--border));
+}
+
+.svc-alert--info {
+  margin-bottom: 0.75rem;
+  background: color-mix(in srgb, var(--brand) 10%, var(--bg-card, #fff));
+  border: 1px solid color-mix(in srgb, var(--brand) 30%, var(--border));
+}
+
+.svc-workspace-msg {
+  margin: 0.75rem 0 0;
+}
+
+.svc-panels {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.svc-panel {
+  padding: 0.95rem 1rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card, #fff);
+  transition: opacity 0.15s ease;
+}
+
+.svc-panel.is-upcoming {
+  opacity: 0.55;
+}
+
+.svc-panel.is-done {
+  opacity: 0.72;
+}
+
+.svc-panel.is-active {
+  border-color: color-mix(in srgb, var(--brand) 45%, var(--border));
+  box-shadow: inset 3px 0 0 var(--brand);
+}
+
+.svc-panel__head {
+  margin-bottom: 0.75rem;
+}
+
+.svc-panel__title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.svc-panel__desc {
+  margin: 0.25rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.svc-panel__grid {
+  max-width: none;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 0.25rem;
+}
+
+@media (max-width: 720px) {
+  .svc-flow__group {
+    flex: 1 1 100%;
+  }
+
+  .svc-flow__arrow {
+    display: none;
+  }
+
+  .svc-panel__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+:root[data-theme="dark"] .svc-flow__step,
+:root[data-theme="dark"] .svc-selected {
+  background: #121a22;
+}
+
+:root[data-theme="dark"] .svc-panel {
+  background: #101820;
+}
+
+:root[data-theme="dark"] .svc-flow__step.is-active,
+:root[data-theme="dark"] .svc-panel.is-active {
+  background: color-mix(in srgb, var(--brand) 8%, #101820);
+}

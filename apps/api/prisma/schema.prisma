@@ -82,6 +82,7 @@ model Driver {
   barrelMovements BarrelMovement[]
   serviceTicketsAssess ServiceTicket[] @relation("ServiceTicketAssessDriver")
   serviceTicketsReturn ServiceTicket[] @relation("ServiceTicketReturnDriver")
+  serviceTicketsCollect ServiceTicket[] @relation("ServiceTicketCollectorDriver")
 
   @@map("drivers")
 }
@@ -293,8 +294,6 @@ model PayrollSetting {
   id               BigInt   @id @default(1) @db.UnsignedBigInt
   /// 回收空桶每桶薪資（固定）
   emptyBarrelWage  Decimal  @default(0) @map("empty_barrel_wage") @db.Decimal(14, 2)
-  /// 已廢止：搬運改依樓層單價（payroll_floor_bonus_rates）；欄位保留相容
-  floorBonusWage   Decimal  @default(0) @map("floor_bonus_wage") @db.Decimal(14, 2)
   updatedAt        DateTime @updatedAt @map("updated_at") @db.DateTime(3)
 
   @@map("payroll_settings")
@@ -1152,7 +1151,14 @@ model ServiceTicket {
   /// cash | monthly
   billingType            String?   @map("billing_type") @db.VarChar(32)
   chargeAmount           Decimal?  @map("charge_amount") @db.Decimal(14, 2)
-  salesOrderId           BigInt?   @map("sales_order_id") @db.UnsignedBigInt
+  salesOrderId           BigInt?   @unique @map("sales_order_id") @db.UnsignedBigInt
+  /// 負責跟客戶收服務費的司機（現場＝評估司機；載回＝送回司機）
+  collectorDriverId      BigInt?   @map("collector_driver_id") @db.UnsignedBigInt
+  /// 司機日收款核對歸屬日
+  collectionDate         DateTime? @map("collection_date") @db.Date
+  /// 該司機回報帶回之現金／支票（可為 0＝客戶說下次再收）
+  driverCashReceived     Decimal?  @map("driver_cash_received") @db.Decimal(14, 2)
+  driverCheckReceived    Decimal?  @map("driver_check_received") @db.Decimal(14, 2)
   closedAt               DateTime? @map("closed_at") @db.DateTime(3)
   cancelledReason        String?   @map("cancelled_reason") @db.VarChar(500)
   /// liff | admin
@@ -1171,11 +1177,13 @@ model ServiceTicket {
   returnVehicle       Vehicle?        @relation("ServiceTicketReturnVehicle", fields: [returnVehicleId], references: [id], onDelete: SetNull)
   returnAssignedBy    User?           @relation("ServiceTicketReturnAssigner", fields: [returnAssignedByUserId], references: [id], onDelete: SetNull)
   salesOrder          SalesOrder?     @relation(fields: [salesOrderId], references: [id], onDelete: SetNull)
+  collectorDriver     Driver?         @relation("ServiceTicketCollectorDriver", fields: [collectorDriverId], references: [id], onDelete: SetNull)
   events              ServiceTicketEvent[]
 
   @@index([customerId, status])
   @@index([status, createdAt])
   @@index([assessDriverId, assessDate])
+  @@index([collectorDriverId, collectionDate])
   @@map("service_tickets")
 }
 

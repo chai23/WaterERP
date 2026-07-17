@@ -29,6 +29,8 @@ type OrderLineRow = {
 
 type DriverOrderRow = {
   assignmentId: string;
+  sourceType?: "delivery" | "service_ticket";
+  ticketNo?: string | null;
   orderNo: string;
   assignmentStatus: string;
   customerCode: string;
@@ -57,6 +59,8 @@ type ReportData = {
     totalCollected: number;
     totalVariance: number;
     varianceOrderCount: number;
+    deliveryOrderCount?: number;
+    serviceTicketCount?: number;
   };
   orders: DriverOrderRow[];
 };
@@ -146,7 +150,7 @@ export default function DriverDailyCollectionReportPage() {
       <header className="report-page-head">
         <h1 className="report-page-head__title">司機日收款核對</h1>
         <p className="report-page-head__desc">
-          列出司機指定配送日的所有訂單，核對現金與支票回報是否與應收一致。差額 ≠ 0 的列請特別留意。
+          列出司機指定日的配送訂單與飲水機服務費，核對現金／支票回報是否與應收一致。服務費：現場修好算評估司機當天；載回廠後送回算送回司機當天。差額 ≠ 0 的列請特別留意。
         </p>
       </header>
 
@@ -187,7 +191,12 @@ export default function DriverDailyCollectionReportPage() {
           <section className="card report-flow-card">
             <h2 className="card__title card__title--stacked">
               {data.driver.employeeCode} {data.driver.name}
-              <span className="card__title-count">{data.date} · {data.summary.orderCount} 筆訂單</span>
+              <span className="card__title-count">
+                {data.date} · {data.summary.orderCount} 筆
+                {data.summary.serviceTicketCount
+                  ? `（配送 ${data.summary.deliveryOrderCount ?? 0}＋服務 ${data.summary.serviceTicketCount}）`
+                  : ""}
+              </span>
             </h2>
             <div className="report-flow-notes report-flow-notes--summary">
               <div className="report-flow-note">
@@ -227,7 +236,7 @@ export default function DriverDailyCollectionReportPage() {
 
           {data.orders.length === 0 ? (
             <section className="card">
-              <p className="card__hint">此司機在 {data.date} 沒有配送任務（或皆已取消）。</p>
+              <p className="card__hint">此司機在 {data.date} 沒有配送任務或服務費歸屬（或皆已取消）。</p>
             </section>
           ) : (
             <div className="driver-report-orders">
@@ -241,6 +250,11 @@ export default function DriverDailyCollectionReportPage() {
                       <span className="driver-report-order__customer-code">{row.customerCode || "—"}</span>
                       <strong className="driver-report-order__customer-name">{row.customerName}</strong>
                       <span className="driver-report-order__order-no">{row.orderNo}</span>
+                      {row.sourceType === "service_ticket" ? (
+                        <span className="badge badge--info" style={{ marginLeft: "0.4rem" }}>
+                          服務費{row.ticketNo ? ` ${row.ticketNo}` : ""}
+                        </span>
+                      ) : null}
                     </div>
                     <span className={statusBadgeClass(row.collectionStatus, row.collectionVariance)}>
                       {row.collectionStatus}
@@ -289,7 +303,9 @@ export default function DriverDailyCollectionReportPage() {
                         </div>
                       </dl>
                       <p className="card__hint">
-                        流程：{deliveryAssignmentStatusLabel(row.assignmentStatus)}
+                        {row.sourceType === "service_ticket"
+                          ? "來源：飲水機服務單"
+                          : `流程：${deliveryAssignmentStatusLabel(row.assignmentStatus)}`}
                         {row.settlementOutcome ? ` · ${settlementOutcomeLabel(row.settlementOutcome)}` : ""}
                       </p>
                     </div>

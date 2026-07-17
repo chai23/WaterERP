@@ -12,6 +12,8 @@ export type ReportPeriodSummary = {
   todayCompletedCount: number;
   periodOrderOutstanding: number;
   driverCashCollected: number;
+  deliveryRevenue?: number;
+  serviceRevenue?: number;
 };
 
 export type ReportDeliveryRow = {
@@ -27,6 +29,21 @@ export type ReportDeliveryRow = {
   } | null;
   driver?: { user?: { name?: string | null; employeeCode?: string | null } | null; employeeCode?: string | null } | null;
   vehicle?: { plateNo?: string | null } | null;
+};
+
+export type ReportServiceTicketRow = {
+  id: string;
+  ticketNo: string;
+  closedAt?: string | null;
+  billingType?: string | null;
+  chargeAmount?: string | null;
+  customer?: { name?: string | null; customerCode?: string | null } | null;
+  salesOrder?: {
+    orderNo?: string | null;
+    totalAmount?: string | number | null;
+    orderBillableAmount?: string | number | null;
+    billingTypeAtOrder?: string | null;
+  } | null;
 };
 
 export type ReportPaymentRow = {
@@ -45,6 +62,7 @@ export type ReportPeriodDetail = {
   endDate: string;
   summary: ReportPeriodSummary;
   deliveries: ReportDeliveryRow[];
+  serviceTickets?: ReportServiceTicketRow[];
   payments: ReportPaymentRow[];
 };
 

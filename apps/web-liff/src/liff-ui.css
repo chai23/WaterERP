@@ -237,6 +237,10 @@ textarea {
   width: 100%;
 }
 
+.mode-toggle--3 {
+  grid-template-columns: repeat(3, 1fr);
+}
+
 .mode-toggle__btn {
   appearance: none;
   border: 1.5px solid var(--border);
@@ -314,6 +318,70 @@ textarea {
   background: var(--surface-soft);
   color: var(--muted);
   cursor: not-allowed;
+}
+
+.svc-form {
+  display: grid;
+  gap: 0;
+}
+
+.svc-form-actions {
+  margin-top: 0.25rem;
+  padding-top: 0.25rem;
+}
+
+.svc-form-actions .btn {
+  width: 100%;
+}
+
+.option-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  margin-bottom: 0.75rem;
+  padding: 0.8rem 0.9rem;
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.option-check.is-on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.option-check input[type="checkbox"] {
+  width: 1.15rem;
+  height: 1.15rem;
+  min-width: 1.15rem;
+  margin: 0.1rem 0 0;
+  padding: 0;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.option-check__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.option-check__title {
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: var(--ink);
+  line-height: 1.4;
+}
+
+.option-check__hint {
+  font-size: 0.82rem;
+  color: var(--muted);
+  line-height: 1.45;
 }
 
 .btn {
@@ -949,7 +1017,7 @@ textarea {
   max-width: 480px;
   margin: 0 auto;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.25rem;
   padding: 0.45rem 0.55rem calc(0.45rem + env(safe-area-inset-bottom));
   background: rgba(255, 255, 255, 0.94);
@@ -962,15 +1030,18 @@ textarea {
 .liff-nav button {
   border: none;
   background: transparent;
-  padding: 0.4rem 0.2rem 0.35rem;
+  min-width: 0;
+  padding: 0.38rem 0.1rem 0.32rem;
   border-radius: 14px;
   font-weight: 700;
-  font-size: 0.72rem;
+  font-size: 0.68rem;
+  line-height: 1.15;
   color: var(--muted);
   display: grid;
   gap: 0.15rem;
   justify-items: center;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .liff-nav button svg {

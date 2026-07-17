@@ -51,7 +51,6 @@ npm run dev:driver   # http://localhost:5174
 | `apps/api` | REST API、Prisma Client |
 | `apps/web-admin` | 後台 React |
 | `apps/web-driver` | 司機端 React |
-| `packages/shared` | 預留共用型別／常數 |
 
 ## 文件
 

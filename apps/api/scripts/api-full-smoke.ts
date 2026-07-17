@@ -83,15 +83,12 @@ async function main() {
   await testGet("GET /api/reports/ar-exceptions", "/api/reports/ar-exceptions");
   await testGet("GET /api/reports/driver-cash-close", `/api/reports/driver-cash-close?date=${todayYmd()}`);
   await testGet("GET /api/accounting/summary", `/api/accounting/summary?from=${todayYmd()}&to=${todayYmd()}`);
-  const period = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}`;
-  await testGet("GET /api/billing/monthly-orders", `/api/billing/monthly-orders?period=${period}`);
 
   const customers = customersRaw as { id: string }[] | null;
   const drivers = driversRaw as { id: string; user?: { employeeCode?: string } }[] | null;
 
   if (customers?.length) {
     const c = customers[0]!;
-    await testGet("GET /api/billing/monthly-pending", `/api/billing/monthly-pending?customerId=${c.id}&cutoffDate=${todayYmd()}`);
     await testGet("GET /api/billing/statements", `/api/billing/statements?customerId=${c.id}&cutoffDate=${todayYmd()}`);
     await testGet("GET customer detail", `/api/customers/${c.id}`);
     await testGet("GET billing-summary", `/api/customers/${c.id}/billing-summary`);

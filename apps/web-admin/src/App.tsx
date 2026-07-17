@@ -14,7 +14,6 @@ import OrderAssignPage from "./pages/OrderAssignPage";
 import OrderCompletePage from "./pages/OrderCompletePage";
 import OrderProxyReportPage from "./pages/OrderProxyReportPage";
 import OrderQueryPage from "./pages/OrderQueryPage";
-import OrderEditPage from "./pages/OrderEditPage";
 import ServiceTicketsPage from "./pages/ServiceTicketsPage";
 import BarrelPickupNewPage from "./pages/BarrelPickupNewPage";
 import BarrelPickupSettlePage from "./pages/BarrelPickupSettlePage";
@@ -78,8 +77,6 @@ export default function App() {
               <Route path="orders/barrel-pickup/query" element={<BarrelPickupQueryPage />} />
               <Route path="orders/service-tickets" element={<ServiceTicketsPage />} />
               <Route path="orders/query" element={<OrderQueryPage />} />
-              <Route path="orders/edit" element={<OrderEditPage />} />
-
               <Route path="data" element={<Navigate to="/data/customers" replace />} />
               <Route path="data/customers" element={<DataCustomersPage />} />
               <Route path="data/drivers" element={<DataDriversPage />} />

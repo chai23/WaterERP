@@ -109,10 +109,11 @@
 
 ## 8. 月結對帳後台
 
-- `GET /api/billing/monthly-pending?cutoffDate=YYYY-MM-DD&customerId=&unpaidOnly=`：**截止日**篩選待結清（`office_settled_at` 早於截止日 00:00），回傳尚欠合計。  
-- `POST /api/billing/monthly-receive`：指定 `customerId`、`cutoffDate`、收款金額與方式；建立 `Payment`、依 FIFO 沖銷並寫 `monthly_receipt_alloc`。  
-- `GET /api/billing/monthly-orders?period=YYYY-MM&...`：依**曆月期別**列表（報表用）。  
-- `POST /api/billing/monthly-mark-paid`：**已棄用**（仍保留）；內部改為與 FIFO 一致之沖銷，請優先使用 `monthly-receive`。
+- `GET /api/billing/monthly-unsettled?customerId=`：尚未開立批次的已完成月結訂單（不限截止日），回傳尚欠合計。後台對帳頁使用此端點。  
+- ~~`GET /api/billing/monthly-pending`~~：**已移除**；改用 `monthly-unsettled` 與請款單／statements 流程。  
+- ~~`GET /api/billing/monthly-orders`~~：**已移除**；改用 `monthly-unsettled` 與請款單／statements 流程。  
+- ~~`POST /api/billing/monthly-receive`~~：**已移除**（回傳 HTTP 410）；改由一般請款單／收款沖帳流程處理。  
+- ~~`POST /api/billing/monthly-mark-paid`~~：**已移除**（回傳 HTTP 410）；改由一般請款單／收款沖帳流程處理。
 
 ## 9. 客戶查詢帳務明細（後台）
 

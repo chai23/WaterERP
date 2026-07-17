@@ -45,7 +45,6 @@ const PATH_PERMISSION: Record<string, PermModule> = {
   "/orders/new": "orders",
   "/orders/patrol": "orders",
   "/orders/liff-review": "orders",
-  "/orders/edit": "orders",
   "/orders/query": "orders",
   "/orders/assign": "assign",
   "/orders/proxy-report": "assign",

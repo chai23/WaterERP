@@ -123,6 +123,11 @@ const MIGRATION_PROBES: Record<string, MigrationProbe> = {
     return Number(rows[0]?.cnt ?? 0) === 0;
   },
   "042_customer_floor_fee_rates.sql": (p) => tableExists(p, "customer_floor_fee_rates"),
+  "043_service_tickets.sql": (p) => tableExists(p, "service_tickets"),
+  "044_service_ticket_billing.sql": (p) => indexExists(p, "service_tickets", "uq_service_tickets_sales_order"),
+  "045_service_ticket_driver_collection.sql": (p) => columnExists(p, "service_tickets", "collector_driver_id"),
+  "046_drop_floor_bonus_wage.sql": async (p) =>
+    !(await columnExists(p, "payroll_settings", "floor_bonus_wage")),
 };
 
 async function bootstrapFromExistingDb(prisma: PrismaClient): Promise<void> {

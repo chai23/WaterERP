@@ -13,6 +13,8 @@ type ServiceTicketJob = {
   status: string;
   statusLabel?: string;
   problemNote?: string | null;
+  needLoaner?: boolean;
+  loanerNote?: string | null;
   preferredSlot?: string | null;
   assessSlot?: string | null;
   assessOutcome?: string | null;
@@ -176,6 +178,24 @@ export default function ServiceTicketTab({ authHeaders }: Props) {
                 <div>{job.deliveryAddress?.addressLine ?? "—"}</div>
                 <div className="d-muted">{job.customer?.mobile || job.customer?.phone || ""}</div>
                 {job.assessSlot ? <div>時段：{job.assessSlot}</div> : null}
+                {job.needLoaner && job.status === "assess_assigned" ? (
+                  <div
+                    style={{
+                      marginTop: "0.5rem",
+                      padding: "0.5rem 0.65rem",
+                      background: "#fff8e6",
+                      border: "1px solid #f0d58c",
+                      borderRadius: "6px",
+                      fontSize: "0.92rem",
+                    }}
+                  >
+                    <strong>請攜帶備用機</strong>
+                    <div className="d-muted" style={{ marginTop: "0.2rem" }}>
+                      客戶已登記：若評估後需載回廠維修，請攜帶備用機到場換機。
+                      {job.loanerNote ? `（${job.loanerNote}）` : ""}
+                    </div>
+                  </div>
+                ) : null}
                 <div style={{ marginTop: "0.35rem" }}>問題：{job.problemNote ?? "—"}</div>
                 {job.assessOutcome ? (
                   <div className="d-muted" style={{ marginTop: "0.35rem" }}>
@@ -223,13 +243,23 @@ export default function ServiceTicketTab({ authHeaders }: Props) {
                       >
                         現場修好
                       </button>
+                      {job.needLoaner ? (
+                        <button
+                          type="button"
+                          className="d-btn d-btn--primary"
+                          disabled={savingId === id}
+                          onClick={() => void report(id, "loaner_swapped")}
+                        >
+                          已換備用機並載回
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         className="d-btn d-btn--secondary"
                         disabled={savingId === id}
                         onClick={() => void report(id, "bring_back")}
                       >
-                        需載回
+                        {job.needLoaner ? "需載回（未換機）" : "需載回"}
                       </button>
                       <button
                         type="button"

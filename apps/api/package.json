@@ -15,7 +15,6 @@
     "db:schema-apply": "tsx scripts/schema-migrate.ts --apply",
     "ar:backfill": "tsx scripts/ar-backfill.ts",
     "ar:reconcile": "tsx scripts/ar-reconcile.ts",
-    "migrate:customers": "tsx scripts/migrate-customer-data.ts",
     "migrate:legacy-masters": "tsx scripts/migrate-legacy-masters.ts",
     "migrate:legacy-zones": "tsx scripts/migrate-legacy-masters.ts --fix-zones",
     "migrate:legacy-companies": "tsx scripts/migrate-legacy-masters.ts --companies-only --replace",

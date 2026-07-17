@@ -103,6 +103,21 @@ export const serviceTicketAdminInclude = {
   assessDriver: { include: { user: { select: { id: true, name: true, employeeCode: true } } } },
   assessVehicle: true,
   returnDriver: { include: { user: { select: { id: true, name: true, employeeCode: true } } } },
+  returnVehicle: true,
+  collectorDriver: { include: { user: { select: { id: true, name: true, employeeCode: true } } } },
+  salesOrder: {
+    select: {
+      id: true,
+      orderNo: true,
+      status: true,
+      totalAmount: true,
+      cashSubtotal: true,
+      monthlySubtotal: true,
+      billingTypeAtOrder: true,
+      officeSettledAt: true,
+      createdAt: true,
+    },
+  },
   events: { orderBy: { id: "asc" as const } },
 } as const;
 
@@ -158,6 +173,7 @@ export function serializeServiceTicket(
     problemNote: row.problemNote,
     customerNote: row.customerNote,
     needLoaner: row.needLoaner,
+    loanerNote: row.loanerNote,
     quoteAmount: row.quoteAmount?.toString() ?? null,
     quoteDetail: row.quoteDetail,
     quoteStatus: row.quoteStatus,
@@ -221,6 +237,44 @@ export function serializeServiceTicketAdmin(
     assessVehicle: row.assessVehicle
       ? { id: row.assessVehicle.id.toString(), plateNo: row.assessVehicle.plateNo }
       : null,
+    returnDriverId: row.returnDriverId?.toString() ?? null,
+    returnDriver: row.returnDriver
+      ? {
+          id: row.returnDriver.id.toString(),
+          name: row.returnDriver.user?.name ?? null,
+          employeeCode: row.returnDriver.user?.employeeCode ?? row.returnDriver.employeeCode,
+        }
+      : null,
+    returnDate: ymdDbDate(row.returnDate),
+    returnVehicleId: row.returnVehicleId?.toString() ?? null,
+    returnVehicle: row.returnVehicle
+      ? { id: row.returnVehicle.id.toString(), plateNo: row.returnVehicle.plateNo }
+      : null,
+    salesOrderId: row.salesOrderId?.toString() ?? null,
+    salesOrder: row.salesOrder
+      ? {
+          id: row.salesOrder.id.toString(),
+          orderNo: row.salesOrder.orderNo,
+          status: row.salesOrder.status,
+          totalAmount: row.salesOrder.totalAmount.toString(),
+          cashSubtotal: row.salesOrder.cashSubtotal.toString(),
+          monthlySubtotal: row.salesOrder.monthlySubtotal.toString(),
+          billingTypeAtOrder: row.salesOrder.billingTypeAtOrder,
+          officeSettledAt: row.salesOrder.officeSettledAt?.toISOString() ?? null,
+          createdAt: row.salesOrder.createdAt.toISOString(),
+        }
+      : null,
+    collectorDriverId: row.collectorDriverId?.toString() ?? null,
+    collectorDriver: row.collectorDriver
+      ? {
+          id: row.collectorDriver.id.toString(),
+          name: row.collectorDriver.user?.name ?? null,
+          employeeCode: row.collectorDriver.user?.employeeCode ?? row.collectorDriver.employeeCode,
+        }
+      : null,
+    collectionDate: ymdDbDate(row.collectionDate),
+    driverCashReceived: row.driverCashReceived?.toString() ?? null,
+    driverCheckReceived: row.driverCheckReceived?.toString() ?? null,
     assessAssignedAt: row.assessAssignedAt?.toISOString() ?? null,
     assessDriverNote: row.assessDriverNote,
     assessCustomerAgreed: row.assessCustomerAgreed,
@@ -241,6 +295,8 @@ export type CreateServiceTicketInput = {
   preferredSlot?: string | null;
   problemNote?: string | null;
   customerNote?: string | null;
+  needLoaner?: boolean;
+  loanerNote?: string | null;
   source?: string;
 };
 
@@ -250,6 +306,8 @@ export async function createServiceTicket(
 ) {
   return prisma.$transaction(async (tx) => {
     const ticketNo = await allocateServiceTicketNo(tx);
+    const needLoaner = input.needLoaner === true;
+    const now = new Date();
     const row = await tx.serviceTicket.create({
       data: {
         ticketNo,
@@ -261,6 +319,9 @@ export async function createServiceTicket(
         preferredSlot: input.preferredSlot ?? null,
         problemNote: input.problemNote ?? null,
         customerNote: input.customerNote ?? null,
+        needLoaner,
+        loanerNote: needLoaner ? input.loanerNote ?? "客戶回報：若需載回廠維修，請提供備用機" : null,
+        loanerRequestedAt: needLoaner ? now : null,
         source: input.source ?? "liff",
       },
       include: serviceTicketInclude,
@@ -273,6 +334,8 @@ export async function createServiceTicket(
           serviceType: input.serviceType,
           preferredDate: input.preferredDate ? ymdLocal(input.preferredDate) : null,
           preferredSlot: input.preferredSlot ?? null,
+          needLoaner,
+          loanerNote: needLoaner ? input.loanerNote ?? null : null,
         },
       },
     });

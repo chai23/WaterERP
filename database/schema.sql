@@ -378,7 +378,6 @@ CREATE TABLE `products` (
 CREATE TABLE `payroll_settings` (
   `id` BIGINT UNSIGNED NOT NULL DEFAULT 1,
   `empty_barrel_wage` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '回收空桶每桶薪資（固定）',
-  `floor_bonus_wage` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '已廢止：搬運改依樓層單價',
   `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

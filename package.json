@@ -2,8 +2,7 @@
   "name": "water-erp",
   "private": true,
   "workspaces": [
-    "apps/*",
-    "packages/*"
+    "apps/*"
   ],
   "scripts": {
     "dev:api": "npm run dev -w apps/api",

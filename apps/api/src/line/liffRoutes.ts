@@ -988,6 +988,9 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
         typeof req.body?.problemNote === "string" ? req.body.problemNote.trim() || null : null;
       const customerNote =
         typeof req.body?.customerNote === "string" ? req.body.customerNote.trim() || null : null;
+      const needLoaner = req.body?.needLoaner === true || req.body?.needLoaner === "true" || req.body?.needLoaner === 1;
+      const loanerNote =
+        typeof req.body?.loanerNote === "string" ? req.body.loanerNote.trim() || null : null;
 
       if (!problemNote) {
         res.status(400).json({ ok: false, message: "請填寫問題說明" });
@@ -1002,6 +1005,10 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
         preferredSlot,
         problemNote,
         customerNote,
+        needLoaner,
+        loanerNote: needLoaner
+          ? loanerNote ?? "客戶回報：若需載回廠維修，請提供備用機"
+          : null,
         source: "liff",
       });
 

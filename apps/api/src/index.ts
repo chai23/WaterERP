@@ -1173,8 +1173,6 @@ async function applyAllocations(
   }
 }
 
-const LINE_BILLING_TYPES = ["cash", "monthly", "prepaid"] as const;
-
 function normalizeLineBillingType(raw: unknown, fallback: string): string {
   const s = typeof raw === "string" ? raw.trim() : "";
   if (s === "cash" || s === "monthly" || s === "prepaid") return s;
@@ -1526,14 +1524,15 @@ function cutoffInclusiveDeliveryUpperBound(ymd: string): Date | null {
   return r?.end ?? null;
 }
 
-/** 實際送貨時點：司機回報日 → 排程配送日 → 訂單預定配送日 */
+/** 實際送貨時點：司機回報日 → 排程配送日 → 訂單預定配送日 → 辦公室核銷（服務單無配送） */
 function actualDeliveryInstant(so: {
   scheduledDeliveryDate: Date | null;
+  officeSettledAt?: Date | null;
   assignments?: Array<{ driverReportedAt: Date | null; assignmentDate: Date | null }> | null;
 } | null): Date | null {
   if (!so) return null;
   const a = so.assignments?.[0];
-  const d = a?.driverReportedAt ?? a?.assignmentDate ?? so.scheduledDeliveryDate ?? null;
+  const d = a?.driverReportedAt ?? a?.assignmentDate ?? so.scheduledDeliveryDate ?? so.officeSettledAt ?? null;
   return d ? new Date(d) : null;
 }
 
@@ -2208,6 +2207,261 @@ function productEligibleForFloorBonus(product: {
 
 const FLOOR_FEE_LINE_PURPOSE = "floor_handling_fee";
 const FLOOR_FEE_PRODUCT_SKU = "SYS-FLOOR-FEE";
+/** 飲水機維修／清洗服務費（不扣庫存、不計桶） */
+const SERVICE_FEE_LINE_PURPOSE = "service_fee";
+const SERVICE_FEE_PRODUCT_SKU = "SYS-SERVICE-FEE";
+const SERVICE_ORDER_SOURCE = "svc_ticket";
+
+function isNonInventoryLinePurpose(purpose: string | null | undefined): boolean {
+  const p = (purpose ?? "delivery").trim();
+  return p === "prepaid_barrel_topup" || p === FLOOR_FEE_LINE_PURPOSE || p === SERVICE_FEE_LINE_PURPOSE;
+}
+
+async function ensureServiceFeeProduct(tx: Prisma.TransactionClient): Promise<{ id: bigint; name: string; unit: string }> {
+  const existing = await tx.product.findFirst({ where: { sku: SERVICE_FEE_PRODUCT_SKU } });
+  if (existing) {
+    return { id: existing.id, name: existing.name, unit: existing.unit };
+  }
+  const created = await tx.product.create({
+    data: {
+      sku: SERVICE_FEE_PRODUCT_SKU,
+      name: "飲水機服務費",
+      unit: "式",
+      countsDepositBarrel: false,
+      consumesPrepaidBarrel: false,
+      availableOnLiff: false,
+      salePrice: 0,
+      costPrice: 0,
+      driverDeliveryWage: 0,
+      isActive: true,
+    },
+  });
+  return { id: created.id, name: created.name, unit: created.unit };
+}
+
+/**
+ * 服務費應掛在哪位司機、哪一天的日收款核對：
+ * - 現場修好收費 → 評估司機＋評估日
+ * - 載回廠維修／清洗後送回收費 → 送回司機＋送回日
+ */
+function resolveServiceTicketCollectionMeta(
+  ticket: {
+    status: string;
+    assessOutcome?: string | null;
+    assessDriverId?: bigint | null;
+    assessDate?: Date | null;
+    returnDriverId?: bigint | null;
+    returnDate?: Date | null;
+  },
+  settledAt: Date,
+): { collectorDriverId: bigint | null; collectionDate: Date | null; collectionDateYmd: string } {
+  const onsite =
+    ticket.status === "onsite_completed" ||
+    ticket.assessOutcome === "onsite_fixed";
+  const driverId = onsite
+    ? ticket.assessDriverId ?? null
+    : ticket.returnDriverId ?? ticket.assessDriverId ?? null;
+  const dateYmd =
+    (onsite
+      ? ymdFromDbDate(ticket.assessDate)
+      : ymdFromDbDate(ticket.returnDate)) ?? toLocalYmd(settledAt);
+  return {
+    collectorDriverId: driverId,
+    collectionDate: parseLocalYmdToDbDate(dateYmd),
+    collectionDateYmd: dateYmd,
+  };
+}
+
+function ymdFromDbDate(d: Date | null | undefined): string | null {
+  if (!d) return null;
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * 服務單結案入帳：建立已完成訂單 +（現金）逐單 AR；可選當場收款沖帳。
+ * 冪等：若 ticket.salesOrderId 已存在則直接回傳既有訂單，不重複立帳。
+ */
+async function postServiceTicketBilling(
+  tx: Prisma.TransactionClient,
+  args: {
+    ticket: {
+      id: bigint;
+      ticketNo: string;
+      customerId: bigint;
+      deliveryAddressId: bigint;
+      salesOrderId: bigint | null;
+      serviceType: string;
+    };
+    billingType: "cash" | "monthly";
+    charge: Prisma.Decimal;
+    userId: bigint;
+    settledAt: Date;
+    /** 現金：司機是否當場帶回現金／支票；false＝僅立帳、客戶說下次再收 */
+    cashCollectedNow?: boolean;
+    collectedCash?: number;
+    collectedCheck?: number;
+  },
+): Promise<{ salesOrderId: bigint; orderNo: string; created: boolean; paymentPosted: boolean }> {
+  if (args.ticket.salesOrderId != null) {
+    const existingOrder = await tx.salesOrder.findUnique({
+      where: { id: args.ticket.salesOrderId },
+      select: { id: true, orderNo: true },
+    });
+    if (existingOrder) {
+      let paymentPosted = false;
+      if (args.billingType === "cash" && args.cashCollectedNow) {
+        const existingPay = await tx.payment.findFirst({
+          where: { salesOrderId: existingOrder.id, paymentMethod: { in: ["cash", "check"] } },
+        });
+        if (!existingPay) {
+          const cashAmt = Math.max(0, Number(args.collectedCash ?? args.charge));
+          const checkAmt = Math.max(0, Number(args.collectedCheck ?? 0));
+          if (cashAmt > 0) {
+            await postSettlementReceiptByMethod(tx, {
+              customerId: args.ticket.customerId,
+              salesOrderId: existingOrder.id,
+              amount: cashAmt,
+              paymentMethod: "cash",
+              paymentNote: `服務單 ${args.ticket.ticketNo} 司機帶回現金`,
+              settledAt: args.settledAt,
+              orderNo: existingOrder.orderNo,
+            });
+            paymentPosted = true;
+          }
+          if (checkAmt > 0) {
+            await postSettlementReceiptByMethod(tx, {
+              customerId: args.ticket.customerId,
+              salesOrderId: existingOrder.id,
+              amount: checkAmt,
+              paymentMethod: "check",
+              paymentNote: `服務單 ${args.ticket.ticketNo} 司機帶回支票`,
+              settledAt: args.settledAt,
+              orderNo: existingOrder.orderNo,
+            });
+            paymentPosted = true;
+          }
+        }
+      }
+      return {
+        salesOrderId: existingOrder.id,
+        orderNo: existingOrder.orderNo,
+        created: false,
+        paymentPosted,
+      };
+    }
+  }
+
+  if (!args.charge.greaterThan(0)) {
+    throw new Error("收費金額須大於 0 才能建立帳務訂單");
+  }
+
+  const product = await ensureServiceFeeProduct(tx);
+  const orderNo = generateOrderNo();
+  const scheduledYmd = toLocalYmd(args.settledAt);
+  const scheduledDate = parseLocalYmdToDbDate(scheduledYmd)!;
+  const cashSubtotal = args.billingType === "cash" ? args.charge : new Prisma.Decimal(0);
+  const monthlySubtotal = args.billingType === "monthly" ? args.charge : new Prisma.Decimal(0);
+  const serviceTypeLabelText =
+    args.ticket.serviceType === "cleaning"
+      ? "清洗"
+      : args.ticket.serviceType === "repair"
+        ? "維修"
+        : args.ticket.serviceType === "both"
+          ? "清洗／維修"
+          : args.ticket.serviceType;
+
+  const so = await tx.salesOrder.create({
+    data: {
+      orderNo,
+      customerId: args.ticket.customerId,
+      deliveryAddressId: args.ticket.deliveryAddressId,
+      status: "completed",
+      scheduledDeliveryDate: scheduledDate,
+      subtotal: args.charge,
+      totalAmount: args.charge,
+      remark: `飲水機服務單 ${args.ticket.ticketNo}（${serviceTypeLabelText}）結案入帳`,
+      billingTypeAtOrder: args.billingType,
+      cashSubtotal,
+      monthlySubtotal,
+      cashInvoiceMode: null,
+      source: SERVICE_ORDER_SOURCE,
+      createdByUserId: args.userId,
+      officeSettledAt: args.settledAt,
+      billingPeriodKey: args.billingType === "monthly" ? billingPeriodKeyFromDate(args.settledAt) : null,
+      monthlyPeriodPaid: false,
+      monthlyReceivedAmount: new Prisma.Decimal(0),
+      lines: {
+        create: [
+          {
+            productId: product.id,
+            qtyOrdered: 1,
+            qtyDelivered: 1,
+            unitPrice: args.charge,
+            lineAmount: args.charge,
+            billingTypeAtLine: args.billingType,
+            linePurpose: SERVICE_FEE_LINE_PURPOSE,
+            invoiceMode: null,
+          },
+        ],
+      },
+    },
+  });
+
+  await tx.serviceTicket.update({
+    where: { id: args.ticket.id },
+    data: { salesOrderId: so.id },
+  });
+
+  let paymentPosted = false;
+  if (args.billingType === "cash") {
+    await createArForSalesOrder(tx, {
+      salesOrderId: so.id,
+      orderNo: so.orderNo,
+      customerId: args.ticket.customerId,
+      billingTypeAtOrder: "cash",
+      totalAmount: args.charge,
+      cashSubtotal: args.charge,
+      monthlySubtotal: new Prisma.Decimal(0),
+      monthlySettlementDay: null,
+      createdByUserId: args.userId,
+      cashInvoiceMode: "none",
+    });
+    if (args.cashCollectedNow) {
+      const cashAmt = Math.max(0, Number(args.collectedCash ?? args.charge));
+      const checkAmt = Math.max(0, Number(args.collectedCheck ?? 0));
+      if (cashAmt > 0) {
+        await postSettlementReceiptByMethod(tx, {
+          customerId: args.ticket.customerId,
+          salesOrderId: so.id,
+          amount: cashAmt,
+          paymentMethod: "cash",
+          paymentNote: `服務單 ${args.ticket.ticketNo} 司機帶回現金`,
+          settledAt: args.settledAt,
+          orderNo: so.orderNo,
+        });
+        paymentPosted = true;
+      }
+      if (checkAmt > 0) {
+        await postSettlementReceiptByMethod(tx, {
+          customerId: args.ticket.customerId,
+          salesOrderId: so.id,
+          amount: checkAmt,
+          paymentMethod: "check",
+          paymentNote: `服務單 ${args.ticket.ticketNo} 司機帶回支票`,
+          settledAt: args.settledAt,
+          orderNo: so.orderNo,
+        });
+        paymentPosted = true;
+      }
+    }
+  }
+  // 月結：不在此立逐單 AR，等月結批次（須 completed + officeSettledAt）
+
+  return { salesOrderId: so.id, orderNo: so.orderNo, created: true, paymentPosted };
+}
 
 type ParsedFloorBonusRecord = {
   lineId: bigint;
@@ -2301,8 +2555,7 @@ async function createFloorBonusRecords(
   for (const record of opts.records) {
     const line = lineMap.get(record.lineId);
     if (!line) continue;
-    if ((line.linePurpose ?? "delivery") === "prepaid_barrel_topup") continue;
-    if ((line.linePurpose ?? "delivery") === FLOOR_FEE_LINE_PURPOSE) continue;
+    if (isNonInventoryLinePurpose(line.linePurpose)) continue;
     if (!productEligibleForFloorBonus(line.product)) continue;
     await tx.floorDeliveryBonusRecord.create({
       data: {
@@ -2360,7 +2613,7 @@ async function applyCustomerFloorFeesFromRecords(
     opts.order.lines
       .filter((line) => {
         const purpose = line.linePurpose ?? "delivery";
-        if (purpose === "prepaid_barrel_topup" || purpose === FLOOR_FEE_LINE_PURPOSE) return false;
+        if (isNonInventoryLinePurpose(purpose)) return false;
         return productEligibleForFloorBonus(line.product);
       })
       .map((line) => line.id.toString()),
@@ -5773,10 +6026,7 @@ app.post("/api/settlements/approve", async (req, res) => {
       });
 
       for (const line of assignment.salesOrder.lines) {
-        if ((line.linePurpose ?? "delivery") === "prepaid_barrel_topup") {
-          continue;
-        }
-        if ((line.linePurpose ?? "delivery") === FLOOR_FEE_LINE_PURPOSE) {
+        if (isNonInventoryLinePurpose(line.linePurpose)) {
           continue;
         }
         const qty = effectiveLineDeliveryQty(line);
@@ -6111,7 +6361,7 @@ async function ensurePayrollSettings() {
   const existing = await prisma.payrollSetting.findUnique({ where: { id: 1n } });
   if (existing) return existing;
   return prisma.payrollSetting.create({
-    data: { id: 1n, emptyBarrelWage: 0, floorBonusWage: 0 },
+    data: { id: 1n, emptyBarrelWage: 0 },
   });
 }
 
@@ -6398,8 +6648,7 @@ app.get("/api/reports/driver-payroll", async (req, res) => {
       row.emptyBarrelQty += Math.max(0, Number(a.emptyBarrelsReturned ?? 0));
       for (const line of a.salesOrder?.lines ?? []) {
         const purpose = line.linePurpose ?? "delivery";
-        if (purpose === "prepaid_barrel_topup") continue;
-        if (purpose === FLOOR_FEE_LINE_PURPOSE) continue;
+        if (isNonInventoryLinePurpose(purpose)) continue;
         const qty = effectiveLineDeliveryQty(line);
         if (qty <= 0) continue;
         const productId = String(line.productId);
@@ -6578,49 +6827,6 @@ function normalizeStatementInvoiceMode(raw: unknown): "none" | "tax_inclusive" |
   return "tax_exclusive";
 }
 
-/** 月結對帳：依核銷完成日曆月 YYYY-MM 列出該期月結訂單 */
-app.get("/api/billing/monthly-orders", async (req, res) => {
-  try {
-    const period = String(req.query.period ?? "").trim();
-    if (!/^\d{4}-\d{2}$/.test(period)) {
-      res.status(400).json({ ok: false, message: "query period 須為 YYYY-MM" });
-      return;
-    }
-    const customerId = req.query.customerId ? toBigInt(req.query.customerId) : null;
-    const unpaidOnly = String(req.query.unpaidOnly ?? "true") !== "false";
-
-    const where: Prisma.SalesOrderWhereInput = {
-      billingPeriodKey: period,
-      status: "completed",
-    };
-    if (customerId) where.customerId = customerId;
-    if (unpaidOnly) where.monthlyPeriodPaid = false;
-
-    const orders = await prisma.salesOrder.findMany({
-      where,
-      include: {
-        customer: true,
-        deliveryAddress: true,
-        lines: { include: { product: true } },
-      },
-      orderBy: [{ officeSettledAt: "asc" }, { id: "asc" }],
-    });
-    const monthlyOrders = orders.filter(isMonthlyBillingOrder);
-    const totalAmount = monthlyOrders.reduce((s, o) => s.add(orderMonthlyCap(o)), new Prisma.Decimal(0));
-
-    res.json({
-      ok: true,
-      data: {
-        period,
-        totalAmount: totalAmount.toString(),
-        orders: monthlyOrders,
-      },
-    });
-  } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
-  }
-});
-
 /** 月結待結：尚未開立批次的已完成月結訂單（不限截止日） */
 app.get("/api/billing/monthly-unsettled", async (req, res) => {
   try {
@@ -6675,78 +6881,6 @@ app.get("/api/billing/monthly-unsettled", async (req, res) => {
         orderCount: pending.length,
         totalPending: totalPending.toString(),
         orders: pending,
-      },
-    });
-  } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
-  }
-});
-
-/** 月結待結清：依截止日（YYYY-MM-DD）＋客戶；含截止日當日；實際送貨日須早於「截止日翌日 00:00（本地）」 */
-app.get("/api/billing/monthly-pending", async (req, res) => {
-  try {
-    const cutoffDate = String(req.query.cutoffDate ?? "").trim();
-    const customerId = req.query.customerId ? toBigInt(req.query.customerId) : null;
-    if (!customerId) {
-      res.status(400).json({ ok: false, message: "請指定 customerId" });
-      return;
-    }
-    const cutoffDayStart = cutoffDateStartLocal(cutoffDate);
-    const deliveryUpper = cutoffInclusiveDeliveryUpperBound(cutoffDate);
-    if (!cutoffDayStart || !deliveryUpper) {
-      res.status(400).json({
-        ok: false,
-        message: "cutoffDate 須為 YYYY-MM-DD（含當日；以實際送貨日篩選）",
-      });
-      return;
-    }
-    const unpaidOnly = String(req.query.unpaidOnly ?? "true") !== "false";
-
-    const orders = await prisma.salesOrder.findMany({
-      where: {
-        customerId,
-        status: "completed",
-        officeSettledAt: { not: null },
-        ...(unpaidOnly ? { monthlyPeriodPaid: false } : {}),
-      },
-      include: {
-        customer: true,
-        deliveryAddress: true,
-        lines: { include: { product: true } },
-        billingStatementOrder: true,
-        assignments: {
-          where: { status: { in: ["completed", "not_delivered"] } },
-          orderBy: [{ officeSettledAt: "desc" }, { completedAt: "desc" }, { id: "desc" }],
-          take: 1,
-        },
-      },
-      orderBy: [{ id: "asc" }],
-    });
-    const monthlyOrders = orders
-      .filter(isMonthlyBillingOrder)
-      .filter((o) => {
-        const t = actualDeliveryInstant(o);
-        return t != null && t.getTime() < deliveryUpper.getTime();
-      })
-      .sort((a, b) => {
-        const ta = actualDeliveryInstant(a)?.getTime() ?? 0;
-        const tb = actualDeliveryInstant(b)?.getTime() ?? 0;
-        return ta - tb || Number(a.id - b.id);
-      });
-    const totalOutstanding = monthlyOrders.reduce(
-      (s, o) => s.add(orderMonthlyCap(o).minus(o.monthlyReceivedAmount)),
-      new Prisma.Decimal(0),
-    );
-
-    res.json({
-      ok: true,
-      data: {
-        cutoffDate,
-        cutoffStartsAtLocal: cutoffDayStart.toISOString(),
-        deliveryUpperBoundExclusiveLocal: deliveryUpper.toISOString(),
-        totalOutstanding: totalOutstanding.toString(),
-        orderCount: monthlyOrders.length,
-        orders: monthlyOrders,
       },
     });
   } catch (e) {
@@ -6810,7 +6944,7 @@ function resolveAccountingPeriodRange(
 }
 
 async function buildAccountingPeriodSummary(start: Date, end: Date) {
-  const [todayCompleted, periodPayments] = await Promise.all([
+  const [todayCompleted, periodPayments, serviceTicketsClosed] = await Promise.all([
     prisma.deliveryAssignment.findMany({
       where: {
         status: "completed",
@@ -6826,9 +6960,31 @@ async function buildAccountingPeriodSummary(start: Date, end: Date) {
         paymentMethod: { not: "prepayment" },
       },
     }),
+    prisma.serviceTicket.findMany({
+      where: {
+        status: "closed",
+        closedAt: { gte: start, lt: end },
+        salesOrderId: { not: null },
+      },
+      include: {
+        salesOrder: true,
+        customer: { select: { id: true, name: true, customerCode: true } },
+      },
+      orderBy: { closedAt: "desc" },
+    }),
   ]);
 
-  const orderIds = [...new Set(todayCompleted.map((row) => row.salesOrderId))];
+  // 服務單訂單不會有配送完成紀錄，與配送營收互斥，不會重複加總
+  const serviceOrders = serviceTicketsClosed
+    .map((t) => t.salesOrder)
+    .filter((o): o is NonNullable<typeof o> => o != null && o.status !== "cancelled");
+
+  const orderIds = [
+    ...new Set([
+      ...todayCompleted.map((row) => row.salesOrderId),
+      ...serviceOrders.map((o) => o.id),
+    ]),
+  ];
   const periodOrderOutstandingAgg =
     orderIds.length > 0
       ? await prisma.arOpenItem.aggregate({
@@ -6837,10 +6993,15 @@ async function buildAccountingPeriodSummary(start: Date, end: Date) {
         })
       : { _sum: { outstandingAmount: null } };
 
-  const periodRevenue = todayCompleted.reduce(
+  const deliveryRevenue = todayCompleted.reduce(
     (sum, row) => sum + Number(orderBillableAmount(row.salesOrder)),
     0,
   );
+  const serviceRevenue = serviceOrders.reduce(
+    (sum, o) => sum + Number(orderBillableAmount(o)),
+    0,
+  );
+  const periodRevenue = deliveryRevenue + serviceRevenue;
   const periodCollectedCash = periodPayments
     .filter((row) => row.paymentMethod === "cash")
     .reduce((sum, row) => sum + Number(row.amount), 0);
@@ -6851,7 +7012,7 @@ async function buildAccountingPeriodSummary(start: Date, end: Date) {
     .filter((row) => row.paymentMethod !== "cash" && row.paymentMethod !== "transfer")
     .reduce((sum, row) => sum + Number(row.amount), 0);
   const periodCollected = periodCollectedCash + periodCollectedTransfer + periodCollectedOther;
-  const todayCompletedCount = todayCompleted.length;
+  const todayCompletedCount = todayCompleted.length + serviceOrders.length;
   const periodOrderOutstanding = Number(periodOrderOutstandingAgg._sum.outstandingAmount ?? 0);
   const driverCashCollected = todayCompleted.reduce((sum, row) => sum + Number(row.cashReceived ?? 0), 0);
 
@@ -6866,6 +7027,9 @@ async function buildAccountingPeriodSummary(start: Date, end: Date) {
     driverCashCollected,
     todayCompleted,
     periodPayments,
+    serviceTicketsClosed,
+    deliveryRevenue,
+    serviceRevenue,
   };
 }
 
@@ -6958,6 +7122,26 @@ app.get("/api/reports/period-detail", async (req, res) => {
         : null,
     }));
 
+    const serviceTickets = summary.serviceTicketsClosed.map((t) => ({
+      id: t.id.toString(),
+      ticketNo: t.ticketNo,
+      closedAt: t.closedAt?.toISOString() ?? null,
+      billingType: t.billingType,
+      chargeAmount: t.chargeAmount?.toString() ?? null,
+      customer: t.customer
+        ? { id: t.customer.id.toString(), name: t.customer.name, customerCode: t.customer.customerCode }
+        : null,
+      salesOrder: t.salesOrder
+        ? {
+            id: t.salesOrder.id.toString(),
+            orderNo: t.salesOrder.orderNo,
+            totalAmount: t.salesOrder.totalAmount.toString(),
+            billingTypeAtOrder: t.salesOrder.billingTypeAtOrder,
+            orderBillableAmount: orderBillableAmount(t.salesOrder).toString(),
+          }
+        : null,
+    }));
+
     res.json({
       ok: true,
       data: {
@@ -6973,8 +7157,11 @@ app.get("/api/reports/period-detail", async (req, res) => {
           todayCompletedCount: summary.todayCompletedCount,
           periodOrderOutstanding: summary.periodOrderOutstanding,
           driverCashCollected: summary.driverCashCollected,
+          deliveryRevenue: summary.deliveryRevenue,
+          serviceRevenue: summary.serviceRevenue,
         },
         deliveries: enrichedDeliveries,
+        serviceTickets,
         payments,
       },
     });
@@ -7124,6 +7311,119 @@ app.get("/api/reports/driver-daily-collection", async (req, res) => {
       },
     );
 
+    // 飲水機服務費：掛在負責收款司機的歸屬日（現場＝評估司機／日；載回＝送回司機／日）
+    const serviceTickets = await prisma.serviceTicket.findMany({
+      where: {
+        collectorDriverId: driverId,
+        collectionDate: { gte: range.start, lt: range.end },
+        status: "closed",
+        chargeAmount: { gt: 0 },
+      },
+      include: {
+        customer: true,
+        deliveryAddress: true,
+        salesOrder: true,
+      },
+      orderBy: [{ collectionDate: "asc" }, { id: "asc" }],
+    });
+
+    const serviceOrders = serviceTickets.map((t) => {
+      const charge = Number(t.chargeAmount ?? 0);
+      const isCash = t.billingType === "cash";
+      const expectedAmount = isCash ? charge : 0;
+      const cashReceived = Number(t.driverCashReceived ?? 0);
+      const checkReceived = Number(t.driverCheckReceived ?? 0);
+      const collectedTotal = cashReceived + checkReceived;
+      const serviceTypeLabel =
+        t.serviceType === "cleaning"
+          ? "清洗"
+          : t.serviceType === "repair"
+            ? "維修"
+            : t.serviceType === "both"
+              ? "清洗／維修"
+              : t.serviceType;
+      const onsite = t.assessOutcome === "onsite_fixed";
+      const label = `飲水機服務費（${serviceTypeLabel}${onsite ? "·現場" : "·送回"}）`;
+      let collectionStatus: string;
+      if (!isCash) {
+        collectionStatus = "月結·無現金應收";
+      } else if (expectedAmount <= 0) {
+        collectionStatus = "無現金應收";
+      } else if (collectedTotal <= 0) {
+        collectionStatus = "下次再收／待沖帳";
+      } else if (collectedTotal === expectedAmount) {
+        collectionStatus = "服務費·足額";
+      } else if (collectedTotal < expectedAmount) {
+        collectionStatus = `服務費·少收 ${(expectedAmount - collectedTotal).toFixed(0)}`;
+      } else {
+        collectionStatus = `服務費·多收 ${(collectedTotal - expectedAmount).toFixed(0)}`;
+      }
+
+      return {
+        assignmentId: `svc-${t.id.toString()}`,
+        sourceType: "service_ticket" as const,
+        ticketNo: t.ticketNo,
+        orderNo: t.salesOrder?.orderNo ?? t.ticketNo,
+        assignmentStatus: "completed",
+        customerCode: t.customer.customerCode ?? "",
+        customerName: t.customer.name,
+        deliveryAddress: t.deliveryAddress?.addressLine ?? "",
+        lines: [
+          {
+            id: `svc-line-${t.id.toString()}`,
+            productName: "飲水機服務費",
+            unit: "式",
+            qty: 1,
+            unitPrice: String(charge),
+            lineAmount: String(charge),
+            billingType: t.billingType ?? "cash",
+            linePurpose: SERVICE_FEE_LINE_PURPOSE,
+            label,
+          },
+        ],
+        lineSummary: label,
+        expectedAmount,
+        cashReceived,
+        checkReceived,
+        collectedTotal,
+        collectionVariance: collectedTotal - expectedAmount,
+        collectionStatus,
+        settlementOutcome: isCash
+          ? collectedTotal <= 0
+            ? "delivered_no_cash"
+            : collectedTotal === expectedAmount
+              ? "delivered_cash_exact"
+              : collectedTotal < expectedAmount
+                ? "delivered_cash_short"
+                : "delivered_cash_over"
+          : null,
+        billableAmount: String(charge),
+        floorBonusRecords: [] as Array<{
+          id: string;
+          productName: string;
+          qty: number;
+          floor: number;
+          floorLabel: string;
+        }>,
+        driverReportedAt: t.closedAt?.toISOString() ?? null,
+        officeSettledAt: t.salesOrder?.officeSettledAt?.toISOString() ?? t.closedAt?.toISOString() ?? null,
+      };
+    });
+
+    for (const row of serviceOrders) {
+      summary.orderCount += 1;
+      summary.totalExpected += row.expectedAmount;
+      summary.totalCash += row.cashReceived;
+      summary.totalCheck += row.checkReceived;
+      summary.totalCollected += row.collectedTotal;
+      if (row.collectionVariance !== 0 && row.expectedAmount > 0) summary.varianceOrderCount += 1;
+    }
+
+    const allOrders = [
+      ...orders.map((o) => ({ ...o, sourceType: "delivery" as const, ticketNo: null as string | null })),
+      ...serviceOrders,
+    ];
+
     res.json({
       ok: true,
       data: {
@@ -7137,8 +7437,10 @@ app.get("/api/reports/driver-daily-collection", async (req, res) => {
         summary: {
           ...summary,
           totalVariance: summary.totalCollected - summary.totalExpected,
+          deliveryOrderCount: orders.length,
+          serviceTicketCount: serviceOrders.length,
         },
-        orders,
+        orders: allOrders,
       },
     });
   } catch (e) {
@@ -10297,6 +10599,8 @@ app.post("/api/service-tickets/:ticketId/assign-assess", async (req, res) => {
             vehicleId: resolvedVehicleId?.toString() ?? null,
             assessDateYmd,
             assessSlot,
+            needLoaner: existing.needLoaner,
+            loanerNote: existing.loanerNote,
           },
         },
       });
@@ -10312,6 +10616,158 @@ app.post("/api/service-tickets/:ticketId/assign-assess", async (req, res) => {
       text: `您的飲水機服務單 ${existing.ticketNo}（${serviceTypeLabel(existing.serviceType)}）已安排評估：${assessDateYmd}${assessSlot ? ` ${assessSlot}` : ""}，司機將前往查看，謝謝。`,
       payload: { serviceTicketId: existing.id.toString(), ticketNo: existing.ticketNo, assessDateYmd },
     }).catch((err) => console.error("[line-notify] service_ticket_assess_assigned", err));
+
+    res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+/** 後台：現場維修補登（司機不使用手機回報時用；可依貨單備註補登） */
+app.post("/api/service-tickets/:ticketId/admin-onsite-complete", async (req, res) => {
+  try {
+    const auth = getAuthUser(req);
+    const ticketId = toBigInt(req.params.ticketId);
+    if (!ticketId) {
+      res.status(400).json({ ok: false, message: "參數錯誤" });
+      return;
+    }
+    const body = req.body as { note?: unknown; feeAmount?: unknown; outcome?: unknown; alreadyInWorkshop?: unknown };
+    const note = typeof body.note === "string" ? body.note.trim() || null : null;
+    const rawOutcome = typeof body.outcome === "string" ? body.outcome.trim() : "onsite_fixed";
+    if (!["onsite_fixed", "unable", "bring_back"].includes(rawOutcome)) {
+      res.status(400).json({ ok: false, message: "outcome 須為 onsite_fixed｜unable｜bring_back" });
+      return;
+    }
+    const outcome = rawOutcome === "bring_back" ? "unable" : (rawOutcome as "onsite_fixed" | "unable");
+    const alreadyInWorkshop =
+      body.alreadyInWorkshop === true || body.alreadyInWorkshop === "true" || body.alreadyInWorkshop === 1;
+
+    let feeAmount: Prisma.Decimal | null = null;
+    if (outcome === "onsite_fixed") {
+      const n = Number(body.feeAmount);
+      if (!Number.isFinite(n) || n < 0) {
+        res.status(400).json({ ok: false, message: "feeAmount 無效" });
+        return;
+      }
+      feeAmount = new Prisma.Decimal(String(n));
+    }
+
+    const existing = await prisma.serviceTicket.findUnique({ where: { id: ticketId } });
+    if (!existing) {
+      res.status(404).json({ ok: false, message: "找不到服務單" });
+      return;
+    }
+    if (!["assess_assigned", "accepted"].includes(existing.status)) {
+      res.status(400).json({
+        ok: false,
+        message: `目前狀態「${serviceTicketStatusLabel(existing.status)}」無法補登現場結果`,
+      });
+      return;
+    }
+    const userId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
+    const now = new Date();
+
+    const nextStatus =
+      outcome === "onsite_fixed"
+        ? "onsite_completed"
+        : alreadyInWorkshop
+          ? "in_workshop"
+          : existing.needLoaner
+            ? "pending_loaner"
+            : "pending_pickup";
+
+    const updated = await prisma.$transaction(async (tx) => {
+      if (outcome === "onsite_fixed") {
+        await tx.serviceTicket.update({
+          where: { id: ticketId },
+          data: {
+            status: "onsite_completed",
+            assessOutcome: "onsite_fixed",
+            assessDriverNote: note ?? existing.assessDriverNote,
+            assessFeeAmount: feeAmount!,
+            assessCustomerAgreed: true,
+            assessReportedAt: existing.assessReportedAt ?? now,
+            chargeAmount: feeAmount!,
+            closedAt: null,
+          },
+        });
+        await tx.serviceTicketEvent.create({
+          data: {
+            serviceTicketId: ticketId,
+            eventType: "onsite_completed_admin",
+            createdByUserId: userId,
+            payloadJson: { note, feeAmount: feeAmount!.toString(), agreed: true, via: "admin" },
+          },
+        });
+      } else {
+        await tx.serviceTicket.update({
+          where: { id: ticketId },
+          data: {
+            status: nextStatus,
+            assessOutcome: "unable",
+            assessDriverNote: note ?? existing.assessDriverNote,
+            assessFeeAmount: null,
+            assessCustomerAgreed: existing.assessCustomerAgreed,
+            assessReportedAt: existing.assessReportedAt ?? now,
+            cancelledReason: existing.cancelledReason,
+            closedAt: null,
+            chargeAmount: existing.chargeAmount,
+            workshopStatus: alreadyInWorkshop ? "received" : existing.workshopStatus,
+            workshopNote: alreadyInWorkshop ? note ?? existing.workshopNote : existing.workshopNote,
+            workshopUpdatedAt: alreadyInWorkshop ? now : existing.workshopUpdatedAt,
+            workshopUpdatedByUserId: alreadyInWorkshop ? userId : existing.workshopUpdatedByUserId,
+          },
+        });
+
+        await tx.serviceTicketEvent.create({
+          data: {
+            serviceTicketId: ticketId,
+            eventType: "assess_reported",
+            createdByUserId: userId,
+            payloadJson: { outcome: "unable", note, nextStatus, via: "admin" },
+          },
+        });
+
+        if (alreadyInWorkshop) {
+          await tx.serviceTicketEvent.create({
+            data: {
+              serviceTicketId: ticketId,
+              eventType: "workshop_received",
+              createdByUserId: userId,
+              payloadJson: { note, fromStatus: existing.status },
+            },
+          });
+        }
+      }
+      return tx.serviceTicket.findUniqueOrThrow({
+        where: { id: ticketId },
+        include: serviceTicketAdminInclude,
+      });
+    });
+
+    if (outcome === "onsite_fixed") {
+      void notifyCustomerViaLine(prisma, {
+        customerId: existing.customerId,
+        eventType: "service_ticket_assess_reported",
+        text: `服務單 ${existing.ticketNo} 已現場維修完成${note ? `（${note}）` : ""}。`,
+        payload: { serviceTicketId: existing.id.toString(), ticketNo: existing.ticketNo, via: "admin" },
+      }).catch((err) => console.error("[line-notify] onsite_completed_admin", err));
+    } else if (alreadyInWorkshop) {
+      void notifyCustomerViaLine(prisma, {
+        customerId: existing.customerId,
+        eventType: "service_ticket_in_workshop",
+        text: `您的飲水機服務單 ${existing.ticketNo} 經現場評估無法維修，已載回廠內處理，後續進度可於 LINE 會員頁查看。`,
+        payload: { serviceTicketId: existing.id.toString(), ticketNo: existing.ticketNo },
+      }).catch((err) => console.error("[line-notify] unable_to_workshop", err));
+    } else {
+      void notifyCustomerViaLine(prisma, {
+        customerId: existing.customerId,
+        eventType: "service_ticket_assess_reported",
+        text: `您的飲水機服務單 ${existing.ticketNo} 評估結果：無法處理${note ? `（${note}）` : ""}。`,
+        payload: { serviceTicketId: existing.id.toString(), ticketNo: existing.ticketNo, outcome: "unable", nextStatus },
+      }).catch((err) => console.error("[line-notify] unable_assess_reported", err));
+    }
 
     res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
   } catch (e) {
@@ -10338,13 +10794,15 @@ app.post("/api/service-tickets/:ticketId/mark-loaner", async (req, res) => {
       res.status(404).json({ ok: false, message: "找不到服務單" });
       return;
     }
-    if (!["pending_pickup", "pending_loaner", "assess_assigned"].includes(existing.status)) {
+    if (!["reported", "accepted", "pending_pickup", "pending_loaner", "assess_assigned"].includes(existing.status)) {
       res.status(400).json({
         ok: false,
         message: `目前狀態「${serviceTicketStatusLabel(existing.status)}」無法標記臨時機`,
       });
       return;
     }
+
+    const earlyStage = ["reported", "accepted"].includes(existing.status);
 
     let swapDate = existing.assessDate;
     if (swapDateYmd) {
@@ -10368,25 +10826,33 @@ app.post("/api/service-tickets/:ticketId/mark-loaner", async (req, res) => {
     const updated = await prisma.$transaction(async (tx) => {
       await tx.serviceTicket.update({
         where: { id: ticketId },
-        data: {
-          status: "pending_loaner",
-          needLoaner: true,
-          loanerNote: note,
-          loanerRequestedAt: existing.loanerRequestedAt ?? now,
-          assessDriverId: driverId ?? existing.assessDriverId,
-          assessDate: swapDate,
-        },
+        data: earlyStage
+          ? {
+              needLoaner: true,
+              loanerNote: note ?? existing.loanerNote ?? "後台登記：若需載回廠維修，請提供備用機",
+              loanerRequestedAt: existing.loanerRequestedAt ?? now,
+            }
+          : {
+              status: "pending_loaner",
+              needLoaner: true,
+              loanerNote: note ?? existing.loanerNote,
+              loanerRequestedAt: existing.loanerRequestedAt ?? now,
+              assessDriverId: driverId ?? existing.assessDriverId,
+              assessDate: swapDate,
+            },
       });
       await tx.serviceTicketEvent.create({
         data: {
           serviceTicketId: ticketId,
-          eventType: "loaner_needed",
+          eventType: earlyStage ? "loaner_noted_at_report" : "loaner_needed",
           createdByUserId: userId,
-          payloadJson: {
-            note,
-            swapDateYmd: swapDateYmd || null,
-            driverId: (driverId ?? existing.assessDriverId)?.toString() ?? null,
-          },
+          payloadJson: earlyStage
+            ? { note, source: "admin" }
+            : {
+                note,
+                swapDateYmd: swapDateYmd || null,
+                driverId: (driverId ?? existing.assessDriverId)?.toString() ?? null,
+              },
         },
       });
       return tx.serviceTicket.findUniqueOrThrow({
@@ -10423,7 +10889,7 @@ app.post("/api/service-tickets/:ticketId/confirm-workshop-received", async (req,
       res.status(404).json({ ok: false, message: "找不到服務單" });
       return;
     }
-    if (!["pending_pickup", "pending_loaner"].includes(existing.status)) {
+    if (!["pending_pickup", "pending_loaner", "unable"].includes(existing.status)) {
       res.status(400).json({
         ok: false,
         message: `目前狀態「${serviceTicketStatusLabel(existing.status)}」無法確認入廠`,
@@ -10744,7 +11210,7 @@ app.post("/api/service-tickets/:ticketId/assign-return", async (req, res) => {
   }
 });
 
-/** 後台：結案入帳（現金／月結標記；實際 AR 可後續再串訂單） */
+/** 後台：結案入帳（現金／月結；收費＞0 時建立正式訂單＋AR，冪等不重覆立帳） */
 app.post("/api/service-tickets/:ticketId/close", async (req, res) => {
   try {
     const auth = getAuthUser(req);
@@ -10759,11 +11225,15 @@ app.post("/api/service-tickets/:ticketId/close", async (req, res) => {
       res.status(404).json({ ok: false, message: "找不到服務單" });
       return;
     }
-    if (!["returned", "onsite_completed", "quote_accepted"].includes(existing.status)) {
+    if (!["pending_return", "returned", "onsite_completed", "quote_accepted"].includes(existing.status)) {
       res.status(400).json({
         ok: false,
         message: `目前狀態「${serviceTicketStatusLabel(existing.status)}」無法結案`,
       });
+      return;
+    }
+    if (existing.salesOrderId != null) {
+      res.status(400).json({ ok: false, message: "此服務單已關聯帳務訂單，請勿重複結案" });
       return;
     }
     let charge = existing.chargeAmount ?? existing.quoteAmount ?? existing.assessFeeAmount;
@@ -10775,16 +11245,74 @@ app.post("/api/service-tickets/:ticketId/close", async (req, res) => {
       }
       charge = new Prisma.Decimal(String(n));
     }
+    const cashCollectedNow =
+      billingType === "cash" &&
+      (req.body?.cashCollectedNow === true || req.body?.cashCollectedNow === "true" || req.body?.cashCollectedNow === 1);
+    const collectedCashRaw = req.body?.collectedCash != null && req.body.collectedCash !== "" ? Number(req.body.collectedCash) : null;
+    const collectedCheckRaw = req.body?.collectedCheck != null && req.body.collectedCheck !== "" ? Number(req.body.collectedCheck) : null;
+    if (cashCollectedNow) {
+      if (collectedCashRaw != null && (!Number.isFinite(collectedCashRaw) || collectedCashRaw < 0)) {
+        res.status(400).json({ ok: false, message: "collectedCash 無效" });
+        return;
+      }
+      if (collectedCheckRaw != null && (!Number.isFinite(collectedCheckRaw) || collectedCheckRaw < 0)) {
+        res.status(400).json({ ok: false, message: "collectedCheck 無效" });
+        return;
+      }
+    }
+    const collectedCash = cashCollectedNow ? (collectedCashRaw ?? (charge ? Number(charge) : 0)) : 0;
+    const collectedCheck = cashCollectedNow ? (collectedCheckRaw ?? 0) : 0;
+
     const userId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
     const now = new Date();
+    const collectionMeta = resolveServiceTicketCollectionMeta(existing, now);
+    if (billingType === "cash" && charge != null && charge.greaterThan(0) && !collectionMeta.collectorDriverId) {
+      res.status(400).json({
+        ok: false,
+        message:
+          existing.status === "onsite_completed" || existing.assessOutcome === "onsite_fixed"
+            ? "現金結案需有評估司機，才能列入司機日收款核對"
+            : "現金結案需有送回司機，才能列入司機日收款核對",
+      });
+      return;
+    }
+
     const updated = await prisma.$transaction(async (tx) => {
+      let salesOrderId: bigint | null = existing.salesOrderId;
+      let orderNo: string | null = null;
+      let billingCreated = false;
+      let paymentPosted = false;
+      if (charge != null && charge.greaterThan(0)) {
+        const posted = await postServiceTicketBilling(tx, {
+          ticket: existing,
+          billingType: billingType as "cash" | "monthly",
+          charge,
+          userId,
+          settledAt: now,
+          cashCollectedNow,
+          collectedCash,
+          collectedCheck,
+        });
+        salesOrderId = posted.salesOrderId;
+        orderNo = posted.orderNo;
+        billingCreated = posted.created;
+        paymentPosted = posted.paymentPosted;
+      }
       await tx.serviceTicket.update({
         where: { id: ticketId },
         data: {
           status: "closed",
           billingType,
           chargeAmount: charge,
+          salesOrderId,
+          returnedAt: existing.status === "pending_return" ? now : existing.returnedAt,
           closedAt: now,
+          collectorDriverId: collectionMeta.collectorDriverId,
+          collectionDate: collectionMeta.collectionDate,
+          driverCashReceived:
+            billingType === "cash" ? new Prisma.Decimal(String(collectedCash)) : null,
+          driverCheckReceived:
+            billingType === "cash" ? new Prisma.Decimal(String(collectedCheck)) : null,
         },
       });
       await tx.serviceTicketEvent.create({
@@ -10792,7 +11320,20 @@ app.post("/api/service-tickets/:ticketId/close", async (req, res) => {
           serviceTicketId: ticketId,
           eventType: "closed",
           createdByUserId: userId,
-          payloadJson: { billingType, chargeAmount: charge?.toString() ?? null },
+          payloadJson: {
+            billingType,
+            chargeAmount: charge?.toString() ?? null,
+            returnConfirmedByAdmin: existing.status === "pending_return",
+            salesOrderId: salesOrderId?.toString() ?? null,
+            orderNo,
+            billingCreated,
+            paymentPosted,
+            cashCollectedNow,
+            collectedCash,
+            collectedCheck,
+            collectorDriverId: collectionMeta.collectorDriverId?.toString() ?? null,
+            collectionDate: collectionMeta.collectionDateYmd,
+          },
         },
       });
       return tx.serviceTicket.findUniqueOrThrow({
@@ -10808,6 +11349,113 @@ app.post("/api/service-tickets/:ticketId/close", async (req, res) => {
       payload: { serviceTicketId: existing.id.toString(), billingType },
     }).catch((err) => console.error("[line-notify] closed", err));
 
+    res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+/** 後台：已結案但尚未立帳的服務單，補建立訂單／AR（冪等） */
+app.post("/api/service-tickets/:ticketId/ensure-billing", async (req, res) => {
+  try {
+    const auth = getAuthUser(req);
+    const ticketId = toBigInt(req.params.ticketId);
+    if (!ticketId) {
+      res.status(400).json({ ok: false, message: "ticketId 無效" });
+      return;
+    }
+    const existing = await prisma.serviceTicket.findUnique({ where: { id: ticketId } });
+    if (!existing) {
+      res.status(404).json({ ok: false, message: "找不到服務單" });
+      return;
+    }
+    if (existing.status !== "closed") {
+      res.status(400).json({ ok: false, message: "僅已結案服務單可補立帳" });
+      return;
+    }
+    const billingTypeRaw = typeof req.body?.billingType === "string" ? req.body.billingType.trim() : existing.billingType;
+    if (!billingTypeRaw || !["cash", "monthly"].includes(billingTypeRaw)) {
+      res.status(400).json({ ok: false, message: "請指定 billingType：cash 或 monthly" });
+      return;
+    }
+    const billingType = billingTypeRaw as "cash" | "monthly";
+    let charge = existing.chargeAmount ?? existing.quoteAmount ?? existing.assessFeeAmount;
+    if (req.body?.chargeAmount != null && req.body.chargeAmount !== "") {
+      const n = Number(req.body.chargeAmount);
+      if (!Number.isFinite(n) || n < 0) {
+        res.status(400).json({ ok: false, message: "chargeAmount 無效" });
+        return;
+      }
+      charge = new Prisma.Decimal(String(n));
+    }
+    if (charge == null || !charge.greaterThan(0)) {
+      res.status(400).json({ ok: false, message: "收費金額須大於 0" });
+      return;
+    }
+    const cashCollectedNow =
+      billingType === "cash" &&
+      (req.body?.cashCollectedNow === true || req.body?.cashCollectedNow === "true" || req.body?.cashCollectedNow === 1);
+    const collectedCash = cashCollectedNow
+      ? Number(req.body?.collectedCash != null && req.body.collectedCash !== "" ? req.body.collectedCash : charge)
+      : Number(existing.driverCashReceived ?? 0);
+    const collectedCheck = cashCollectedNow
+      ? Number(req.body?.collectedCheck != null && req.body.collectedCheck !== "" ? req.body.collectedCheck : 0)
+      : Number(existing.driverCheckReceived ?? 0);
+    const userId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
+    const settledAt = existing.closedAt ?? new Date();
+    const collectionMeta = resolveServiceTicketCollectionMeta(existing, settledAt);
+    const updated = await prisma.$transaction(async (tx) => {
+      const posted = await postServiceTicketBilling(tx, {
+        ticket: existing,
+        billingType,
+        charge,
+        userId,
+        settledAt,
+        cashCollectedNow,
+        collectedCash: cashCollectedNow ? collectedCash : 0,
+        collectedCheck: cashCollectedNow ? collectedCheck : 0,
+      });
+      await tx.serviceTicket.update({
+        where: { id: ticketId },
+        data: {
+          billingType,
+          chargeAmount: charge,
+          salesOrderId: posted.salesOrderId,
+          collectorDriverId: existing.collectorDriverId ?? collectionMeta.collectorDriverId,
+          collectionDate: existing.collectionDate ?? collectionMeta.collectionDate,
+          ...(billingType === "cash"
+            ? {
+                driverCashReceived: new Prisma.Decimal(String(cashCollectedNow ? collectedCash : Number(existing.driverCashReceived ?? 0))),
+                driverCheckReceived: new Prisma.Decimal(String(cashCollectedNow ? collectedCheck : Number(existing.driverCheckReceived ?? 0))),
+              }
+            : {}),
+        },
+      });
+      if (posted.created || posted.paymentPosted) {
+        await tx.serviceTicketEvent.create({
+          data: {
+            serviceTicketId: ticketId,
+            eventType: posted.created ? "billing_posted" : "collection_posted",
+            createdByUserId: userId,
+            payloadJson: {
+              billingType,
+              chargeAmount: charge.toString(),
+              salesOrderId: posted.salesOrderId.toString(),
+              orderNo: posted.orderNo,
+              via: "ensure-billing",
+              cashCollectedNow,
+              collectedCash: cashCollectedNow ? collectedCash : null,
+              collectedCheck: cashCollectedNow ? collectedCheck : null,
+              paymentPosted: posted.paymentPosted,
+            },
+          },
+        });
+      }
+      return tx.serviceTicket.findUniqueOrThrow({
+        where: { id: ticketId },
+        include: serviceTicketAdminInclude,
+      });
+    });
     res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
   } catch (e) {
     res.status(500).json({ ok: false, message: String(e) });
@@ -11338,7 +11986,7 @@ app.post("/api/driver/service-tickets/:ticketId/assess-report", async (req, res)
     }
 
     if (outcome === "loaner_swapped") {
-      if (existing.status !== "pending_loaner") {
+      if (existing.status !== "pending_loaner" && !(existing.status === "assess_assigned" && existing.needLoaner)) {
         res.status(400).json({
           ok: false,
           message: `目前狀態「${serviceTicketStatusLabel(existing.status)}」無法回報換機`,
@@ -11357,11 +12005,15 @@ app.post("/api/driver/service-tickets/:ticketId/assess-report", async (req, res)
       outcome === "onsite_fixed"
         ? "onsite_completed"
         : outcome === "bring_back"
-          ? "pending_pickup"
+          ? existing.needLoaner
+            ? "pending_loaner"
+            : "pending_pickup"
           : outcome === "loaner_swapped"
             ? "in_workshop"
             : outcome === "unable"
-              ? "unable"
+              ? existing.needLoaner
+                ? "pending_loaner"
+                : "pending_pickup"
               : "cancelled";
 
     const now = new Date();
@@ -11375,8 +12027,8 @@ app.post("/api/driver/service-tickets/:ticketId/assess-report", async (req, res)
           assessFeeAmount: outcome === "loaner_swapped" ? existing.assessFeeAmount : feeAmount,
           assessCustomerAgreed: outcome === "onsite_fixed" ? true : existing.assessCustomerAgreed,
           assessReportedAt: outcome === "loaner_swapped" ? existing.assessReportedAt ?? now : now,
-          cancelledReason: outcome === "cancelled" || outcome === "unable" ? note : existing.cancelledReason,
-          closedAt: nextStatus === "unable" || nextStatus === "cancelled" ? now : null,
+          cancelledReason: outcome === "cancelled" ? note : existing.cancelledReason,
+          closedAt: outcome === "cancelled" ? now : null,
           chargeAmount: outcome === "onsite_fixed" ? feeAmount : existing.chargeAmount,
           workshopStatus: outcome === "loaner_swapped" ? "received" : existing.workshopStatus,
           workshopUpdatedAt: outcome === "loaner_swapped" ? now : existing.workshopUpdatedAt,
