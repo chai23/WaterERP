@@ -222,7 +222,7 @@ struct LegacyMigrationView: View {
                 }
                 .disabled(vm.isBusy)
 
-                Text("「清空交易」保留客戶／商品／司機等主檔；「清空全部」會刪除主檔與 users，須再轉換使用者。轉換前請先停止 API。舊庫僅讀取，不會修改遠端資料。")
+                Text("「清空交易」保留客戶／商品／司機等主檔；「清空全部」會刪除主檔與 users，須再轉換使用者。清空／轉換前可停止 API，但請保持 MySQL 運行（勿按「停止全部」）。舊庫僅讀取，不會修改遠端資料。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

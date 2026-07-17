@@ -1512,6 +1512,33 @@ internal sealed class MainForm : Form
         }
     }
 
+    /// <summary>
+    /// 停止 API／網頁／隧道等應用服務。Windows 啟動器不管理 MySQL，清空／升級資料庫時請用此方法，避免文案誤導去手動關掉資料庫。
+    /// </summary>
+    private async Task StopApplicationServicesAsync()
+    {
+        if (!IsAnyServiceRunning() && !IsNgrokRunning())
+            return;
+
+        AppendLog("正在停止應用服務（MySQL／資料庫保持運行）…");
+        _btnStop.Enabled = false;
+        _btnStart.Enabled = false;
+        SyncNgrokButtons();
+
+        await Task.Run(() => StopServicesCore()).ConfigureAwait(false);
+
+        if (!IsDisposed)
+        {
+            ScheduleOnUiThread(() =>
+            {
+                AppendLog("應用服務已停止；MySQL／資料庫服務請保持運行，以便清空或升級資料。");
+                SyncStartStopButtons();
+                SyncNgrokButtons();
+                _ = CheckHealthAsync();
+            });
+        }
+    }
+
     private static void TryKillAndDisposeApi(Process? p)
     {
         if (p is null)
@@ -2117,13 +2144,13 @@ internal sealed class MainForm : Form
         {
             var stopFirst = MessageBox.Show(
                 this,
-                "目前有服務在執行中。升級結構前建議先停止 API，是否現在停止全部服務？",
+                "目前有服務在執行中。升級結構前建議先停止 API 與網頁服務；MySQL／資料庫會保持運行。\n\n是否現在停止應用服務？",
                 Text,
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Question,
                 MessageBoxDefaultButton.Button1);
             if (stopFirst == DialogResult.Yes)
-                await StopAllAsync().ConfigureAwait(true);
+                await StopApplicationServicesAsync().ConfigureAwait(true);
         }
 
         SetBusy(true);
@@ -2362,13 +2389,13 @@ internal sealed class MainForm : Form
         {
             var stopFirst = MessageBox.Show(
                 this,
-                "目前有服務在執行中。轉換資料前建議先停止 API，是否現在停止全部服務？",
+                "目前有服務在執行中。轉換資料前建議先停止 API 與網頁服務；MySQL／資料庫會保持運行。\n\n是否現在停止應用服務？",
                 Text,
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Question,
                 MessageBoxDefaultButton.Button1);
             if (stopFirst == DialogResult.Yes)
-                await StopAllAsync().ConfigureAwait(true);
+                await StopApplicationServicesAsync().ConfigureAwait(true);
         }
 
         AppendLog($"開始{title}…");
@@ -2422,6 +2449,7 @@ internal sealed class MainForm : Form
             + "並把庫存現量與空桶數歸零。\n\n"
             + "會保留：客戶、送貨地址、商品、司機、車輛、使用者、\n"
             + "地址分區、隸屬公司、支出類別、優惠活動、印刷標語等主檔／設定。\n\n"
+            + "清空前可先停止 API／網頁服務，但 MySQL／資料庫必須保持運行。\n\n"
             + "此動作無法復原，建議先備份資料庫。\n\n"
             + "確定要繼續嗎？",
             "清空交易資料（保留主檔）",
@@ -2435,16 +2463,17 @@ internal sealed class MainForm : Form
         {
             var stopFirst = MessageBox.Show(
                 this,
-                "目前有服務在執行中。清空資料前建議先停止 API，是否現在停止全部服務？",
+                "目前有服務在執行中。清空資料前建議先停止 API 與網頁服務；MySQL／資料庫會保持運行。\n\n是否現在停止應用服務？",
                 Text,
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Question,
                 MessageBoxDefaultButton.Button1);
             if (stopFirst == DialogResult.Yes)
-                await StopAllAsync().ConfigureAwait(true);
+                await StopApplicationServicesAsync().ConfigureAwait(true);
         }
 
         AppendLog("開始清空交易資料（保留主檔）…");
+        AppendLog("注意：清空資料需要 MySQL 保持運行；本啟動器不會停止資料庫服務。");
         var exitCode = await RunNpmCommandAsync(root, "run db:clear-transactions").ConfigureAwait(true);
         if (exitCode == 0)
         {
@@ -2499,6 +2528,7 @@ internal sealed class MainForm : Form
             "此操作將清空所有業務資料（客戶、商品、訂單、配送、帳務、司機、車輛、使用者等）。\n"
             + "清空後將無法登入，須再執行「轉換使用者資料」建立帳號。\n\n"
             + "若只想清訂單／帳款並保留主檔，請改用「清空交易資料（保留主檔）」。\n\n"
+            + "清空前可先停止 API／網頁服務，但 MySQL／資料庫必須保持運行。\n\n"
             + "此動作無法復原，建議先備份資料庫。\n\n"
             + "確定要繼續嗎？",
             "清空全部業務資料",
@@ -2512,16 +2542,17 @@ internal sealed class MainForm : Form
         {
             var stopFirst = MessageBox.Show(
                 this,
-                "目前有服務在執行中。清空資料前建議先停止 API，是否現在停止全部服務？",
+                "目前有服務在執行中。清空資料前建議先停止 API 與網頁服務；MySQL／資料庫會保持運行。\n\n是否現在停止應用服務？",
                 Text,
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Question,
                 MessageBoxDefaultButton.Button1);
             if (stopFirst == DialogResult.Yes)
-                await StopAllAsync().ConfigureAwait(true);
+                await StopApplicationServicesAsync().ConfigureAwait(true);
         }
 
         AppendLog("開始清空全部業務資料（含使用者）…");
+        AppendLog("注意：清空資料需要 MySQL 保持運行；本啟動器不會停止資料庫服務。");
         var exitCode = await RunNpmCommandAsync(root, "run db:reset").ConfigureAwait(true);
         if (exitCode == 0)
         {

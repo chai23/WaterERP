@@ -244,11 +244,13 @@ final class LauncherViewModel: ObservableObject {
         會保留：客戶、送貨地址、商品、司機、車輛、使用者、
         地址分區、隸屬公司、支出類別、優惠活動、印刷標語等主檔／設定。
 
+        清空前可先停止 API／網頁服務，但 MySQL 必須保持運行。
         此動作無法復原，建議先備份資料庫。
         確定繼續？
         """
         guard confirm(title: "清空交易資料（保留主檔）", message: message) else { return }
         runTask {
+            try await self.prepareForDatabaseMutation(actionLabel: "清空交易資料")
             try await self.executeNpmScript("db:clear-transactions", label: "清空交易資料")
             self.logStore.warn("交易資料已清空；主檔與使用者帳號仍保留。")
             await self.refresh()
@@ -261,14 +263,37 @@ final class LauncherViewModel: ObservableObject {
         並刪除所有 users。
         清空後將無法登入，須再執行「轉換使用者資料」建立帳號。
 
+        清空前可先停止 API／網頁服務，但 MySQL 必須保持運行。
         確定繼續？
         """
         guard confirm(title: "清空全部業務資料", message: message) else { return }
         runTask {
+            try await self.prepareForDatabaseMutation(actionLabel: "清空全部業務資料")
             try await self.executeNpmScript("db:reset", label: "清空全部業務資料")
             self.logStore.warn("業務資料已清空。請執行「轉換使用者資料」匯入帳號。")
             await self.refresh()
         }
+    }
+
+    /// 資料庫寫入操作前：可選停止應用服務，並確認 MySQL 仍在運行（絕不停 MySQL）。
+    private func prepareForDatabaseMutation(actionLabel: String) async throws {
+        if services.contains(where: { $0.id != .mysql && $0.running }) {
+            if confirm(
+                title: "停止應用服務",
+                message: "目前有應用服務在執行中。\(actionLabel)前建議先停止 API 與網頁服務；MySQL 會保持運行。是否現在停止應用服務？\n\n請勿使用「停止全部」（那會連 MySQL 一起關掉）。"
+            ) {
+                await processManager.stopApplicationServices(
+                    settings: settings,
+                    log: logStore
+                )
+            }
+        }
+
+        guard await HealthService.isMysqlRunning(settings: settings) else {
+            logStore.error("MySQL 未在運行，無法\(actionLabel)。請先啟動 MySQL（勿使用「停止全部」）。")
+            throw LauncherError.timeout("MySQL 未在運行，\(actionLabel)已中止")
+        }
+        logStore.success("已確認 MySQL 保持運行，開始\(actionLabel)")
     }
 
     private func persistLegacyDatabaseURL() throws {
