@@ -236,6 +236,25 @@ final class LauncherViewModel: ObservableObject {
         }
     }
 
+    func clearTransactionData() {
+        let message = """
+        將清空本機 water_erp 的交易資料（訂單、配送、收空桶、服務單、庫存異動、帳款、支出單據等），
+        並把庫存現量與空桶數歸零。
+
+        會保留：客戶、送貨地址、商品、司機、車輛、使用者、
+        地址分區、隸屬公司、支出類別、優惠活動、印刷標語等主檔／設定。
+
+        此動作無法復原，建議先備份資料庫。
+        確定繼續？
+        """
+        guard confirm(title: "清空交易資料（保留主檔）", message: message) else { return }
+        runTask {
+            try await self.executeNpmScript("db:clear-transactions", label: "清空交易資料")
+            self.logStore.warn("交易資料已清空；主檔與使用者帳號仍保留。")
+            await self.refresh()
+        }
+    }
+
     func resetBusinessData() {
         let message = """
         將清空本機 water_erp 的業務資料（訂單、庫存、帳款等），
@@ -244,9 +263,9 @@ final class LauncherViewModel: ObservableObject {
 
         確定繼續？
         """
-        guard confirm(title: "清空業務資料", message: message) else { return }
+        guard confirm(title: "清空全部業務資料", message: message) else { return }
         runTask {
-            try await self.executeNpmScript("db:reset", label: "清空業務資料")
+            try await self.executeNpmScript("db:reset", label: "清空全部業務資料")
             self.logStore.warn("業務資料已清空。請執行「轉換使用者資料」匯入帳號。")
             await self.refresh()
         }

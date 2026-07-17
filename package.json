@@ -14,6 +14,7 @@
     "db:schema-status": "npm run db:schema-status -w apps/api",
     "db:schema-apply": "npm run db:schema-apply -w apps/api",
     "db:reset": "npm run reset-data -w apps/api",
+    "db:clear-transactions": "npm run clear-transactions -w apps/api",
     "db:migrate-legacy-masters": "npm run migrate:legacy-masters -w apps/api",
     "db:migrate-zones": "npm run migrate:legacy-zones -w apps/api",
     "db:migrate-companies": "npm run migrate:legacy-companies -w apps/api",

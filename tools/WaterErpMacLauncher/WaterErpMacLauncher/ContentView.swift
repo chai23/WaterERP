@@ -212,12 +212,17 @@ struct LegacyMigrationView: View {
 
                 Divider()
 
-                Button("清空業務資料（db:reset）", role: .destructive) {
+                Button("清空交易資料（保留主檔）", role: .destructive) {
+                    vm.clearTransactionData()
+                }
+                .disabled(vm.isBusy)
+
+                Button("清空全部業務資料（含主檔／使用者）", role: .destructive) {
                     vm.resetBusinessData()
                 }
                 .disabled(vm.isBusy)
 
-                Text("轉換前請先停止 API。舊庫僅讀取，不會修改遠端資料。")
+                Text("「清空交易」保留客戶／商品／司機等主檔；「清空全部」會刪除主檔與 users，須再轉換使用者。轉換前請先停止 API。舊庫僅讀取，不會修改遠端資料。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

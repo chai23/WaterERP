@@ -50,7 +50,8 @@ internal sealed class MainForm : Form
     private readonly Button _btnDeployUpdate = new() { Text = "更新並部署" };
     private readonly Button _btnBuild = new() { Text = "建置專案 (npm run build)" };
     private readonly Button _btnPrisma = new() { Text = "Prisma generate" };
-    private readonly Button _btnResetData = new() { Text = "清空業務資料" };
+    private readonly Button _btnResetData = new() { Text = "清空全部業務資料" };
+    private readonly Button _btnClearTransactions = new() { Text = "清空交易資料（保留主檔）" };
     private readonly Button _btnCheckSchema = new() { Text = "檢查結構" };
     private readonly Button _btnApplySchema = new() { Text = "升級結構" };
     private readonly Label _schemaStatusLabel = new() { AutoSize = true, Text = "結構：尚未檢查", ForeColor = SystemColors.GrayText };
@@ -183,6 +184,7 @@ internal sealed class MainForm : Form
         buttons.Controls.Add(_btnDeployUpdate);
         buttons.Controls.Add(_btnBuild);
         buttons.Controls.Add(_btnPrisma);
+        buttons.Controls.Add(_btnClearTransactions);
         buttons.Controls.Add(_btnResetData);
         buttons.Controls.Add(_btnOpenAdmin);
         buttons.Controls.Add(_btnOpenDriver);
@@ -359,6 +361,7 @@ internal sealed class MainForm : Form
         _btnDeployUpdate.Click += async (_, _) => await PullAndDeployAsync().ConfigureAwait(true);
         _btnBuild.Click += async (_, _) => await BuildForProductionAsync().ConfigureAwait(true);
         _btnPrisma.Click += async (_, _) => await RunRootNpmCommandAsync("run db:generate").ConfigureAwait(true);
+        _btnClearTransactions.Click += async (_, _) => await ClearTransactionsAsync().ConfigureAwait(true);
         _btnResetData.Click += async (_, _) => await ResetDataAsync().ConfigureAwait(true);
         _btnCheckSchema.Click += async (_, _) => await CheckSchemaAsync().ConfigureAwait(true);
         _btnApplySchema.Click += async (_, _) => await ApplySchemaAsync().ConfigureAwait(true);
@@ -2376,6 +2379,84 @@ internal sealed class MainForm : Form
         }
     }
 
+    private async Task ClearTransactionsAsync()
+    {
+        try
+        {
+            ValidateProjectRoot();
+        }
+        catch (InvalidOperationException ex)
+        {
+            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var root = _projectRoot.Text.Trim();
+        var clearSql = Path.Combine(root, "database", "migrations", "019_clear_transaction_data_keep_masters.sql");
+        if (!File.Exists(clearSql))
+        {
+            MessageBox.Show(
+                this,
+                "找不到清空腳本：\n" + clearSql,
+                Text,
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
+        var apiEnv = Path.Combine(root, "apps", "api", ".env");
+        if (!File.Exists(apiEnv))
+        {
+            MessageBox.Show(
+                this,
+                "找不到 apps\\api\\.env，無法連線資料庫。\n請先設定 DATABASE_URL 後再試。",
+                Text,
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            this,
+            "此操作將清空交易資料（訂單、配送、收空桶、服務單、庫存異動、帳款、支出單據等），\n"
+            + "並把庫存現量與空桶數歸零。\n\n"
+            + "會保留：客戶、送貨地址、商品、司機、車輛、使用者、\n"
+            + "地址分區、隸屬公司、支出類別、優惠活動、印刷標語等主檔／設定。\n\n"
+            + "此動作無法復原，建議先備份資料庫。\n\n"
+            + "確定要繼續嗎？",
+            "清空交易資料（保留主檔）",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2);
+        if (confirm != DialogResult.Yes)
+            return;
+
+        if (IsAnyServiceRunning())
+        {
+            var stopFirst = MessageBox.Show(
+                this,
+                "目前有服務在執行中。清空資料前建議先停止 API，是否現在停止全部服務？",
+                Text,
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question,
+                MessageBoxDefaultButton.Button1);
+            if (stopFirst == DialogResult.Yes)
+                await StopAllAsync().ConfigureAwait(true);
+        }
+
+        AppendLog("開始清空交易資料（保留主檔）…");
+        var exitCode = await RunNpmCommandAsync(root, "run db:clear-transactions").ConfigureAwait(true);
+        if (exitCode == 0)
+        {
+            MessageBox.Show(
+                this,
+                "交易資料已清空。\n\n客戶、商品、司機、使用者等主檔仍保留，可直接登入後台使用。",
+                "清空完成",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+    }
+
     private async Task ResetDataAsync()
     {
         try
@@ -2417,9 +2498,10 @@ internal sealed class MainForm : Form
             this,
             "此操作將清空所有業務資料（客戶、商品、訂單、配送、帳務、司機、車輛、使用者等）。\n"
             + "清空後將無法登入，須再執行「轉換使用者資料」建立帳號。\n\n"
+            + "若只想清訂單／帳款並保留主檔，請改用「清空交易資料（保留主檔）」。\n\n"
             + "此動作無法復原，建議先備份資料庫。\n\n"
             + "確定要繼續嗎？",
-            "清空業務資料",
+            "清空全部業務資料",
             MessageBoxButtons.YesNo,
             MessageBoxIcon.Warning,
             MessageBoxDefaultButton.Button2);
@@ -2439,7 +2521,7 @@ internal sealed class MainForm : Form
                 await StopAllAsync().ConfigureAwait(true);
         }
 
-        AppendLog("開始清空業務資料（含使用者）…");
+        AppendLog("開始清空全部業務資料（含使用者）…");
         var exitCode = await RunNpmCommandAsync(root, "run db:reset").ConfigureAwait(true);
         if (exitCode == 0)
         {
@@ -2460,6 +2542,7 @@ internal sealed class MainForm : Form
         _btnGitPull.Enabled = !busy;
         _btnDeployUpdate.Enabled = !busy;
         _btnPrisma.Enabled = !busy;
+        _btnClearTransactions.Enabled = !busy;
         _btnResetData.Enabled = !busy;
         _btnCheckSchema.Enabled = !busy;
         _btnApplySchema.Enabled = !busy;
@@ -2467,6 +2550,8 @@ internal sealed class MainForm : Form
         _btnMigrateCompanies.Enabled = !busy;
         _btnMigrateCustomers.Enabled = !busy;
         _btnMigrateUsers.Enabled = !busy;
+        _btnMigrateDrivers.Enabled = !busy;
+        _btnMigrateProducts.Enabled = !busy;
         _btnBrowse.Enabled = !busy;
         _btnBrowseNginx.Enabled = !busy && _chkProductionMode.Checked;
         _chkProductionMode.Enabled = !busy;

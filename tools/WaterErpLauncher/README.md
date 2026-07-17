@@ -19,7 +19,9 @@ npm run db:generate        # 升級後更新 Prisma Client
 
 1. **正式環境升級前務必備份**（`mysqldump`）
 2. **不要**對已有資料的庫執行整份 `database/schema.sql`（會 DROP TABLE）
-3. 清空資料的腳本（`004_reset_*`、`008_clear_*` 等）不會被自動升級執行
+3. 清空資料的腳本（`004_reset_*`、`008_clear_*`、`019_clear_*` 等）不會被自動升級執行
+   - 啟動器另有「清空交易資料（保留主檔）」→ `npm run db:clear-transactions`
+   - 「清空全部業務資料」→ `npm run db:reset`
 4. 若資料庫是用 `schema.sql` 建的，腳本會自動偵測既有結構並寫入 `schema_migrations` 追蹤表，避免重複執行
 
 ## 啟動器操作
