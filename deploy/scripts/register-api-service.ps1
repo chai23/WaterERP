@@ -1,4 +1,4 @@
-# 使用 NSSM 將 API 註冊為 Windows 服務（需以系統管理員執行）
+﻿# 使用 NSSM 將 API 註冊為 Windows 服務（需以系統管理員執行）
 param(
     [string]$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path,
     [string]$ServiceName = "WaterERP-API",

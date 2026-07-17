@@ -1,4 +1,4 @@
-# 建置正式版（API + 後台 + 司機端 + LIFF）並產生 Nginx 設定
+﻿# 建置正式版（API + 後台 + 司機端 + LIFF）並產生 Nginx 設定
 param(
     [string]$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 )

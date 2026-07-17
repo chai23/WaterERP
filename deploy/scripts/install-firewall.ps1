@@ -1,4 +1,4 @@
-# 開放 Windows 防火牆 HTTP 埠（需以系統管理員執行）
+﻿# 開放 Windows 防火牆 HTTP 埠（需以系統管理員執行）
 param(
     [int]$Port = 80,
     [string]$RuleName = "WaterERP HTTP"

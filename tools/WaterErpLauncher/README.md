@@ -18,6 +18,7 @@
 
 > 需求：本機安裝 **.NET 8 SDK**（`dotnet --version` 可確認）。
 > 這三個輸出資料夾已列入 `.gitignore`，不會被提交；舊版本只會出現在本機磁碟，靠上述腳本每次清理。
+> 腳本為 **UTF-8 with BOM**（Windows PowerShell 5.x 讀取含中文腳本所需）。
 
 參數：`-NoLaunch`（建置後不自動開啟）、`-Runtime win-x64`（預設）。
 
