@@ -58,6 +58,17 @@ npm run dev:driver   # http://localhost:5174
 |------|------|
 | [`docs/BILLING.md`](docs/BILLING.md) | 三種結帳、流水帳、核銷規則（技術向） |
 | [`docs/USER_GUIDE_CASH_AND_SETTLEMENT.md`](docs/USER_GUIDE_CASH_AND_SETTLEMENT.md) | **現金往來／司機收款／櫃台沖帳**操作教學 |
+| [`tools/WaterErpLauncher/README.md`](tools/WaterErpLauncher/README.md) | Windows 正式機啟動器、服務管理與建置說明 |
+
+## Windows 正式機啟動器
+
+`tools/WaterErpLauncher` 提供分頁式 WinForms 管理介面，每 3 秒監控 MySQL、API、Nginx，
+以及後台、司機端與 LIFF 網站端點。正式機固定使用 API `dist` 與 Nginx 靜態網站，不啟動
+Vite 開發伺服器。
+
+MySQL 預設以 Windows Service **`MySQL80`** 管理，可在啟動器「設定」分頁修改服務名稱。
+啟停 Windows Service 通常需要以系統管理員身分執行啟動器。「停止應用」只停止 API 與
+Nginx，不會停止 MySQL；資料維護與一鍵部署因此可持續使用資料庫。
 
 ## Prisma 與手動 SQL
 

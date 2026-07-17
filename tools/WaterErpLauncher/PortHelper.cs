@@ -62,7 +62,7 @@ internal static class PortHelper
         return killed;
     }
 
-    /// <summary>結束佔用指定埠且程序名為 node 的行程樹（含殘留的 API / Vite）。</summary>
+    /// <summary>結束佔用指定埠且程序名為 node 的 API 行程樹。</summary>
     public static int ReleasePortForNode(int port, Action<string>? log = null) =>
         ReleasePortForProcess(port, "node", log);
 

@@ -24,6 +24,32 @@
 
 ---
 
+# 正式機操作
+
+Windows 啟動器只提供正式部署模式，API 使用 `apps\api\dist\index.js`，後台、司機端與 LIFF
+使用建置後的靜態檔並由同一個 Nginx 提供；不包含 Vite 開發伺服器或 ngrok。
+
+啟動器分成五個分頁：
+
+- **服務總覽**：每 3 秒監控 MySQL、API、Nginx 及三個網站端點；可個別啟停服務。
+- **資料維護**：資料庫結構、清空資料與舊庫轉換。
+- **進階工具**：Git pull、正式建置、Prisma generate、LINE 設定檢查。
+- **日誌**：完整部署與服務輸出。
+- **設定**：專案、Nginx、MySQL Service、URL 與 Git 分支。
+
+MySQL 必須安裝為 Windows Service，預設服務名稱為 **`MySQL80`**。若安裝時使用不同名稱，
+請到「設定」分頁修改並儲存。啟停 Windows Service 通常需要權限，請在正式機上以
+**系統管理員身分執行** `WaterErpLauncher.exe`；權限不足時啟動器會顯示明確提示。
+
+「啟動全部」依序啟動 MySQL、API、Nginx。「停止應用」只停止 API 與 Nginx，刻意保留
+MySQL 運行，供部署、結構升級與資料維護使用。停止 MySQL 只能從 MySQL 服務卡個別操作，
+且會再次確認。
+
+「更新並部署」會停止應用（保留 MySQL），依序執行 Git pull、`npm install`、
+Prisma generate、資料庫結構套用、正式建置、Nginx 設定產生，最後重新啟動 API 與 Nginx。
+
+---
+
 # 資料庫結構升級
 
 ## 與「舊庫轉換」的差別
@@ -52,7 +78,7 @@ npm run db:generate        # 升級後更新 Prisma Client
 
 ## 啟動器操作
 
-Mac 與 Windows 啟動器在「舊庫轉換」區塊**上方**皆有 **檢查結構**／**升級結構** 按鈕，共用上述 npm 指令。
+Windows 啟動器的「資料維護」分頁與 Mac 啟動器皆有 **檢查結構**／**升級結構** 按鈕，共用上述 npm 指令。
 
 1. 按 **檢查結構** 查看已套用與待升級的 migration
 2. 若有待升級項目，先 `mysqldump` 備份後按 **升級結構**

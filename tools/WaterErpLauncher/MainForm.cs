@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net.Http;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 
@@ -7,670 +8,1034 @@ namespace WaterErpLauncher;
 
 internal sealed class MainForm : Form
 {
-    private readonly TextBox _projectRoot = new() { Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top };
-    private readonly TextBox _nginxRoot = new() { Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top };
-    private readonly TextBox _apiBaseUrl = new() { Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top };
-    private readonly TextBox _adminUrl = new() { Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top };
-    private readonly TextBox _driverUrl = new() { Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top };
-    private readonly TextBox _liffUrl = new() { Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top };
-    private readonly CheckBox _chkProductionMode = new()
-    {
-        Text = "正式部署（Nginx + 靜態前端）",
-        AutoSize = true,
-        Checked = true
-    };
-    private readonly CheckBox _chkAdminDev = new()
-    {
-        Text = "一併啟動後台 Vite (npm run dev:admin)",
-        AutoSize = true
-    };
-    private readonly CheckBox _chkDriverDev = new()
-    {
-        Text = "一併啟動司機端 Vite (npm run dev:driver)",
-        AutoSize = true
-    };
-    private readonly CheckBox _chkLiffDev = new()
-    {
-        Text = "一併啟動 LIFF 訂水 Vite (npm run dev:liff)",
-        AutoSize = true
-    };
+    private const int ApiPort = 3000;
+    private const int MySqlPort = 3306;
+    private const string DefaultPublicHost = "125.228.16.160";
+
+    private readonly TextBox _projectRoot = new();
+    private readonly TextBox _nginxRoot = new();
+    private readonly TextBox _mysqlServiceName = new();
+    private readonly TextBox _apiBaseUrl = new();
+    private readonly TextBox _adminUrl = new();
+    private readonly TextBox _driverUrl = new();
+    private readonly TextBox _liffUrl = new();
+    private readonly TextBox _gitBranch = new();
+
     private readonly RichTextBox _log = new()
     {
         ReadOnly = true,
-        BackColor = SystemColors.Window,
-        Font = new Font("Consolas", 9f),
-        Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
+        BackColor = Color.FromArgb(15, 23, 42),
+        ForeColor = Color.FromArgb(226, 232, 240),
+        BorderStyle = BorderStyle.None,
+        Font = new Font("Cascadia Mono", 9f),
+        Dock = DockStyle.Fill
     };
-    private readonly Label _healthLabel = new() { AutoSize = true, Text = "API 狀態：尚未檢查" };
-    private readonly Button _btnBrowse = new() { Text = "瀏覽…" };
-    private readonly Button _btnBrowseNginx = new() { Text = "瀏覽…" };
-    private readonly Button _btnStart = new() { Text = "啟動服務" };
-    private readonly Button _btnStop = new() { Text = "停止全部", Enabled = false };
-    private readonly Button _btnGitPull = new() { Text = "Git 拉取最新" };
-    private readonly Button _btnDeployUpdate = new() { Text = "更新並部署" };
-    private readonly Button _btnBuild = new() { Text = "建置專案 (npm run build)" };
-    private readonly Button _btnPrisma = new() { Text = "Prisma generate" };
-    private readonly Button _btnResetData = new() { Text = "清空全部業務資料" };
-    private readonly Button _btnClearTransactions = new() { Text = "清空交易資料（保留主檔）" };
-    private readonly Button _btnCheckSchema = new() { Text = "檢查結構" };
-    private readonly Button _btnApplySchema = new() { Text = "升級結構" };
-    private readonly Label _schemaStatusLabel = new() { AutoSize = true, Text = "結構：尚未檢查", ForeColor = SystemColors.GrayText };
-    private readonly Button _btnMigrateZones = new() { Text = "轉換地址分區" };
-    private readonly Button _btnMigrateCompanies = new() { Text = "轉換隸屬公司" };
-    private readonly Button _btnMigrateCustomers = new() { Text = "轉換客戶資料" };
-    private readonly Button _btnMigrateUsers = new() { Text = "轉換使用者資料" };
-    private readonly Button _btnMigrateDrivers = new() { Text = "轉換司機資料" };
-    private readonly Button _btnMigrateProducts = new() { Text = "轉換商品資料" };
-    private readonly Button _btnOpenAdmin = new() { Text = "開啟後台 (瀏覽器)" };
-    private readonly Button _btnOpenDriver = new() { Text = "開啟司機端 (瀏覽器)" };
-    private readonly Button _btnOpenLiff = new() { Text = "開啟 LIFF 訂水 (瀏覽器)" };
-    private readonly Button _btnCheckLine = new() { Text = "檢查 LINE 正式設定" };
-    private readonly TextBox _ngrokDomain = new() { Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top };
-    private readonly CheckBox _chkStartNgrok = new()
+    private readonly Label _summary = new()
     {
-        Text = "啟動服務時一併開啟 ngrok HTTPS 隧道（LINE 測試）",
-        AutoSize = true
-    };
-    private readonly Button _btnStartNgrok = new() { Text = "啟動 ngrok" };
-    private readonly Button _btnStopNgrok = new() { Text = "停止 ngrok", Enabled = false };
-    private readonly Button _btnOpenNgrokDashboard = new() { Text = "開啟 ngrok 儀表板" };
-    private readonly Label _ngrokHealthLabel = new()
-    {
+        Text = "正在取得服務狀態…",
         AutoSize = true,
-        Text = "ngrok：尚未檢查",
-        ForeColor = SystemColors.GrayText
+        Font = new Font("Segoe UI", 10f, FontStyle.Bold),
+        ForeColor = UiTheme.Muted
     };
+    private readonly Label _recentLog = new()
+    {
+        Text = "尚無日誌",
+        AutoEllipsis = true,
+        Dock = DockStyle.Fill,
+        ForeColor = UiTheme.Muted
+    };
+    private readonly Label _schemaStatus = new()
+    {
+        Text = "結構：尚未檢查",
+        AutoSize = true,
+        ForeColor = UiTheme.Muted
+    };
+
+    private readonly Button _deployButton = UiTheme.Button("更新並部署", primary: true);
+    private readonly Button _refreshButton = UiTheme.Button("重新整理");
+    private readonly Button _startAllButton = UiTheme.Button("啟動全部", primary: true);
+    private readonly Button _stopAppsButton = UiTheme.Button("停止應用");
+    private readonly Button _gitPullButton = UiTheme.Button("Git pull");
+    private readonly Button _buildButton = UiTheme.Button("建置正式版");
+    private readonly Button _prismaButton = UiTheme.Button("Prisma generate");
+    private readonly Button _lineCheckButton = UiTheme.Button("LINE 設定檢查");
+    private readonly Button _schemaCheckButton = UiTheme.Button("檢查結構");
+    private readonly Button _schemaApplyButton = UiTheme.Button("升級結構", primary: true);
+    private readonly Button _clearTransactionsButton = UiTheme.Button("清空交易資料");
+    private readonly Button _resetDataButton = UiTheme.Button("清空全部資料", danger: true);
+    private readonly Button _saveSettingsButton = UiTheme.Button("儲存設定", primary: true);
+    private readonly Button _browseProjectButton = UiTheme.Button("瀏覽…");
+    private readonly Button _browseNginxButton = UiTheme.Button("瀏覽…");
 
     private readonly System.Windows.Forms.Timer _healthTimer = new() { Interval = 3000 };
-    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(5) };
+    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(4) };
+    private readonly SemaphoreSlim _healthGate = new(1, 1);
+    private readonly List<Control> _busyControls = new();
+
+    private ServiceCard _mysqlCard = null!;
+    private ServiceCard _apiCard = null!;
+    private ServiceCard _nginxCard = null!;
+    private EndpointCard _adminCard = null!;
+    private EndpointCard _driverCard = null!;
+    private EndpointCard _liffCard = null!;
 
     private Process? _apiProcess;
-    private Process? _adminDevProcess;
-    private Process? _driverDevProcess;
-    private Process? _liffDevProcess;
-    private Process? _ngrokProcess;
-    private bool _nginxStartedByLauncher;
-    private bool _ngrokStartedByLauncher;
     private bool _uiBusy;
-    private string _gitBranch = "main";
-    private readonly FlowLayoutPanel _devOpts;
+    private bool _closing;
 
     public MainForm()
     {
-        Text = "超好企業進銷存系統 伺服器啟動器 v1.7";
-        MinimumSize = new Size(720, 760);
-        Size = new Size(900, 820);
+        Text = "超好企業進銷存系統｜Windows 伺服器啟動器";
+        Font = new Font("Segoe UI", 9.5f);
+        BackColor = UiTheme.Background;
+        ForeColor = UiTheme.Text;
         StartPosition = FormStartPosition.CenterScreen;
+        MinimumSize = new Size(980, 720);
+        Size = new Size(1180, 850);
 
-        var root = new TableLayoutPanel
+        var tabs = new TabControl
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 8,
-            Padding = new Padding(10)
+            Font = new Font("Segoe UI", 10f),
+            Padding = new Point(18, 8)
         };
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+        tabs.TabPages.Add(BuildOverviewTab());
+        tabs.TabPages.Add(BuildDataTab());
+        tabs.TabPages.Add(BuildAdvancedTab());
+        tabs.TabPages.Add(BuildLogTab());
+        tabs.TabPages.Add(BuildSettingsTab());
+        Controls.Add(tabs);
 
-        var formPanel = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 3,
-            AutoSize = true
-        };
-        formPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150f));
-        formPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-        formPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100f));
-
-        var r = 0;
-        AddRow(formPanel, r++, "專案根目錄", _projectRoot, _btnBrowse);
-        AddRow(formPanel, r++, "Nginx 目錄", _nginxRoot, _btnBrowseNginx);
-        AddRow(formPanel, r++, "網站基底 URL", _apiBaseUrl, null);
-        AddRow(formPanel, r++, "後台網址", _adminUrl, null);
-        AddRow(formPanel, r++, "司機端網址", _driverUrl, null);
-        AddRow(formPanel, r++, "LIFF 訂水網址", _liffUrl, null);
-
-        formPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        var modeOpts = new FlowLayoutPanel
-        {
-            AutoSize = true,
-            Dock = DockStyle.Fill,
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = true
-        };
-        modeOpts.Controls.Add(_chkProductionMode);
-        formPanel.Controls.Add(new Label { Text = "部署模式", AutoSize = true, Anchor = AnchorStyles.Left | AnchorStyles.Top }, 0, r);
-        formPanel.Controls.Add(modeOpts, 1, r);
-        formPanel.SetColumnSpan(modeOpts, 2);
-        r++;
-
-        formPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        var devLabel = new Label
-        {
-            Text = "開發模式選項",
-            AutoSize = true,
-            Anchor = AnchorStyles.Left | AnchorStyles.Top
-        };
-        _devOpts = new FlowLayoutPanel
-        {
-            AutoSize = true,
-            Dock = DockStyle.Fill,
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = true
-        };
-        _devOpts.Controls.Add(_chkAdminDev);
-        _devOpts.Controls.Add(_chkDriverDev);
-        _devOpts.Controls.Add(_chkLiffDev);
-        formPanel.Controls.Add(devLabel, 0, r);
-        formPanel.Controls.Add(_devOpts, 1, r);
-        formPanel.SetColumnSpan(_devOpts, 2);
-
-        var buttons = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            AutoSize = true,
-            WrapContents = true,
-            FlowDirection = FlowDirection.LeftToRight
-        };
-        buttons.Controls.Add(_btnStart);
-        buttons.Controls.Add(_btnStop);
-        buttons.Controls.Add(_btnGitPull);
-        buttons.Controls.Add(_btnDeployUpdate);
-        buttons.Controls.Add(_btnBuild);
-        buttons.Controls.Add(_btnPrisma);
-        buttons.Controls.Add(_btnClearTransactions);
-        buttons.Controls.Add(_btnResetData);
-        buttons.Controls.Add(_btnOpenAdmin);
-        buttons.Controls.Add(_btnOpenDriver);
-        buttons.Controls.Add(_btnOpenLiff);
-        buttons.Controls.Add(_btnCheckLine);
-
-        var ngrokLabel = new Label
-        {
-            Text = "HTTPS 隧道 ngrok（LINE Webhook／LIFF 暫時測試用）",
-            AutoSize = true,
-            Anchor = AnchorStyles.Left | AnchorStyles.Top
-        };
-        var ngrokHint = new Label
-        {
-            Text = "需本機 Nginx:80 與 API 已啟動；首次請先在本機執行 ngrok config add-authtoken。停止服務時若由此啟動器開啟，會一併停止 ngrok。",
-            AutoSize = true,
-            MaximumSize = new Size(860, 0),
-            ForeColor = SystemColors.GrayText
-        };
-        var ngrokDomainRow = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            AutoSize = true
-        };
-        ngrokDomainRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90f));
-        ngrokDomainRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-        ngrokDomainRow.Controls.Add(new Label { Text = "固定網域", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
-        _ngrokDomain.Dock = DockStyle.Fill;
-        ngrokDomainRow.Controls.Add(_ngrokDomain, 1, 0);
-
-        var ngrokButtons = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            AutoSize = true,
-            WrapContents = true,
-            FlowDirection = FlowDirection.LeftToRight
-        };
-        ngrokButtons.Controls.Add(_btnStartNgrok);
-        ngrokButtons.Controls.Add(_btnStopNgrok);
-        ngrokButtons.Controls.Add(_btnOpenNgrokDashboard);
-
-        var ngrokPanel = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            AutoSize = true,
-            RowCount = 5
-        };
-        for (var i = 0; i < 5; i++)
-            ngrokPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        ngrokPanel.Controls.Add(ngrokLabel, 0, 0);
-        ngrokPanel.Controls.Add(ngrokHint, 0, 1);
-        ngrokPanel.Controls.Add(ngrokDomainRow, 0, 2);
-        ngrokPanel.Controls.Add(_chkStartNgrok, 0, 3);
-        ngrokPanel.Controls.Add(ngrokButtons, 0, 4);
-
-        var deployHint = new Label
-        {
-            Text = "從 GitHub 更新：「Git 拉取最新」只下載程式；「更新並部署」= 停止 → 拉取 → 建置 → 啟動。"
-                + " LINE 訂水正式上線前請按「檢查 LINE 正式設定」，確認 .env 與 LIFF ID 後再建置。",
-            AutoSize = true,
-            MaximumSize = new Size(860, 0),
-            ForeColor = SystemColors.GrayText
-        };
-        var deployPanel = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            AutoSize = true,
-            RowCount = 1
-        };
-        deployPanel.Controls.Add(deployHint, 0, 0);
-
-        var schemaLabel = new Label
-        {
-            Text = "資料庫結構（water_erp 欄位／資料表升級）",
-            AutoSize = true,
-            Anchor = AnchorStyles.Left | AnchorStyles.Top
-        };
-        var schemaButtons = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            AutoSize = true,
-            WrapContents = false,
-            FlowDirection = FlowDirection.LeftToRight
-        };
-        schemaButtons.Controls.Add(_btnCheckSchema);
-        schemaButtons.Controls.Add(_btnApplySchema);
-
-        var schemaPanel = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            AutoSize = true,
-            RowCount = 3
-        };
-        schemaPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        schemaPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        schemaPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        schemaPanel.Controls.Add(schemaLabel, 0, 0);
-        schemaPanel.Controls.Add(schemaButtons, 0, 1);
-        schemaPanel.Controls.Add(_schemaStatusLabel, 0, 2);
-
-        var migrateLabel = new Label
-        {
-            Text = "舊庫轉換（database → water_erp，唯讀舊庫）",
-            AutoSize = true,
-            Anchor = AnchorStyles.Left | AnchorStyles.Top
-        };
-        var migrateRow1 = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            AutoSize = true,
-            WrapContents = false,
-            FlowDirection = FlowDirection.LeftToRight
-        };
-        migrateRow1.Controls.Add(_btnMigrateZones);
-        migrateRow1.Controls.Add(_btnMigrateCompanies);
-        migrateRow1.Controls.Add(_btnMigrateCustomers);
-
-        var migrateRow2 = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            AutoSize = true,
-            WrapContents = false,
-            FlowDirection = FlowDirection.LeftToRight
-        };
-        migrateRow2.Controls.Add(_btnMigrateUsers);
-        migrateRow2.Controls.Add(_btnMigrateDrivers);
-        migrateRow2.Controls.Add(_btnMigrateProducts);
-
-        var migratePanel = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            AutoSize = true,
-            RowCount = 3
-        };
-        migratePanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        migratePanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        migratePanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        migratePanel.Controls.Add(migrateLabel, 0, 0);
-        migratePanel.Controls.Add(migrateRow1, 0, 1);
-        migratePanel.Controls.Add(migrateRow2, 0, 2);
-
-        var statusPanel = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            AutoSize = true,
-            FlowDirection = FlowDirection.TopDown,
-            WrapContents = false
-        };
-        statusPanel.Controls.Add(_healthLabel);
-        statusPanel.Controls.Add(_ngrokHealthLabel);
-
-        root.Controls.Add(formPanel, 0, 0);
-        root.Controls.Add(buttons, 0, 1);
-        root.Controls.Add(deployPanel, 0, 2);
-        root.Controls.Add(schemaPanel, 0, 3);
-        root.Controls.Add(migratePanel, 0, 4);
-        root.Controls.Add(ngrokPanel, 0, 5);
-        root.Controls.Add(statusPanel, 0, 6);
-        root.Controls.Add(_log, 0, 7);
-
-        Controls.Add(root);
-
-        _btnBrowse.Click += (_, _) => BrowseProjectRoot();
-        _btnBrowseNginx.Click += (_, _) => BrowseNginxRoot();
-        _chkProductionMode.CheckedChanged += (_, _) => SyncDeploymentModeUi();
-        _btnStart.Click += async (_, _) => await StartAllAsync().ConfigureAwait(true);
-        _btnStop.Click += async (_, _) => await StopAllAsync().ConfigureAwait(true);
-        _btnGitPull.Click += async (_, _) => await GitPullAsync().ConfigureAwait(true);
-        _btnDeployUpdate.Click += async (_, _) => await PullAndDeployAsync().ConfigureAwait(true);
-        _btnBuild.Click += async (_, _) => await BuildForProductionAsync().ConfigureAwait(true);
-        _btnPrisma.Click += async (_, _) => await RunRootNpmCommandAsync("run db:generate").ConfigureAwait(true);
-        _btnClearTransactions.Click += async (_, _) => await ClearTransactionsAsync().ConfigureAwait(true);
-        _btnResetData.Click += async (_, _) => await ResetDataAsync().ConfigureAwait(true);
-        _btnCheckSchema.Click += async (_, _) => await CheckSchemaAsync().ConfigureAwait(true);
-        _btnApplySchema.Click += async (_, _) => await ApplySchemaAsync().ConfigureAwait(true);
-        _btnMigrateZones.Click += async (_, _) => await MigrateLegacyAsync("run db:migrate-zones", "轉換地址分區", MigrateZonesConfirmText()).ConfigureAwait(true);
-        _btnMigrateCompanies.Click += async (_, _) => await MigrateLegacyAsync("run db:migrate-companies", "轉換隸屬公司", MigrateCompaniesConfirmText()).ConfigureAwait(true);
-        _btnMigrateCustomers.Click += async (_, _) => await MigrateLegacyAsync("run db:migrate-customers", "轉換客戶資料", MigrateCustomersConfirmText()).ConfigureAwait(true);
-        _btnMigrateUsers.Click += async (_, _) => await MigrateLegacyAsync("run db:migrate-users", "轉換使用者資料", MigrateUsersConfirmText()).ConfigureAwait(true);
-        _btnMigrateDrivers.Click += async (_, _) => await MigrateLegacyAsync("run db:migrate-drivers", "轉換司機資料", MigrateDriversConfirmText()).ConfigureAwait(true);
-        _btnMigrateProducts.Click += async (_, _) => await MigrateLegacyAsync("run db:migrate-products", "轉換商品資料", MigrateProductsConfirmText()).ConfigureAwait(true);
-        _btnOpenAdmin.Click += (_, _) => OpenUrl(_adminUrl.Text.Trim());
-        _btnOpenDriver.Click += (_, _) => OpenUrl(_driverUrl.Text.Trim());
-        _btnOpenLiff.Click += (_, _) => OpenUrl(_liffUrl.Text.Trim());
-        _btnCheckLine.Click += (_, _) => ShowLineProductionCheck(requireBuiltDist: false);
-        _btnStartNgrok.Click += async (_, _) => await StartNgrokAsync(showMessages: true).ConfigureAwait(true);
-        _btnStopNgrok.Click += (_, _) => StopNgrok(showLog: true);
-        _btnOpenNgrokDashboard.Click += (_, _) => OpenUrl(NgrokHelper.LocalApiBase);
-
-        _healthTimer.Tick += async (_, _) => await CheckHealthAsync().ConfigureAwait(true);
+        WireEvents();
         Load += OnLoad;
         FormClosing += OnFormClosing;
     }
 
-    private static void AddRow(TableLayoutPanel panel, int row, string labelText, Control valueControl, Control? suffix)
+    private TabPage BuildOverviewTab()
     {
-        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        var label = new Label
+        var page = NewTab("服務總覽");
+        var scroll = NewScrollPanel();
+        var content = NewContentTable(7);
+
+        var brand = new Panel { Dock = DockStyle.Fill, Height = 102, BackColor = UiTheme.Primary, Padding = new Padding(24, 16, 24, 16) };
+        var brandTitle = new Label
         {
-            Text = labelText,
+            Text = "超好企業進銷存系統",
             AutoSize = true,
-            Anchor = AnchorStyles.Left | AnchorStyles.Top,
-            TextAlign = ContentAlignment.MiddleLeft
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 22f, FontStyle.Bold),
+            Location = new Point(22, 14)
         };
-        panel.Controls.Add(label, 0, row);
-        valueControl.Dock = DockStyle.Fill;
-        panel.Controls.Add(valueControl, 1, row);
-        if (suffix != null)
+        var brandSubtitle = new Label
         {
-            suffix.Dock = DockStyle.Fill;
-            panel.Controls.Add(suffix, 2, row);
-        }
-        else
+            Text = "Windows 正式環境服務中心",
+            AutoSize = true,
+            ForeColor = Color.FromArgb(219, 234, 254),
+            Font = new Font("Segoe UI", 10.5f),
+            Location = new Point(25, 58)
+        };
+        brand.Controls.Add(brandTitle);
+        brand.Controls.Add(brandSubtitle);
+
+        var actionCard = UiTheme.Card();
+        actionCard.Dock = DockStyle.Fill;
+        actionCard.Height = 92;
+        var actionLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2 };
+        actionLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        actionLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        actionLayout.Controls.Add(_summary, 0, 0);
+        var buttons = NewButtonRow(_deployButton, _refreshButton, _startAllButton, _stopAppsButton);
+        actionLayout.Controls.Add(buttons, 1, 0);
+        actionLayout.SetRowSpan(buttons, 2);
+        actionLayout.Controls.Add(new Label
         {
-            panel.SetColumnSpan(valueControl, 2);
-        }
+            Text = "停止應用只會停止 API 與 Nginx，MySQL 會保持運行。",
+            AutoSize = true,
+            ForeColor = UiTheme.Muted
+        }, 0, 1);
+        actionCard.Controls.Add(actionLayout);
+
+        var serviceTitle = SectionTitle("核心服務", "每 3 秒自動監控，可個別啟動或停止。");
+        var serviceGrid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, AutoSize = true };
+        for (var i = 0; i < 3; i++)
+            serviceGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.333f));
+        _mysqlCard = CreateServiceCard("MySQL", "Windows Service · TCP 3306");
+        _apiCard = CreateServiceCard("API", "Node.js · localhost:3000");
+        _nginxCard = CreateServiceCard("Nginx", "靜態網站與反向代理");
+        serviceGrid.Controls.Add(_mysqlCard.Root, 0, 0);
+        serviceGrid.Controls.Add(_apiCard.Root, 1, 0);
+        serviceGrid.Controls.Add(_nginxCard.Root, 2, 0);
+
+        var endpointTitle = SectionTitle("網站端點", "後台、司機端與 LIFF 都由同一個 Nginx 提供，並非獨立行程。");
+        var endpointGrid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, AutoSize = true };
+        for (var i = 0; i < 3; i++)
+            endpointGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.333f));
+        _adminCard = CreateEndpointCard("後台");
+        _driverCard = CreateEndpointCard("司機端");
+        _liffCard = CreateEndpointCard("LIFF 訂水");
+        endpointGrid.Controls.Add(_adminCard.Root, 0, 0);
+        endpointGrid.Controls.Add(_driverCard.Root, 1, 0);
+        endpointGrid.Controls.Add(_liffCard.Root, 2, 0);
+
+        var recentCard = UiTheme.Card();
+        recentCard.Dock = DockStyle.Fill;
+        recentCard.Height = 74;
+        recentCard.Controls.Add(_recentLog);
+        recentCard.Controls.Add(new Label
+        {
+            Text = "最近日誌",
+            Dock = DockStyle.Top,
+            Height = 25,
+            Font = new Font("Segoe UI", 10f, FontStyle.Bold),
+            ForeColor = UiTheme.Text
+        });
+
+        AddContentRow(content, brand);
+        AddContentRow(content, actionCard);
+        AddContentRow(content, serviceTitle);
+        AddContentRow(content, serviceGrid);
+        AddContentRow(content, endpointTitle);
+        AddContentRow(content, endpointGrid);
+        AddContentRow(content, recentCard);
+        scroll.Controls.Add(content);
+        page.Controls.Add(scroll);
+        return page;
     }
 
-    private void OnLoad(object? sender, EventArgs e)
+    private TabPage BuildDataTab()
     {
-        var s = LauncherSettings.Load();
-        _projectRoot.Text = s.ProjectRoot;
-        _nginxRoot.Text = string.IsNullOrWhiteSpace(s.NginxRoot) ? @"C:\nginx-1.31.2" : s.NginxRoot;
-        _apiBaseUrl.Text = string.IsNullOrWhiteSpace(s.ApiBaseUrl) ? "http://125.228.16.160" : s.ApiBaseUrl;
-        _adminUrl.Text = string.IsNullOrWhiteSpace(s.AdminUrl) ? "http://125.228.16.160/" : s.AdminUrl;
-        _driverUrl.Text = string.IsNullOrWhiteSpace(s.DriverUrl) ? "http://125.228.16.160/driver/" : s.DriverUrl;
-        _liffUrl.Text = string.IsNullOrWhiteSpace(s.LiffUrl) ? "http://125.228.16.160/liff/" : s.LiffUrl;
-        _gitBranch = string.IsNullOrWhiteSpace(s.GitBranch) ? "main" : s.GitBranch.Trim();
-        _chkProductionMode.Checked = s.UseProductionMode;
-        _chkAdminDev.Checked = s.StartAdminDevWithApi;
-        _chkDriverDev.Checked = s.StartDriverDevWithApi;
-        _chkLiffDev.Checked = s.StartLiffDevWithApi;
-        _ngrokDomain.Text = string.IsNullOrWhiteSpace(s.NgrokDomain) ? NgrokHelper.DefaultDomain : s.NgrokDomain;
-        _chkStartNgrok.Checked = s.StartNgrokWithServices;
-        MigrateSavedUrlsToFixedIpIfNeeded();
-        SyncDeploymentModeUi();
-        if (s.UseProductionMode)
-            NormalizeProductionUrls();
+        var page = NewTab("資料維護");
+        var scroll = NewScrollPanel();
+        var content = NewContentTable(4);
 
-        _healthTimer.Start();
-        AppendLog("就緒。正式部署請勾選「Nginx + 靜態前端」，按「啟動服務」會啟動 API 與 Nginx（含 /liff/）。");
-        AppendLog("LINE 訂水正式上線：先填 apps\\api\\.env 與 apps\\web-liff\\.env，再按「檢查 LINE 正式設定」→「建置專案」→「啟動服務」。");
-        AppendLog("若只測後台／司機端、暫不上 LINE，啟動時可略過檢查提示。");
-        AppendLog("HTTPS 測試：可用下方「啟動 ngrok」建立暫時隧道（Webhook／LIFF 需 https）。");
-        SyncNgrokButtons();
-        _ = CheckSchemaQuietlyOnLoadAsync();
+        AddContentRow(content, PageHeader("資料維護", "資料操作期間只停止 API / Nginx，MySQL 必須保持運行。"));
+
+        var schemaCard = BuildToolCard(
+            "資料庫結構",
+            "檢查或套用 database/migrations。正式機操作前請先備份資料庫。",
+            NewButtonRow(_schemaCheckButton, _schemaApplyButton),
+            _schemaStatus);
+        AddContentRow(content, schemaCard);
+
+        var clearCard = BuildToolCard(
+            "清空資料",
+            "可保留主檔只清除交易，或清除全部業務資料。兩項操作皆不可復原。",
+            NewButtonRow(_clearTransactionsButton, _resetDataButton));
+        AddContentRow(content, clearCard);
+
+        var legacyButtons = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            WrapContents = true,
+            Padding = new Padding(0, 8, 0, 0)
+        };
+        AddLegacyButton(legacyButtons, "轉換地址分區", "run db:migrate-zones", MigrateZonesConfirmText());
+        AddLegacyButton(legacyButtons, "轉換隸屬公司", "run db:migrate-companies", MigrateCompaniesConfirmText());
+        AddLegacyButton(legacyButtons, "轉換客戶資料", "run db:migrate-customers", MigrateCustomersConfirmText());
+        AddLegacyButton(legacyButtons, "轉換使用者資料", "run db:migrate-users", MigrateUsersConfirmText());
+        AddLegacyButton(legacyButtons, "轉換司機資料", "run db:migrate-drivers", MigrateDriversConfirmText());
+        AddLegacyButton(legacyButtons, "轉換商品資料", "run db:migrate-products", MigrateProductsConfirmText());
+        AddContentRow(content, BuildToolCard(
+            "舊庫轉換",
+            "從舊資料庫 database 唯讀匯入 water_erp。請依資料相依順序執行。",
+            legacyButtons));
+
+        scroll.Controls.Add(content);
+        page.Controls.Add(scroll);
+        return page;
     }
 
-    private static string MigrateZonesConfirmText() =>
-        "將從舊庫 database.area 匯入 address_zones（排除 99 尚未分配），\n"
-        + "並依 customer.area_id 重連既有客戶的區域。\n\n"
-        + "舊庫僅讀取、不修改。確定繼續？";
+    private TabPage BuildAdvancedTab()
+    {
+        var page = NewTab("進階工具");
+        var scroll = NewScrollPanel();
+        var content = NewContentTable(3);
+        AddContentRow(content, PageHeader("進階工具", "供管理員分步執行部署工作；完整更新請使用服務總覽的「更新並部署」。"));
+        AddContentRow(content, BuildToolCard(
+            "程式與建置",
+            "分別執行 Git 拉取、正式建置或 Prisma Client 產生。",
+            NewButtonRow(_gitPullButton, _buildButton, _prismaButton)));
+        AddContentRow(content, BuildToolCard(
+            "LINE 正式設定",
+            "檢查 API / LIFF .env、LIFF ID、正式環境安全開關與建置產物。",
+            NewButtonRow(_lineCheckButton)));
+        scroll.Controls.Add(content);
+        page.Controls.Add(scroll);
+        return page;
+    }
 
-    private static string MigrateCompaniesConfirmText() =>
-        "將從舊庫 customer.company 匯入 affiliated_companies。\n"
-        + "會先清空新庫既有隸屬公司後重匯。\n\n"
-        + "舊庫僅讀取、不修改。確定繼續？";
+    private TabPage BuildLogTab()
+    {
+        var page = NewTab("日誌");
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(18),
+            ColumnCount = 1,
+            RowCount = 2,
+            BackColor = UiTheme.Background
+        };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        var header = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2 };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        header.Controls.Add(PageHeader("執行日誌", "API stdout / stderr、部署步驟與錯誤都會顯示於此。"), 0, 0);
+        var clear = UiTheme.Button("清除日誌");
+        clear.Click += (_, _) => _log.Clear();
+        header.Controls.Add(clear, 1, 0);
+        root.Controls.Add(header, 0, 0);
+        root.Controls.Add(_log, 0, 1);
+        page.Controls.Add(root);
+        return page;
+    }
 
-    private static string MigrateCustomersConfirmText() =>
-        "將從舊庫 customer 匯入 customers 與 delivery_addresses。\n"
-        + "會先清空新庫既有客戶後重匯（若已有訂單則拒絕）。\n"
-        + "請先完成「地址分區」「隸屬公司」轉換。\n\n"
-        + "舊庫僅讀取、不修改。確定繼續？";
+    private TabPage BuildSettingsTab()
+    {
+        var page = NewTab("設定");
+        var scroll = NewScrollPanel();
+        var content = NewContentTable(3);
+        AddContentRow(content, PageHeader("啟動器設定", "正式機設定會儲存在目前 Windows 使用者的 LocalAppData。"));
 
-    private static string MigrateUsersConfirmText() =>
-        "將清空新庫 users / drivers，建立 id=1 的系統管理員（admin / admin123），\n"
-        + "再從舊庫 personnel_list 匯入其餘使用者（自 id=2 起）。\n"
-        + "員編來自 personnel_account_number，phone 留空。\n\n"
-        + "舊庫僅讀取、不修改。確定繼續？";
+        var form = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            ColumnCount = 3,
+            Padding = new Padding(18),
+            BackColor = UiTheme.Surface
+        };
+        form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 155));
+        form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        form.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        AddSettingRow(form, 0, "專案根目錄", _projectRoot, _browseProjectButton);
+        AddSettingRow(form, 1, "Nginx 目錄", _nginxRoot, _browseNginxButton);
+        AddSettingRow(form, 2, "MySQL 服務名稱", _mysqlServiceName, null);
+        AddSettingRow(form, 3, "網站 / API URL", _apiBaseUrl, null);
+        AddSettingRow(form, 4, "後台 URL", _adminUrl, null);
+        AddSettingRow(form, 5, "司機端 URL", _driverUrl, null);
+        AddSettingRow(form, 6, "LIFF URL", _liffUrl, null);
+        AddSettingRow(form, 7, "Git 分支", _gitBranch, null);
+        AddContentRow(content, form);
 
-    private static string MigrateDriversConfirmText() =>
-        "將清空新庫司機帳號（role=driver），從舊庫 driver 匯入司機，\n"
-        + "登入帳號為 driver_id，預設密碼 888888。\n"
-        + "最高訂單數／最大運送桶數來自 order_num／order_quantity。\n"
-        + "若已有配送分派則拒絕執行。\n\n"
-        + "舊庫僅讀取、不修改。確定繼續？";
+        var footer = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.RightToLeft };
+        footer.Controls.Add(_saveSettingsButton);
+        footer.Controls.Add(new Label
+        {
+            Text = "啟停 MySQL Windows Service 通常需要以系統管理員身分執行啟動器。",
+            AutoSize = true,
+            ForeColor = UiTheme.Warning,
+            Margin = new Padding(0, 10, 16, 0)
+        });
+        AddContentRow(content, footer);
+        scroll.Controls.Add(content);
+        page.Controls.Add(scroll);
+        return page;
+    }
 
-    private static string MigrateProductsConfirmText() =>
-        "將清空新庫 products 與庫存，從舊庫 product 匯入實體商品。\n"
-        + "含桶裝水、補桶、試喝、飲水機、清洗/維修費等（約 41 筆）。\n"
-        + "不轉入套印標語、月結單、收空桶等虛擬行（約 26 筆）。\n"
-        + "若已有銷售/生產/採購單據則拒絕執行。\n\n"
-        + "舊庫僅讀取、不修改。確定繼續？";
+    private void WireEvents()
+    {
+        _deployButton.Click += async (_, _) => await SafeUiActionAsync(PullAndDeployAsync);
+        _refreshButton.Click += async (_, _) => await CheckHealthAsync(force: true);
+        _startAllButton.Click += async (_, _) => await RunBusyAsync(StartAllCoreAsync);
+        _stopAppsButton.Click += async (_, _) => await RunBusyAsync(StopApplicationServicesCoreAsync);
+        _mysqlCard.Start.Click += async (_, _) => await RunBusyAsync(StartMySqlAsync);
+        _mysqlCard.Stop.Click += async (_, _) => await RunBusyAsync(StopMySqlAsync);
+        _apiCard.Start.Click += async (_, _) => await RunBusyAsync(StartApiAsync);
+        _apiCard.Stop.Click += async (_, _) => await RunBusyAsync(StopApiAsync);
+        _nginxCard.Start.Click += async (_, _) => await RunBusyAsync(StartNginxAsync);
+        _nginxCard.Stop.Click += async (_, _) => await RunBusyAsync(StopNginxAsync);
+        _adminCard.Open.Click += (_, _) => OpenUrl(_adminUrl.Text);
+        _driverCard.Open.Click += (_, _) => OpenUrl(_driverUrl.Text);
+        _liffCard.Open.Click += (_, _) => OpenUrl(_liffUrl.Text);
+        _gitPullButton.Click += async (_, _) => await SafeUiActionAsync(GitPullAsync);
+        _buildButton.Click += async (_, _) => await SafeUiActionAsync(BuildForProductionAsync);
+        _prismaButton.Click += async (_, _) => await SafeUiActionAsync(
+            () => RunStandaloneNpmAsync("run db:generate", "Prisma generate"));
+        _lineCheckButton.Click += async (_, _) => await SafeUiActionAsync(() =>
+        {
+            ShowLineProductionCheck(requireBuiltDist: false);
+            return Task.CompletedTask;
+        });
+        _schemaCheckButton.Click += async (_, _) => await SafeUiActionAsync(CheckSchemaAsync);
+        _schemaApplyButton.Click += async (_, _) => await SafeUiActionAsync(ApplySchemaAsync);
+        _clearTransactionsButton.Click += async (_, _) => await SafeUiActionAsync(ClearTransactionsAsync);
+        _resetDataButton.Click += async (_, _) => await SafeUiActionAsync(ResetDataAsync);
+        _saveSettingsButton.Click += (_, _) =>
+        {
+            SaveSettingsFromUi();
+            AppendLog("設定已儲存。");
+            MessageBox.Show(this, "設定已儲存。", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+        };
+        _browseProjectButton.Click += (_, _) => BrowseFolder(_projectRoot, "選擇專案根目錄（含 package.json）");
+        _browseNginxButton.Click += (_, _) => BrowseFolder(_nginxRoot, "選擇 Nginx 目錄（含 nginx.exe）");
+        _healthTimer.Tick += async (_, _) => await CheckHealthAsync();
+
+        _busyControls.AddRange(new Control[]
+        {
+            _deployButton, _startAllButton, _stopAppsButton, _gitPullButton, _buildButton, _prismaButton,
+            _lineCheckButton, _schemaCheckButton, _schemaApplyButton, _clearTransactionsButton,
+            _resetDataButton, _saveSettingsButton, _browseProjectButton, _browseNginxButton,
+            _mysqlCard.Start, _mysqlCard.Stop, _apiCard.Start, _apiCard.Stop, _nginxCard.Start, _nginxCard.Stop
+        });
+    }
+
+    private async void OnLoad(object? sender, EventArgs e)
+    {
+        var settings = LauncherSettings.Load();
+        _projectRoot.Text = settings.ProjectRoot;
+        _nginxRoot.Text = string.IsNullOrWhiteSpace(settings.NginxRoot) ? @"C:\nginx-1.31.2" : settings.NginxRoot;
+        _mysqlServiceName.Text = string.IsNullOrWhiteSpace(settings.MySqlServiceName) ? "MySQL80" : settings.MySqlServiceName;
+        _apiBaseUrl.Text = string.IsNullOrWhiteSpace(settings.ApiBaseUrl) ? $"http://{DefaultPublicHost}" : settings.ApiBaseUrl;
+        _adminUrl.Text = string.IsNullOrWhiteSpace(settings.AdminUrl) ? $"http://{DefaultPublicHost}/" : settings.AdminUrl;
+        _driverUrl.Text = string.IsNullOrWhiteSpace(settings.DriverUrl) ? $"http://{DefaultPublicHost}/driver/" : settings.DriverUrl;
+        _liffUrl.Text = string.IsNullOrWhiteSpace(settings.LiffUrl) ? $"http://{DefaultPublicHost}/liff/" : settings.LiffUrl;
+        _gitBranch.Text = string.IsNullOrWhiteSpace(settings.GitBranch) ? "main" : settings.GitBranch;
+        NormalizeProductionUrls();
+        AppendLog("啟動器已就緒。正式模式固定使用 API dist + Nginx 靜態網站。");
+        AppendLog($"MySQL Windows Service：{_mysqlServiceName.Text}");
+        _healthTimer.Start();
+        await CheckHealthAsync(force: true);
+        _ = CheckSchemaQuietlyAsync();
+    }
 
     private void OnFormClosing(object? sender, FormClosingEventArgs e)
     {
+        _closing = true;
         _healthTimer.Stop();
-        _healthTimer.Dispose();
         SaveSettingsFromUi();
-        try
-        {
-            StopServicesCore();
-        }
-        catch
-        {
-            // ignore
-        }
-
+        DetachApiEvents();
+        TryKillAndDisposeApi(_apiProcess);
+        _apiProcess = null;
+        PortHelper.ReleasePortForNode(ApiPort);
+        StopNginxCore(null);
         _http.Dispose();
     }
 
-    private void SaveSettingsFromUi()
+    private async Task StartAllCoreAsync()
     {
-        var s = new LauncherSettings
-        {
-            ProjectRoot = _projectRoot.Text.Trim(),
-            NginxRoot = _nginxRoot.Text.Trim(),
-            ApiBaseUrl = _apiBaseUrl.Text.Trim(),
-            AdminUrl = _adminUrl.Text.Trim(),
-            DriverUrl = _driverUrl.Text.Trim(),
-            LiffUrl = _liffUrl.Text.Trim(),
-            UseProductionMode = _chkProductionMode.Checked,
-            GitBranch = _gitBranch,
-            StartAdminDevWithApi = _chkAdminDev.Checked,
-            StartDriverDevWithApi = _chkDriverDev.Checked,
-            StartLiffDevWithApi = _chkLiffDev.Checked,
-            NgrokDomain = NgrokHelper.NormalizeDomain(_ngrokDomain.Text),
-            StartNgrokWithServices = _chkStartNgrok.Checked
-        };
-        s.Save();
+        ValidateProjectRoot();
+        ValidateProductionOutputs(includeApi: true);
+        if (!ConfirmLineProductionReady(requireBuiltDist: true, "啟動全部"))
+            return;
+        AppendLog("=== 啟動全部：MySQL → API → Nginx ===");
+        if (!await StartMySqlAsync())
+            throw new InvalidOperationException("MySQL 未成功啟動，已中止後續服務啟動。");
+        if (!await StartApiAsync())
+            throw new InvalidOperationException("API 未成功啟動，已中止 Nginx 啟動。");
+        if (!await StartNginxAsync())
+            throw new InvalidOperationException("Nginx 未成功啟動。");
+        AppendLog("全部服務已啟動。");
+        await CheckHealthAsync(force: true);
     }
 
-    private void BrowseProjectRoot()
+    private async Task<bool> StartMySqlAsync()
     {
-        using var dlg = new FolderBrowserDialog
+        var name = GetMySqlServiceName();
+        AppendLog($"正在啟動 MySQL Windows Service「{name}」…");
+        var result = await WindowsServiceHelper.StartAsync(name, TimeSpan.FromSeconds(30));
+        if (!result.Success)
         {
-            InitialDirectory = TryGetDirectory(_projectRoot.Text.Trim()) ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            UseDescriptionForTitle = true,
-            Description = "選擇專案根目錄（含 package.json）"
-        };
-        if (dlg.ShowDialog(this) == DialogResult.OK)
-            _projectRoot.Text = dlg.SelectedPath;
+            ShowServiceError("MySQL 啟動失敗", result);
+            return false;
+        }
+        AppendLog($"MySQL 服務已啟動（{name}）。");
+        await CheckHealthAsync(force: true);
+        return true;
     }
 
-    private void BrowseNginxRoot()
+    private async Task<bool> StopMySqlAsync()
     {
-        using var dlg = new FolderBrowserDialog
+        var answer = MessageBox.Show(
+            this,
+            "停止 MySQL 會使所有資料庫操作與 API 中斷。\n\n確定要停止 MySQL Windows Service？",
+            "停止 MySQL",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2);
+        if (answer != DialogResult.Yes)
+            return false;
+
+        var name = GetMySqlServiceName();
+        AppendLog($"正在停止 MySQL Windows Service「{name}」…");
+        var result = await WindowsServiceHelper.StopAsync(name, TimeSpan.FromSeconds(30));
+        if (!result.Success)
         {
-            InitialDirectory = TryGetDirectory(_nginxRoot.Text.Trim()) ?? @"C:\",
-            UseDescriptionForTitle = true,
-            Description = "選擇 Nginx 目錄（含 nginx.exe）"
-        };
-        if (dlg.ShowDialog(this) == DialogResult.OK)
-            _nginxRoot.Text = dlg.SelectedPath;
+            ShowServiceError("MySQL 停止失敗", result);
+            return false;
+        }
+        AppendLog("MySQL 服務已停止。");
+        await CheckHealthAsync(force: true);
+        return true;
     }
 
-    private void SyncDeploymentModeUi()
+    private async Task<bool> StartApiAsync()
     {
-        var production = _chkProductionMode.Checked;
-        _nginxRoot.Enabled = production;
-        _btnBrowseNginx.Enabled = production;
-        _devOpts.Enabled = !production;
-        _chkAdminDev.Enabled = !production;
-        _chkDriverDev.Enabled = !production;
-        _chkLiffDev.Enabled = !production;
-        if (production)
+        ValidateProjectRoot();
+        if (PortHelper.IsPortListening(ApiPort))
         {
-            _chkAdminDev.Checked = false;
-            _chkDriverDev.Checked = false;
-            _chkLiffDev.Checked = false;
-            NormalizeProductionUrls();
+            if (PortHelper.IsPortUsedByProcess(ApiPort, "node"))
+            {
+                AppendLog("API 埠 3000 已由 node.exe 監聽，視為已啟動。");
+                return true;
+            }
+            throw new InvalidOperationException($"埠 {ApiPort} 已由非 node 行程佔用：\n{DescribePortBlockers(ApiPort)}");
+        }
+
+        var node = FindExecutable("node.exe");
+        if (node is null)
+            throw new InvalidOperationException("找不到 node.exe，請安裝 Node.js 並加入 PATH。");
+        var apiDirectory = Path.Combine(_projectRoot.Text.Trim(), "apps", "api");
+        var dist = Path.Combine(apiDirectory, "dist", "index.js");
+        if (!File.Exists(dist))
+            throw new InvalidOperationException("找不到 apps\\api\\dist\\index.js，請先建置正式版。");
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = node,
+            Arguments = "dist/index.js",
+            WorkingDirectory = apiDirectory,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8
+        };
+        _apiProcess = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
+        _apiProcess.OutputDataReceived += OnApiOutput;
+        _apiProcess.ErrorDataReceived += OnApiError;
+        _apiProcess.Exited += OnApiExited;
+        _apiProcess.Start();
+        _apiProcess.BeginOutputReadLine();
+        _apiProcess.BeginErrorReadLine();
+        AppendLog($"已啟動 API：{node} dist/index.js");
+
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(12);
+        while (DateTime.UtcNow < deadline && !PortHelper.IsPortListening(ApiPort))
+            await Task.Delay(300);
+        if (!PortHelper.IsPortListening(ApiPort))
+        {
+            await StopApiAsync();
+            throw new InvalidOperationException("API 已啟動但逾時未監聽 localhost:3000，請查看日誌。");
+        }
+        await CheckHealthAsync(force: true);
+        return true;
+    }
+
+    private async Task<bool> StopApiAsync()
+    {
+        AppendLog("正在停止 API…");
+        var owned = _apiProcess;
+        DetachApiEvents();
+        _apiProcess = null;
+        await Task.Run(() =>
+        {
+            TryKillAndDisposeApi(owned);
+            PortHelper.ReleasePortForNode(ApiPort, AppendLog);
+        });
+        AppendLog("API 已停止。");
+        await CheckHealthAsync(force: true);
+        return true;
+    }
+
+    private async Task<bool> StartNginxAsync()
+    {
+        ValidateProjectRoot();
+        ValidateProductionOutputs(includeApi: false);
+        var root = _projectRoot.Text.Trim();
+        await GenerateNginxConfigAsync(root);
+        var started = TryStartNginx();
+        await CheckHealthAsync(force: true);
+        return started;
+    }
+
+    private async Task<bool> StopNginxAsync()
+    {
+        AppendLog("正在停止 Nginx…");
+        StopNginxCore(AppendLog);
+        AppendLog("Nginx 已停止。");
+        await CheckHealthAsync(force: true);
+        return true;
+    }
+
+    private async Task StopApplicationServicesCoreAsync()
+    {
+        AppendLog("正在停止應用服務；MySQL 將保持運行…");
+        await StopApiAsync();
+        await StopNginxAsync();
+        AppendLog("API 與 Nginx 已停止；MySQL 未停止。");
+    }
+
+    private async Task<bool> EnsureMySqlRunningAsync(string operation)
+    {
+        var query = await WindowsServiceHelper.QueryAsync(GetMySqlServiceName());
+        if (query.State == "RUNNING")
+            return true;
+
+        var answer = MessageBox.Show(
+            this,
+            $"{operation}需要 MySQL 服務保持運行，目前服務狀態為 {query.State}。\n\n是否立即啟動 {GetMySqlServiceName()}？",
+            "MySQL 未運行",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button1);
+        return answer == DialogResult.Yes && await StartMySqlAsync();
+    }
+
+    private async Task PullAndDeployAsync()
+    {
+        ValidateProjectRoot();
+        ValidateGitRepo();
+        if (!ConfirmLineProductionReady(requireBuiltDist: false, "更新並部署"))
+            return;
+        var branch = GetGitBranch();
+        var confirm = MessageBox.Show(
+            this,
+            $"將停止 API / Nginx（保留 MySQL），接著執行：\n"
+            + $"1. git pull origin {branch}\n"
+            + "2. npm install\n3. Prisma generate\n4. 套用資料庫結構\n5. 正式建置\n"
+            + "6. 產生 Nginx 設定並啟動 API / Nginx\n\n確定繼續？",
+            "更新並部署",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Question,
+            MessageBoxDefaultButton.Button1);
+        if (confirm != DialogResult.Yes)
+            return;
+        if (!await EnsureMySqlRunningAsync("更新並部署"))
+            return;
+
+        await RunBusyAsync(async () =>
+        {
+            AppendLog("=== 開始更新並部署 ===");
+            await StopApplicationServicesCoreAsync();
+            var root = _projectRoot.Text.Trim();
+            if (await RunGitCommandCoreAsync(root, $"pull origin {branch}") != 0)
+                throw new InvalidOperationException("Git pull 失敗，部署已中止。");
+            if (!await BuildProductionCoreAsync(root, applySchema: true))
+                throw new InvalidOperationException("建置失敗，部署已中止。");
+            if (!await StartApiAsync())
+                throw new InvalidOperationException("API 啟動失敗。");
+            if (!await StartNginxAsync())
+                throw new InvalidOperationException("Nginx 啟動失敗。");
+            AppendLog("=== 更新並部署完成 ===");
+            MessageBox.Show(this, "更新並部署完成。", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+        });
+    }
+
+    private async Task GitPullAsync()
+    {
+        ValidateProjectRoot();
+        ValidateGitRepo();
+        await RunBusyAsync(async () =>
+        {
+            if (await RunGitCommandCoreAsync(_projectRoot.Text.Trim(), $"pull origin {GetGitBranch()}") != 0)
+                throw new InvalidOperationException("Git pull 失敗，請查看日誌。");
+        });
+    }
+
+    private async Task BuildForProductionAsync()
+    {
+        ValidateProjectRoot();
+        if (!ConfirmLineProductionReady(requireBuiltDist: false, "建置正式版"))
+            return;
+        await RunBusyAsync(async () =>
+        {
+            if (!await BuildProductionCoreAsync(_projectRoot.Text.Trim(), applySchema: false))
+                throw new InvalidOperationException("建置失敗，請查看日誌。");
+            MessageBox.Show(this, "正式版建置完成。", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+        });
+    }
+
+    private async Task<bool> BuildProductionCoreAsync(string root, bool applySchema)
+    {
+        var steps = new List<(string Args, string Label)>
+        {
+            ("install", "安裝依賴"),
+            ("run db:generate", "Prisma generate")
+        };
+        if (applySchema)
+            steps.Add(("run db:schema-apply", "套用資料庫結構"));
+        steps.Add(("run build", "建置 API / 後台 / 司機端 / LIFF"));
+
+        foreach (var (arguments, label) in steps)
+        {
+            AppendLog($"==> {label}…");
+            if (await RunNpmCommandCoreAsync(root, arguments) != 0)
+                return false;
+        }
+
+        var outputs = new[]
+        {
+            Path.Combine(root, "apps", "api", "dist", "index.js"),
+            Path.Combine(root, "apps", "web-admin", "dist", "index.html"),
+            Path.Combine(root, "apps", "web-driver", "dist", "index.html"),
+            Path.Combine(root, "apps", "web-liff", "dist", "index.html")
+        };
+        foreach (var output in outputs)
+        {
+            if (!File.Exists(output))
+            {
+                AppendLogWarning($"建置缺少產物：{output}");
+                return false;
+            }
+        }
+        await GenerateNginxConfigAsync(root);
+        AppendLog("正式版建置完成。");
+        return true;
+    }
+
+    private async Task RunStandaloneNpmAsync(string arguments, string title)
+    {
+        ValidateProjectRoot();
+        await RunBusyAsync(async () =>
+        {
+            var code = await RunNpmCommandCoreAsync(_projectRoot.Text.Trim(), arguments);
+            if (code != 0)
+                throw new InvalidOperationException($"{title} 失敗（結束代碼 {code}）。");
+            AppendLog($"{title} 完成。");
+        });
+    }
+
+    private async Task CheckSchemaAsync()
+    {
+        ValidateProjectRoot();
+        if (!ValidateApiEnvExists() || !await EnsureMySqlRunningAsync("檢查資料庫結構"))
+            return;
+        await RunBusyAsync(async () =>
+        {
+            var status = await FetchSchemaStatusAsync(_projectRoot.Text.Trim(), logToUi: true);
+            if (status is null || !status.ok)
+                throw new InvalidOperationException(status?.message ?? "無法讀取資料庫結構狀態。");
+            UpdateSchemaStatus(status);
+            var message = status.pending.Length == 0
+                ? $"資料庫結構已是最新（已套用 {status.applied.Length} 支）。"
+                : $"待升級 {status.pending.Length} 支：\n{string.Join("\n", status.pending)}";
+            MessageBox.Show(this, message, "資料庫結構", MessageBoxButtons.OK,
+                status.pending.Length == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+        });
+    }
+
+    private async Task ApplySchemaAsync()
+    {
+        ValidateProjectRoot();
+        if (!ValidateApiEnvExists() || !await EnsureMySqlRunningAsync("升級資料庫結構"))
+            return;
+        var confirm = MessageBox.Show(
+            this,
+            "將停止 API / Nginx、保留 MySQL，並套用所有待升級 migration。\n\n請確認已備份資料庫。是否繼續？",
+            "升級資料庫結構",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2);
+        if (confirm != DialogResult.Yes)
+            return;
+        await RunBusyAsync(async () =>
+        {
+            await StopApplicationServicesCoreAsync();
+            var root = _projectRoot.Text.Trim();
+            if (await RunNpmCommandCoreAsync(root, "run db:schema-apply") != 0)
+                throw new InvalidOperationException("資料庫結構升級失敗。");
+            if (await RunNpmCommandCoreAsync(root, "run db:generate") != 0)
+                throw new InvalidOperationException("結構已套用，但 Prisma generate 失敗。");
+            var status = await FetchSchemaStatusAsync(root, logToUi: false);
+            if (status is not null)
+                UpdateSchemaStatus(status);
+            MessageBox.Show(this, "資料庫結構升級完成。", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+        });
+    }
+
+    private async Task ClearTransactionsAsync()
+    {
+        ValidateProjectRoot();
+        if (!ValidateApiEnvExists() || !await EnsureMySqlRunningAsync("清空交易資料"))
+            return;
+        var script = Path.Combine(_projectRoot.Text.Trim(), "database", "migrations", "019_clear_transaction_data_keep_masters.sql");
+        if (!File.Exists(script))
+            throw new InvalidOperationException($"找不到清空腳本：\n{script}");
+        var confirm = MessageBox.Show(
+            this,
+            "將停止 API / Nginx（保留 MySQL），清空訂單、配送、帳款、庫存異動等交易資料，"
+            + "並保留客戶、商品、司機與使用者等主檔。\n\n此操作無法復原，確定繼續？",
+            "清空交易資料",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2);
+        if (confirm != DialogResult.Yes)
+            return;
+        await RunMaintenanceCommandAsync("run db:clear-transactions", "交易資料已清空。");
+    }
+
+    private async Task ResetDataAsync()
+    {
+        ValidateProjectRoot();
+        if (!ValidateApiEnvExists() || !await EnsureMySqlRunningAsync("清空全部資料"))
+            return;
+        var script = Path.Combine(_projectRoot.Text.Trim(), "database", "migrations", "004_reset_data_keep_single_admin.sql");
+        if (!File.Exists(script))
+            throw new InvalidOperationException($"找不到清空腳本：\n{script}");
+        var confirm = MessageBox.Show(
+            this,
+            "將停止 API / Nginx（保留 MySQL），清空所有業務資料與使用者。\n"
+            + "完成後需執行「轉換使用者資料」才能重新登入。\n\n此操作無法復原，確定繼續？",
+            "清空全部資料",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2);
+        if (confirm != DialogResult.Yes)
+            return;
+        await RunMaintenanceCommandAsync("run db:reset", "全部業務資料已清空。");
+    }
+
+    private async Task RunMaintenanceCommandAsync(string arguments, string successMessage)
+    {
+        await RunBusyAsync(async () =>
+        {
+            await StopApplicationServicesCoreAsync();
+            if (await RunNpmCommandCoreAsync(_projectRoot.Text.Trim(), arguments) != 0)
+                throw new InvalidOperationException("資料維護命令失敗，請查看日誌。");
+            AppendLog(successMessage);
+            MessageBox.Show(this, successMessage, "資料維護", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        });
+    }
+
+    private void AddLegacyButton(FlowLayoutPanel panel, string title, string arguments, string confirmText)
+    {
+        var button = UiTheme.Button(title);
+        button.Click += async (_, _) => await SafeUiActionAsync(
+            () => MigrateLegacyAsync(arguments, title, confirmText));
+        panel.Controls.Add(button);
+        _busyControls.Add(button);
+    }
+
+    private async Task MigrateLegacyAsync(string arguments, string title, string confirmText)
+    {
+        ValidateProjectRoot();
+        if (!ValidateApiEnvExists() || !await EnsureMySqlRunningAsync(title))
+            return;
+        if (MessageBox.Show(this, confirmText, title, MessageBoxButtons.YesNo, MessageBoxIcon.Question,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+            return;
+        await RunMaintenanceCommandAsync(arguments, $"{title}完成，請至後台確認資料。");
+    }
+
+    private async Task CheckHealthAsync(bool force = false)
+    {
+        if (_closing || (!force && !_healthGate.Wait(0)))
+            return;
+        if (force)
+            await _healthGate.WaitAsync();
+        try
+        {
+            var mysqlTask = GetMySqlSnapshotAsync();
+            var apiTask = GetApiSnapshotAsync();
+            var nginxTask = GetNginxSnapshotAsync();
+            var adminTask = GetEndpointSnapshotAsync(_adminUrl.Text.Trim(), "後台");
+            var driverTask = GetEndpointSnapshotAsync(_driverUrl.Text.Trim(), "司機端");
+            var liffTask = GetEndpointSnapshotAsync(_liffUrl.Text.Trim(), "LIFF");
+            await Task.WhenAll(mysqlTask, apiTask, nginxTask, adminTask, driverTask, liffTask);
+            if (_closing || IsDisposed)
+                return;
+
+            ApplySnapshot(_mysqlCard, mysqlTask.Result);
+            ApplySnapshot(_apiCard, apiTask.Result);
+            ApplySnapshot(_nginxCard, nginxTask.Result);
+            ApplyEndpointSnapshot(_adminCard, adminTask.Result);
+            ApplyEndpointSnapshot(_driverCard, driverTask.Result);
+            ApplyEndpointSnapshot(_liffCard, liffTask.Result);
+
+            var coreHealthy = new[] { mysqlTask.Result, apiTask.Result, nginxTask.Result }
+                .Count(snapshot => snapshot.Health == ServiceHealth.Running);
+            var endpointHealthy = new[] { adminTask.Result, driverTask.Result, liffTask.Result }
+                .Count(snapshot => snapshot.Health == ServiceHealth.Running);
+            _summary.Text = coreHealthy == 3 && endpointHealthy == 3
+                ? "所有核心服務與網站端點皆正常"
+                : $"核心服務 {coreHealthy}/3 正常 · 網站端點 {endpointHealthy}/3 正常";
+            _summary.ForeColor = coreHealthy == 3 && endpointHealthy == 3 ? UiTheme.Success : UiTheme.Warning;
+        }
+        catch (Exception ex)
+        {
+            AppendLogWarning("狀態檢查失敗：" + ex.Message);
+        }
+        finally
+        {
+            _healthGate.Release();
         }
     }
 
-    private const string DefaultPublicHost = "125.228.16.160";
-
-    private void MigrateSavedUrlsToFixedIpIfNeeded()
+    private async Task<ServiceSnapshot> GetMySqlSnapshotAsync()
     {
-        var host = DefaultPublicHost;
-        var baseText = _apiBaseUrl.Text.Trim();
-        var adminText = _adminUrl.Text.Trim();
-        var driverText = _driverUrl.Text.Trim();
-        var liffText = _liffUrl.Text.Trim();
-
-        var looksLikeOldLocal =
-            baseText.Contains("localhost", StringComparison.OrdinalIgnoreCase)
-            || baseText.Contains("127.0.0.1", StringComparison.OrdinalIgnoreCase)
-            || adminText.Contains("localhost", StringComparison.OrdinalIgnoreCase)
-            || adminText.Contains("127.0.0.1", StringComparison.OrdinalIgnoreCase)
-            || driverText.Contains("localhost", StringComparison.OrdinalIgnoreCase)
-            || driverText.Contains("127.0.0.1", StringComparison.OrdinalIgnoreCase)
-            || liffText.Contains("localhost", StringComparison.OrdinalIgnoreCase)
-            || liffText.Contains("127.0.0.1", StringComparison.OrdinalIgnoreCase)
-            || IsDevPort(PortHelper.ParsePortFromUrl(baseText, 80))
-            || IsDevPort(PortHelper.ParsePortFromUrl(adminText, 80))
-            || IsDevPort(PortHelper.ParsePortFromUrl(driverText, 80))
-            || IsDevPort(PortHelper.ParsePortFromUrl(liffText, 80));
-
-        if (!looksLikeOldLocal)
-            return;
-
-        _apiBaseUrl.Text = $"http://{host}";
-        _adminUrl.Text = $"http://{host}/";
-        _driverUrl.Text = $"http://{host}/driver/";
-        _liffUrl.Text = $"http://{host}/liff/";
-        SaveSettingsFromUi();
-        AppendLog($"已將網址預設更新為固定 IP：http://{host}/");
+        var result = await WindowsServiceHelper.QueryAsync(GetMySqlServiceName());
+        if (result.State == "RUNNING")
+        {
+            var tcp = await CanConnectTcpAsync("127.0.0.1", MySqlPort);
+            return tcp
+                ? new(ServiceHealth.Running, "運行中", $"{GetMySqlServiceName()} · TCP 3306 可連線")
+                : new(ServiceHealth.Degraded, "服務運行／連線異常", $"{GetMySqlServiceName()} 已運行，但 TCP 3306 無法連線");
+        }
+        return result.State switch
+        {
+            "START_PENDING" => new(ServiceHealth.Starting, "啟動中", GetMySqlServiceName()),
+            "STOP_PENDING" => new(ServiceHealth.Stopping, "停止中", GetMySqlServiceName()),
+            "STOPPED" => new(ServiceHealth.Stopped, "已停止", GetMySqlServiceName()),
+            _ => new(ServiceHealth.Error, "無法查詢", Compact(result.Output))
+        };
     }
 
-    private static bool IsDevPort(int port) => port is 3000 or 5173 or 5174 or 5175;
-
-    private static string GetUrlHost(string url, string fallbackHost = DefaultPublicHost)
+    private async Task<ServiceSnapshot> GetApiSnapshotAsync()
     {
-        if (string.IsNullOrWhiteSpace(url))
-            return fallbackHost;
         try
         {
-            if (!url.Contains("://", StringComparison.Ordinal))
-                url = "http://" + url.Trim();
-            return new Uri(url.Trim()).Host;
+            using var response = await _http.GetAsync("http://localhost:3000/api/health");
+            return response.IsSuccessStatusCode
+                ? new(ServiceHealth.Running, "正常", $"localhost:3000 · HTTP {(int)response.StatusCode}")
+                : new(ServiceHealth.Degraded, "回應異常", $"HTTP {(int)response.StatusCode}");
         }
         catch
         {
-            return fallbackHost;
+            return PortHelper.IsPortListening(ApiPort)
+                ? new(ServiceHealth.Degraded, "連接埠已開／健康檢查失敗", "localhost:3000/api/health")
+                : new(ServiceHealth.Stopped, "已停止", "localhost:3000 未監聽");
         }
     }
 
-    /// <summary>正式部署時，將舊的開發埠網址改為 Nginx 入口（80 埠）。</summary>
-    private void NormalizeProductionUrls()
+    private async Task<ServiceSnapshot> GetNginxSnapshotAsync()
     {
-        var host = GetUrlHost(_apiBaseUrl.Text);
-        if (string.IsNullOrWhiteSpace(host))
-            host = GetUrlHost(_adminUrl.Text);
-
-        var basePort = PortHelper.ParsePortFromUrl(_apiBaseUrl.Text.Trim(), 80);
-        var adminPort = PortHelper.ParsePortFromUrl(_adminUrl.Text.Trim(), 80);
-        var driverPort = PortHelper.ParsePortFromUrl(_driverUrl.Text.Trim(), 80);
-        var liffPort = PortHelper.ParsePortFromUrl(_liffUrl.Text.Trim(), 80);
-        var needsFix = IsDevPort(basePort) || IsDevPort(adminPort) || IsDevPort(driverPort) || IsDevPort(liffPort)
-            || _adminUrl.Text.Contains(":5173", StringComparison.OrdinalIgnoreCase)
-            || _driverUrl.Text.Contains(":5174", StringComparison.OrdinalIgnoreCase)
-            || _liffUrl.Text.Contains(":5175", StringComparison.OrdinalIgnoreCase)
-            || _apiBaseUrl.Text.Contains(":3000", StringComparison.OrdinalIgnoreCase);
-
-        if (!needsFix)
-            return;
-
-        _apiBaseUrl.Text = $"http://{host}";
-        _adminUrl.Text = $"http://{host}/";
-        _driverUrl.Text = $"http://{host}/driver/";
-        _liffUrl.Text = $"http://{host}/liff/";
-        AppendLog($"已將網址改為正式部署格式（Nginx 80 埠）：http://{host}/");
-    }
-
-    private int GetInternalApiPort() =>
-        _chkProductionMode.Checked ? 3000 : PortHelper.ParsePortFromUrl(_apiBaseUrl.Text.Trim(), 3000);
-
-    private int GetHttpPort()
-    {
-        if (_chkProductionMode.Checked)
+        var port = GetHttpPort();
+        var listening = PortHelper.IsPortListening(port);
+        var nginx = listening && PortHelper.IsPortUsedByProcess(port, "nginx");
+        if (!nginx)
+            return listening
+                ? new(ServiceHealth.Error, "連接埠被占用", $"埠 {port} 非 nginx.exe")
+                : new(ServiceHealth.Stopped, "已停止", $"HTTP 埠 {port} 未監聽");
+        try
         {
-            var port = PortHelper.ParsePortFromUrl(_apiBaseUrl.Text.Trim(), 80);
-            return IsDevPort(port) ? 80 : port;
+            using var response = await _http.GetAsync(GetNginxProbeUrl());
+            return response.IsSuccessStatusCode
+                ? new(ServiceHealth.Running, "正常", $"nginx.exe · HTTP {(int)response.StatusCode}")
+                : new(ServiceHealth.Degraded, "回應異常", $"nginx.exe · HTTP {(int)response.StatusCode}");
         }
-
-        return PortHelper.ParsePortFromUrl(_adminUrl.Text.Trim(), 5173);
+        catch
+        {
+            return new(ServiceHealth.Degraded, "行程運行／HTTP 失敗", $"nginx.exe · 埠 {port}");
+        }
     }
 
-    private string? GetNginxExePath()
+    private async Task<ServiceSnapshot> GetEndpointSnapshotAsync(string url, string name)
     {
-        var root = _nginxRoot.Text.Trim();
-        if (string.IsNullOrEmpty(root))
-            return null;
-        var exe = Path.Combine(root, "nginx.exe");
-        return File.Exists(exe) ? exe : null;
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            return new(ServiceHealth.Error, "URL 無效", url);
+        try
+        {
+            using var response = await _http.GetAsync(uri);
+            return response.IsSuccessStatusCode
+                ? new(ServiceHealth.Running, "可用", $"HTTP {(int)response.StatusCode} · 共用 Nginx")
+                : new(ServiceHealth.Degraded, "異常", $"HTTP {(int)response.StatusCode} · 共用 Nginx");
+        }
+        catch (Exception ex)
+        {
+            return new(ServiceHealth.Error, "無法連線", $"{name} · {Compact(ex.Message)}");
+        }
+    }
+
+    private static async Task<bool> CanConnectTcpAsync(string host, int port)
+    {
+        try
+        {
+            using var client = new TcpClient();
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            await client.ConnectAsync(host, port, cts.Token);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void ApplySnapshot(ServiceCard card, ServiceSnapshot snapshot)
+    {
+        var color = UiTheme.HealthColor(snapshot.Health);
+        card.Dot.ForeColor = color;
+        card.Status.Text = snapshot.Status;
+        card.Status.ForeColor = color;
+        card.Detail.Text = snapshot.Detail;
+        card.Start.Enabled = !_uiBusy && snapshot.Health is not ServiceHealth.Running and not ServiceHealth.Starting;
+        card.Stop.Enabled = !_uiBusy && snapshot.Health is ServiceHealth.Running or ServiceHealth.Degraded;
+    }
+
+    private static void ApplyEndpointSnapshot(EndpointCard card, ServiceSnapshot snapshot)
+    {
+        var color = UiTheme.HealthColor(snapshot.Health);
+        card.Dot.ForeColor = color;
+        card.Status.Text = snapshot.Status;
+        card.Status.ForeColor = color;
+        card.Detail.Text = snapshot.Detail;
+    }
+
+    private bool TryStartNginx()
+    {
+        var nginxExe = GetNginxExePath();
+        if (nginxExe is null)
+            throw new InvalidOperationException("找不到 nginx.exe，請確認 Nginx 目錄設定。");
+        var port = GetHttpPort();
+        if (PortHelper.IsPortListening(port))
+        {
+            if (!PortHelper.IsPortUsedByProcess(port, "nginx"))
+                throw new InvalidOperationException($"埠 {port} 已由其他行程占用：\n{DescribePortBlockers(port)}");
+            AppendLog("Nginx 已運行，正在重新載入設定…");
+            if (!TryRunNginxCommand("-s reload", out var reloadOutput))
+                throw new InvalidOperationException("Nginx reload 失敗：\n" + reloadOutput);
+            return true;
+        }
+        if (!TryRunNginxCommand("-t", out var testOutput))
+            throw new InvalidOperationException("Nginx 設定檢查失敗：\n" + testOutput);
+        var process = Process.Start(new ProcessStartInfo
+        {
+            FileName = nginxExe,
+            WorkingDirectory = Path.GetDirectoryName(nginxExe)!,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        });
+        process?.Dispose();
+        Thread.Sleep(800);
+        if (!PortHelper.IsPortListening(port))
+            throw new InvalidOperationException($"Nginx 已執行但埠 {port} 未開始監聽。");
+        AppendLog($"已啟動 Nginx：{nginxExe}");
+        return true;
+    }
+
+    private void StopNginxCore(Action<string>? log)
+    {
+        var port = GetHttpPort();
+        if (!PortHelper.IsPortListening(port) || !PortHelper.IsPortUsedByProcess(port, "nginx"))
+        {
+            return;
+        }
+        TryRunNginxCommand("-s quit", out var output);
+        if (!string.IsNullOrWhiteSpace(output))
+            log?.Invoke("[Nginx] " + output.Trim());
+        Thread.Sleep(600);
+        if (PortHelper.IsPortListening(port) && PortHelper.IsPortUsedByProcess(port, "nginx"))
+            PortHelper.ReleasePortForNginx(port, log);
+        if (PortHelper.IsPortListening(port) && PortHelper.IsPortUsedByProcess(port, "nginx"))
+            PortHelper.ForceStopAllNginx(log);
     }
 
     private bool TryRunNginxCommand(string arguments, out string output)
     {
         output = "";
-        var nginxExe = GetNginxExePath();
-        if (nginxExe is null)
+        var nginx = GetNginxExePath();
+        if (nginx is null)
             return false;
-
         try
         {
-            var psi = new ProcessStartInfo
+            var startInfo = new ProcessStartInfo
             {
-                FileName = nginxExe,
+                FileName = nginx,
                 Arguments = arguments,
-                WorkingDirectory = Path.GetDirectoryName(nginxExe)!,
+                WorkingDirectory = Path.GetDirectoryName(nginx)!,
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -678,12 +1043,12 @@ internal sealed class MainForm : Form
                 StandardOutputEncoding = Encoding.UTF8,
                 StandardErrorEncoding = Encoding.UTF8
             };
-            using var proc = Process.Start(psi);
-            if (proc is null)
+            using var process = Process.Start(startInfo);
+            if (process is null)
                 return false;
-            output = proc.StandardOutput.ReadToEnd() + proc.StandardError.ReadToEnd();
-            proc.WaitForExit(10000);
-            return proc.ExitCode == 0;
+            output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+            process.WaitForExit(10000);
+            return process.HasExited && process.ExitCode == 0;
         }
         catch (Exception ex)
         {
@@ -692,193 +1057,20 @@ internal sealed class MainForm : Form
         }
     }
 
-    private bool TryStartNginx()
+    private async Task GenerateNginxConfigAsync(string root)
     {
-        var nginxExe = GetNginxExePath();
-        if (nginxExe is null)
-        {
-            MessageBox.Show(this, "找不到 nginx.exe，請確認 Nginx 目錄設定正確。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return false;
-        }
-
-        var httpPort = GetHttpPort();
-        if (PortHelper.IsPortListening(httpPort))
-        {
-            if (PortHelper.IsPortUsedByProcess(httpPort, "nginx"))
-            {
-                AppendLog($"埠 {httpPort} 已有 Nginx 在執行，重新載入設定…");
-                if (TryRunNginxCommand("-s reload", out var reloadOutput) && !string.IsNullOrWhiteSpace(reloadOutput))
-                    AppendLog("[Nginx] " + reloadOutput.Trim());
-                _nginxStartedByLauncher = true;
-                return true;
-            }
-
-            var blocking = DescribePortBlockers(httpPort);
-            MessageBox.Show(
-                this,
-                $"埠 {httpPort} 已被其他程式佔用，無法啟動 Nginx。\n\n{blocking}",
-                Text,
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
-            return false;
-        }
-
-        if (!TryRunNginxCommand("-t", out var testOutput))
-        {
-            MessageBox.Show(this, "Nginx 設定檢查失敗：\n" + testOutput.Trim(), Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return false;
-        }
-
-        try
-        {
-            var psi = new ProcessStartInfo
-            {
-                FileName = nginxExe,
-                WorkingDirectory = Path.GetDirectoryName(nginxExe)!,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            Process.Start(psi);
-            Thread.Sleep(800);
-            if (!PortHelper.IsPortListening(httpPort))
-            {
-                MessageBox.Show(this, $"Nginx 已執行但埠 {httpPort} 未開始監聽，請檢查設定。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return false;
-            }
-
-            _nginxStartedByLauncher = true;
-            AppendLog($"已啟動 Nginx：{nginxExe}");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, "Nginx 啟動失敗：\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return false;
-        }
-    }
-
-    private void TryStopNginx(Action<string>? log = null)
-    {
-        StopNginxCore(log ?? AppendLog);
-    }
-
-    private void StopNginxCore(Action<string>? log)
-    {
-        var httpPort = GetHttpPort();
-
-        if (!PortHelper.IsPortListening(httpPort))
-        {
-            _nginxStartedByLauncher = false;
-            return;
-        }
-
-        log?.Invoke("嘗試停止 Nginx…");
-        TryRunNginxCommand("-s quit", out var output);
-        if (!string.IsNullOrWhiteSpace(output))
-            log?.Invoke("[Nginx] " + output.Trim());
-
-        Thread.Sleep(500);
-
-        if (PortHelper.IsPortListening(httpPort))
-        {
-            log?.Invoke($"優雅停止失敗，強制結束佔用埠 {httpPort} 的 nginx 行程…");
-            PortHelper.ReleasePortForNginx(httpPort, log);
-        }
-
-        if (PortHelper.IsPortListening(httpPort) && PortHelper.IsPortUsedByProcess(httpPort, "nginx"))
-        {
-            log?.Invoke("仍有殘留 nginx，執行強制清除…");
-            PortHelper.ForceStopAllNginx(log);
-        }
-
-        _nginxStartedByLauncher = false;
-    }
-
-    private bool ShouldManageNginx() =>
-        _nginxStartedByLauncher
-        || (_chkProductionMode.Checked && PortHelper.IsPortListening(GetHttpPort()));
-
-    private void DetachManagedProcesses()
-    {
-        if (_apiProcess != null)
-        {
-            _apiProcess.OutputDataReceived -= OnApiOutputDataReceived;
-            _apiProcess.ErrorDataReceived -= OnApiErrorDataReceived;
-            _apiProcess.Exited -= OnApiProcessExited;
-        }
-
-        if (_adminDevProcess != null)
-            _adminDevProcess.Exited -= OnDevProcessExited;
-        if (_driverDevProcess != null)
-            _driverDevProcess.Exited -= OnDevProcessExited;
-        if (_liffDevProcess != null)
-            _liffDevProcess.Exited -= OnDevProcessExited;
-        if (_ngrokProcess != null)
-            _ngrokProcess.Exited -= OnNgrokProcessExited;
-    }
-
-    /// <summary>同步停止服務，不更新 UI（關閉視窗時使用，避免死結）。</summary>
-    private void StopServicesCore(Action<string>? log = null)
-    {
-        var api = _apiProcess;
-        var admin = _adminDevProcess;
-        var driver = _driverDevProcess;
-        var liff = _liffDevProcess;
-        var ngrok = _ngrokProcess;
-        var stopNginx = ShouldManageNginx();
-        var stopNgrok = _ngrokStartedByLauncher || NgrokHelper.IsNgrokProcessRunning();
-
-        if (api is null && admin is null && driver is null && liff is null && ngrok is null && !stopNginx && !stopNgrok)
-            return;
-
-        DetachManagedProcesses();
-        _apiProcess = null;
-        _adminDevProcess = null;
-        _driverDevProcess = null;
-        _liffDevProcess = null;
-        _ngrokProcess = null;
-
-        // 先停隧道，避免對外還在轉發已關閉的本機服務
-        if (stopNgrok)
-            StopNgrokCore(log);
-
-        TryKillAndDisposeApi(api);
-        TryKillAndDisposeSimple(admin);
-        TryKillAndDisposeSimple(driver);
-        TryKillAndDisposeSimple(liff);
-        TryKillAndDisposeSimple(ngrok);
-
-        if (stopNginx)
-            StopNginxCore(log);
-
-        var apiPort = GetInternalApiPort();
-        PortHelper.ReleasePortForNode(apiPort, log);
-        if (!_chkProductionMode.Checked)
-        {
-            var adminPort = PortHelper.ParsePortFromUrl(_adminUrl.Text.Trim(), 5173);
-            var driverPort = PortHelper.ParsePortFromUrl(_driverUrl.Text.Trim(), 5174);
-            var liffPort = PortHelper.ParsePortFromUrl(_liffUrl.Text.Trim(), 5175);
-            PortHelper.ReleasePortForNode(adminPort, log);
-            PortHelper.ReleasePortForNode(driverPort, log);
-            PortHelper.ReleasePortForNode(liffPort, log);
-        }
-    }
-
-    private async Task GenerateNginxConfigAsync(string projectRoot)
-    {
-        var script = Path.Combine(projectRoot, "deploy", "scripts", "generate-nginx-config.ps1");
+        var script = Path.Combine(root, "deploy", "scripts", "generate-nginx-config.ps1");
         if (!File.Exists(script))
         {
-            AppendLog("找不到 deploy\\scripts\\generate-nginx-config.ps1，略過產生 Nginx 設定。");
+            AppendLogWarning("找不到 generate-nginx-config.ps1，略過產生 Nginx 設定。");
             return;
         }
-
         AppendLog("正在產生 Nginx 設定…");
-        var psi = new ProcessStartInfo
+        var startInfo = new ProcessStartInfo
         {
             FileName = "powershell",
-            Arguments = $"-ExecutionPolicy Bypass -File \"{script}\" -ProjectRoot \"{projectRoot}\"",
-            WorkingDirectory = projectRoot,
+            Arguments = $"-ExecutionPolicy Bypass -File \"{script}\" -ProjectRoot \"{root}\"",
+            WorkingDirectory = root,
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -886,332 +1078,346 @@ internal sealed class MainForm : Form
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8
         };
-        using var proc = Process.Start(psi);
-        if (proc is null)
-            return;
-        var stdout = await proc.StandardOutput.ReadToEndAsync().ConfigureAwait(true);
-        var stderr = await proc.StandardError.ReadToEndAsync().ConfigureAwait(true);
-        await proc.WaitForExitAsync().ConfigureAwait(true);
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("無法啟動 PowerShell。");
+        var stdout = await process.StandardOutput.ReadToEndAsync();
+        var stderr = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
         if (!string.IsNullOrWhiteSpace(stdout))
             AppendLog(stdout.TrimEnd());
         if (!string.IsNullOrWhiteSpace(stderr))
-            AppendLog(stderr.TrimEnd());
-        AppendLog(proc.ExitCode == 0 ? "Nginx 設定已更新。" : $"產生 Nginx 設定失敗（結束代碼 {proc.ExitCode}）。");
+            AppendLogWarning(stderr.TrimEnd());
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException($"產生 Nginx 設定失敗（結束代碼 {process.ExitCode}）。");
     }
 
-    private static string? TryGetDirectory(string path)
+    private async Task<int?> RunGitCommandCoreAsync(string workingDirectory, string arguments)
     {
-        if (string.IsNullOrWhiteSpace(path))
+        var git = FindExecutable("git.exe");
+        if (git is null)
+            throw new InvalidOperationException("找不到 git.exe，請安裝 Git 並加入 PATH。");
+        return await RunCommandAsync(git, arguments, workingDirectory, "git");
+    }
+
+    private async Task<int?> RunNpmCommandCoreAsync(string workingDirectory, string arguments)
+    {
+        var node = FindExecutable("node.exe");
+        if (node is null)
+            throw new InvalidOperationException("找不到 node.exe。");
+        var npm = Path.Combine(Path.GetDirectoryName(node)!, "npm.cmd");
+        if (!File.Exists(npm))
+            throw new InvalidOperationException("找不到 npm.cmd。");
+        return await RunCommandAsync(npm, arguments, workingDirectory, "npm");
+    }
+
+    private async Task<int> RunCommandAsync(string file, string arguments, string workingDirectory, string displayName)
+    {
+        AppendLog($"> \"{workingDirectory}\" {displayName} {arguments}");
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = file,
+            Arguments = arguments,
+            WorkingDirectory = workingDirectory,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8
+        };
+        using var process = new Process { StartInfo = startInfo };
+        process.Start();
+        var stdoutTask = PumpReaderAsync(process.StandardOutput, AppendLog);
+        var stderrTask = PumpReaderAsync(process.StandardError, AppendLogWarning);
+        await process.WaitForExitAsync();
+        await Task.WhenAll(stdoutTask, stderrTask);
+        AppendLog(process.ExitCode == 0 ? "命令完成（成功）。" : $"命令失敗（結束代碼 {process.ExitCode}）。");
+        return process.ExitCode;
+    }
+
+    private static async Task PumpReaderAsync(StreamReader reader, Action<string> sink)
+    {
+        while (await reader.ReadLineAsync() is { } line)
+            sink(line);
+    }
+
+    private async Task<SchemaMigrationStatus?> FetchSchemaStatusAsync(string root, bool logToUi)
+    {
+        var node = FindExecutable("node.exe");
+        if (node is null)
             return null;
+        var npm = Path.Combine(Path.GetDirectoryName(node)!, "npm.cmd");
+        if (!File.Exists(npm))
+            return null;
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = npm,
+            Arguments = "run db:schema-status",
+            WorkingDirectory = root,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8
+        };
+        using var process = Process.Start(startInfo);
+        if (process is null)
+            return null;
+        var stdout = await process.StandardOutput.ReadToEndAsync();
+        var stderr = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        if (logToUi)
+        {
+            if (!string.IsNullOrWhiteSpace(stdout))
+                AppendLog(stdout.TrimEnd());
+            if (!string.IsNullOrWhiteSpace(stderr))
+                AppendLogWarning(stderr.TrimEnd());
+        }
+        if (process.ExitCode != 0)
+            return null;
+        return ParseSchemaStatus(stdout + "\n" + stderr);
+    }
+
+    private static SchemaMigrationStatus? ParseSchemaStatus(string output)
+    {
+        foreach (var line in output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Reverse())
+        {
+            if (!line.StartsWith('{'))
+                continue;
+            try { return JsonSerializer.Deserialize<SchemaMigrationStatus>(line); }
+            catch (JsonException) { }
+        }
+        return null;
+    }
+
+    private async Task CheckSchemaQuietlyAsync()
+    {
         try
         {
-            return Directory.Exists(path) ? path : null;
+            if (!ValidateApiEnvExists(showMessage: false))
+                return;
+            var status = await FetchSchemaStatusAsync(_projectRoot.Text.Trim(), logToUi: false);
+            if (status is not null)
+                UpdateSchemaStatus(status);
         }
         catch
         {
-            return null;
+            // 啟動時的背景檢查不干擾使用者。
         }
+    }
+
+    private void UpdateSchemaStatus(SchemaMigrationStatus status)
+    {
+        if (!status.ok)
+        {
+            _schemaStatus.Text = "結構：檢查失敗";
+            _schemaStatus.ForeColor = UiTheme.Danger;
+        }
+        else if (status.pending.Length == 0)
+        {
+            _schemaStatus.Text = $"結構：已是最新（已套用 {status.applied.Length} 支）";
+            _schemaStatus.ForeColor = UiTheme.Success;
+        }
+        else
+        {
+            _schemaStatus.Text = $"結構：待升級 {status.pending.Length} 支";
+            _schemaStatus.ForeColor = UiTheme.Warning;
+        }
+    }
+
+    private void ShowLineProductionCheck(bool requireBuiltDist)
+    {
+        ValidateProjectRoot();
+        var check = LineProductionHelper.Check(_projectRoot.Text.Trim(), _liffUrl.Text.Trim(), requireBuiltDist);
+        foreach (var error in check.Errors)
+            AppendLogWarning("LINE：" + error);
+        foreach (var warning in check.Warnings)
+            AppendLogWarning("LINE：" + warning);
+        MessageBox.Show(this, check.FormatMessage(), "LINE 正式設定",
+            MessageBoxButtons.OK, check.Ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+    }
+
+    private bool ConfirmLineProductionReady(bool requireBuiltDist, string actionLabel)
+    {
+        var check = LineProductionHelper.Check(_projectRoot.Text.Trim(), _liffUrl.Text.Trim(), requireBuiltDist);
+        if (check.Ok)
+            return true;
+        foreach (var error in check.Errors)
+            AppendLogWarning("LINE：" + error);
+        return MessageBox.Show(
+            this,
+            check.FormatMessage() + $"\n\n若此次「{actionLabel}」暫不提供 LINE 功能，可選「是」繼續。是否繼續？",
+            "LINE 正式設定未完成",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2) == DialogResult.Yes;
+    }
+
+    private async Task RunBusyAsync(Func<Task> action)
+    {
+        if (_uiBusy)
+            return;
+        SetBusy(true);
+        try
+        {
+            await action();
+        }
+        catch (Exception ex)
+        {
+            AppendLogWarning(ex.Message);
+            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            SetBusy(false);
+            await CheckHealthAsync(force: true);
+        }
+    }
+
+    private async Task SafeUiActionAsync(Func<Task> action)
+    {
+        try
+        {
+            await action();
+        }
+        catch (Exception ex)
+        {
+            AppendLogWarning(ex.Message);
+            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void SetBusy(bool busy)
+    {
+        _uiBusy = busy;
+        foreach (var control in _busyControls)
+            control.Enabled = !busy;
+        _refreshButton.Enabled = !busy;
+        Cursor = busy ? Cursors.WaitCursor : Cursors.Default;
+    }
+
+    private void SaveSettingsFromUi()
+    {
+        new LauncherSettings
+        {
+            ProjectRoot = _projectRoot.Text.Trim(),
+            NginxRoot = _nginxRoot.Text.Trim(),
+            MySqlServiceName = GetMySqlServiceName(),
+            ApiBaseUrl = _apiBaseUrl.Text.Trim(),
+            AdminUrl = _adminUrl.Text.Trim(),
+            DriverUrl = _driverUrl.Text.Trim(),
+            LiffUrl = _liffUrl.Text.Trim(),
+            GitBranch = GetGitBranch()
+        }.Save();
     }
 
     private void ValidateProjectRoot()
     {
         var root = _projectRoot.Text.Trim();
-        if (string.IsNullOrEmpty(root))
-            throw new InvalidOperationException("請先設定專案根目錄。");
-        if (!File.Exists(Path.Combine(root, "package.json")))
-            throw new InvalidOperationException("此資料夾找不到 package.json，請確認為本系統專案根目錄。");
+        if (root.Length == 0 || !File.Exists(Path.Combine(root, "package.json")))
+            throw new InvalidOperationException("請在設定頁指定包含 package.json 的專案根目錄。");
     }
 
-    private static string? FindNodeExe()
+    private void ValidateProductionOutputs(bool includeApi)
     {
-        var pathEnv = Environment.GetEnvironmentVariable("PATH");
-        if (string.IsNullOrEmpty(pathEnv))
-            return null;
-        foreach (var dir in pathEnv.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        var root = _projectRoot.Text.Trim();
+        var outputs = new List<string>
         {
-            var candidate = Path.Combine(dir.Trim().Trim('"'), "node.exe");
+            Path.Combine(root, "apps", "web-admin", "dist", "index.html"),
+            Path.Combine(root, "apps", "web-driver", "dist", "index.html"),
+            Path.Combine(root, "apps", "web-liff", "dist", "index.html")
+        };
+        if (includeApi)
+            outputs.Add(Path.Combine(root, "apps", "api", "dist", "index.js"));
+        var missing = outputs.Where(path => !File.Exists(path)).ToArray();
+        if (missing.Length > 0)
+            throw new InvalidOperationException(
+                "缺少正式建置產物，請先執行「建置正式版」：\n" + string.Join("\n", missing));
+    }
+
+    private void ValidateGitRepo()
+    {
+        if (!Directory.Exists(Path.Combine(_projectRoot.Text.Trim(), ".git")))
+            throw new InvalidOperationException("專案根目錄不是 Git 倉庫。");
+    }
+
+    private bool ValidateApiEnvExists(bool showMessage = true)
+    {
+        var exists = File.Exists(Path.Combine(_projectRoot.Text.Trim(), "apps", "api", ".env"));
+        if (!exists && showMessage)
+            MessageBox.Show(this, "找不到 apps\\api\\.env，無法連線資料庫。", Text,
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        return exists;
+    }
+
+    private string GetMySqlServiceName()
+    {
+        var name = _mysqlServiceName.Text.Trim();
+        return name.Length == 0 ? "MySQL80" : name;
+    }
+
+    private string GetGitBranch()
+    {
+        var branch = _gitBranch.Text.Trim();
+        if (branch.Length == 0)
+            return "main";
+        if (branch.Contains('"') || branch.Contains('\r') || branch.Contains('\n'))
+            throw new InvalidOperationException("Git 分支名稱含有無效字元。");
+        return branch;
+    }
+
+    private int GetHttpPort() => PortHelper.ParsePortFromUrl(_apiBaseUrl.Text.Trim(), 80);
+
+    private string GetNginxProbeUrl() => $"http://localhost:{GetHttpPort()}/";
+
+    private string? GetNginxExePath()
+    {
+        var path = Path.Combine(_nginxRoot.Text.Trim(), "nginx.exe");
+        return File.Exists(path) ? path : null;
+    }
+
+    private void NormalizeProductionUrls()
+    {
+        var values = new[] { _apiBaseUrl, _adminUrl, _driverUrl, _liffUrl };
+        var needsFix = values.Any(box =>
+            box.Text.Contains("localhost", StringComparison.OrdinalIgnoreCase)
+            || box.Text.Contains("127.0.0.1", StringComparison.OrdinalIgnoreCase)
+            || PortHelper.ParsePortFromUrl(box.Text, 80) is 3000 or 5173 or 5174 or 5175);
+        if (!needsFix)
+            return;
+        var host = GetUrlHost(_apiBaseUrl.Text, DefaultPublicHost);
+        _apiBaseUrl.Text = $"http://{host}";
+        _adminUrl.Text = $"http://{host}/";
+        _driverUrl.Text = $"http://{host}/driver/";
+        _liffUrl.Text = $"http://{host}/liff/";
+    }
+
+    private static string GetUrlHost(string url, string fallback)
+    {
+        try
+        {
+            if (!url.Contains("://", StringComparison.Ordinal))
+                url = "http://" + url;
+            return new Uri(url).Host;
+        }
+        catch
+        {
+            return fallback;
+        }
+    }
+
+    private static string? FindExecutable(string name)
+    {
+        var path = Environment.GetEnvironmentVariable("PATH");
+        if (string.IsNullOrWhiteSpace(path))
+            return null;
+        foreach (var directory in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var candidate = Path.Combine(directory.Trim().Trim('"'), name);
             if (File.Exists(candidate))
                 return candidate;
         }
         return null;
-    }
-
-    private bool IsAnyServiceRunning()
-    {
-        return (_apiProcess is { HasExited: false })
-            || (_adminDevProcess is { HasExited: false })
-            || (_driverDevProcess is { HasExited: false })
-            || (_liffDevProcess is { HasExited: false })
-            || _nginxStartedByLauncher;
-    }
-
-    private void SyncStartStopButtons()
-    {
-        _btnStart.Enabled = !_uiBusy && !IsAnyServiceRunning();
-        _btnStop.Enabled = !_uiBusy && (IsAnyServiceRunning() || IsNgrokRunning());
-        SyncNgrokButtons();
-    }
-
-    private bool IsNgrokRunning() =>
-        (_ngrokProcess is { HasExited: false })
-        || _ngrokStartedByLauncher
-        || NgrokHelper.IsNgrokProcessRunning();
-
-    private void SyncNgrokButtons()
-    {
-        var running = IsNgrokRunning();
-        _btnStartNgrok.Enabled = !_uiBusy && !running;
-        _btnStopNgrok.Enabled = !_uiBusy && running;
-        _btnOpenNgrokDashboard.Enabled = !_uiBusy;
-        _ngrokDomain.Enabled = !_uiBusy && !running;
-        _chkStartNgrok.Enabled = !_uiBusy;
-    }
-
-    private int GetNgrokLocalPort()
-    {
-        if (_chkProductionMode.Checked)
-            return GetHttpPort();
-        return PortHelper.ParsePortFromUrl(_apiBaseUrl.Text.Trim(), 3000);
-    }
-
-    private async Task StartNgrokAsync(bool showMessages)
-    {
-        try
-        {
-            ValidateProjectRoot();
-        }
-        catch (InvalidOperationException ex)
-        {
-            if (showMessages)
-                MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            else
-                AppendLogWarning(ex.Message);
-            return;
-        }
-
-        if (IsNgrokRunning())
-        {
-            if (showMessages)
-                MessageBox.Show(this, "ngrok 已在執行中。", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
-            SyncNgrokButtons();
-            return;
-        }
-
-        var root = _projectRoot.Text.Trim();
-        var exe = NgrokHelper.FindNgrokExe(root);
-        if (exe is null)
-        {
-            var msg = "找不到 tools\\ngrok\\ngrok.exe。\n請將 ngrok 放到專案 tools\\ngrok\\ 目錄。";
-            if (showMessages)
-                MessageBox.Show(this, msg, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            else
-                AppendLogWarning(msg);
-            return;
-        }
-
-        var localPort = GetNgrokLocalPort();
-        if (!PortHelper.IsPortListening(localPort))
-        {
-            var msg = $"本機埠 {localPort} 尚未在聽取。\n請先「啟動服務」（正式模式需 Nginx），再啟動 ngrok。";
-            if (showMessages)
-                MessageBox.Show(this, msg, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            else
-                AppendLogWarning(msg);
-            return;
-        }
-
-        var domain = NgrokHelper.NormalizeDomain(_ngrokDomain.Text);
-        _ngrokDomain.Text = domain;
-
-        try
-        {
-            _btnStartNgrok.Enabled = false;
-            _btnStopNgrok.Enabled = false;
-            var proc = NgrokHelper.Start(exe, localPort, domain, AppendLog);
-            proc.Exited += OnNgrokProcessExited;
-            _ngrokProcess = proc;
-            _ngrokStartedByLauncher = true;
-
-            var status = await NgrokHelper.WaitForPublicUrlAsync(_http, TimeSpan.FromSeconds(12), AppendLogWarning)
-                .ConfigureAwait(true);
-            ApplyNgrokStatusToUi(status);
-
-            if (!string.IsNullOrWhiteSpace(status.PublicUrl))
-            {
-                AppendLog($"ngrok 公開網址：{status.PublicUrl}");
-                AppendLog($"Webhook：{status.PublicUrl.TrimEnd('/')}/api/line/webhook");
-                AppendLog($"LIFF：{status.PublicUrl.TrimEnd('/')}/liff/");
-                if (showMessages)
-                {
-                    MessageBox.Show(
-                        this,
-                        $"ngrok 已啟動。\n\n公開網址：{status.PublicUrl}\n"
-                            + $"Webhook：{status.PublicUrl.TrimEnd('/')}/api/line/webhook\n"
-                            + $"LIFF：{status.PublicUrl.TrimEnd('/')}/liff/\n\n"
-                            + "請確認 LINE Developers 的 Webhook／LIFF Endpoint 與此網址一致。",
-                        Text,
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Information);
-                }
-            }
-            else if (showMessages)
-            {
-                MessageBox.Show(
-                    this,
-                    "ngrok 行程已啟動，但尚未取得公開網址。\n可按「開啟 ngrok 儀表板」查看，或稍後看下方狀態列。\n"
-                        + (status.Error ?? ""),
-                    Text,
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning);
-            }
-        }
-        catch (Exception ex)
-        {
-            StopNgrokCore(AppendLog);
-            AppendLog("ngrok 啟動失敗：" + ex.Message);
-            if (showMessages)
-                MessageBox.Show(this, "ngrok 啟動失敗：\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
-        finally
-        {
-            SyncStartStopButtons();
-        }
-    }
-
-    private void StopNgrok(bool showLog)
-    {
-        StopNgrokCore(showLog ? AppendLog : null);
-        ApplyNgrokStatusToUi(new NgrokTunnelStatus { Running = false });
-        SyncStartStopButtons();
-    }
-
-    private void StopNgrokCore(Action<string>? log = null)
-    {
-        if (_ngrokProcess != null)
-        {
-            try { _ngrokProcess.Exited -= OnNgrokProcessExited; } catch { /* ignore */ }
-        }
-
-        var owned = _ngrokProcess;
-        _ngrokProcess = null;
-        _ngrokStartedByLauncher = false;
-
-        TryKillAndDisposeSimple(owned);
-        var killed = NgrokHelper.ForceStopAll(log);
-        if (killed > 0 || owned != null)
-            log?.Invoke("已停止 ngrok。");
-    }
-
-    private void OnNgrokProcessExited(object? sender, EventArgs e)
-    {
-        if (sender is not Process p)
-            return;
-        ScheduleOnUiThread(() =>
-        {
-            if (!ReferenceEquals(_ngrokProcess, p))
-                return;
-            TryDisposeProcessNoRedirect(_ngrokProcess);
-            _ngrokProcess = null;
-            _ngrokStartedByLauncher = false;
-            AppendLog("ngrok 行程已結束。");
-            ApplyNgrokStatusToUi(new NgrokTunnelStatus { Running = false });
-            SyncStartStopButtons();
-        });
-    }
-
-    private void ApplyNgrokStatusToUi(NgrokTunnelStatus status)
-    {
-        if (IsDisposed)
-            return;
-        if (!status.Running)
-        {
-            _ngrokHealthLabel.Text = "ngrok：離線";
-            _ngrokHealthLabel.ForeColor = SystemColors.GrayText;
-            return;
-        }
-
-        if (!string.IsNullOrWhiteSpace(status.PublicUrl))
-        {
-            _ngrokHealthLabel.Text = "ngrok：線上 " + status.PublicUrl;
-            _ngrokHealthLabel.ForeColor = Color.DarkGreen;
-            return;
-        }
-
-        _ngrokHealthLabel.Text = "ngrok：執行中（" + (status.Error ?? "等待公開網址") + "）";
-        _ngrokHealthLabel.ForeColor = Color.DarkOrange;
-    }
-
-    /// <summary>啟動前釋放被殘留行程佔用的埠。</summary>
-    private bool TryReleasePortsBeforeStart()
-    {
-        var apiPort = GetInternalApiPort();
-        var httpPort = GetHttpPort();
-        var adminPort = PortHelper.ParsePortFromUrl(_adminUrl.Text.Trim(), 5173);
-        var driverPort = PortHelper.ParsePortFromUrl(_driverUrl.Text.Trim(), 5174);
-        var liffPort = PortHelper.ParsePortFromUrl(_liffUrl.Text.Trim(), 5175);
-
-        void Log(string msg) => AppendLog(msg);
-
-        if (PortHelper.IsPortListening(apiPort))
-        {
-            AppendLog($"偵測到埠 {apiPort} 已被佔用，嘗試結束殘留的 Node 行程…");
-            PortHelper.ReleasePortForNode(apiPort, Log);
-        }
-
-        if (_chkProductionMode.Checked)
-        {
-            if (PortHelper.IsPortListening(httpPort))
-            {
-                AppendLog($"偵測到埠 {httpPort} 已被佔用，嘗試停止既有 Nginx…");
-                TryStopNginx();
-            }
-
-            if (PortHelper.IsPortListening(httpPort) && !PortHelper.IsPortUsedByProcess(httpPort, "nginx"))
-            {
-                var blocking = DescribePortBlockers(httpPort);
-                MessageBox.Show(
-                    this,
-                    $"埠 {httpPort} 仍被其他程式佔用，無法啟動 Nginx。\n\n{blocking}\n\n請關閉佔用程式後再試。",
-                    Text,
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning);
-                return false;
-            }
-        }
-        else
-        {
-            if (_chkAdminDev.Checked && PortHelper.IsPortListening(adminPort))
-            {
-                AppendLog($"偵測到埠 {adminPort} 已被佔用，嘗試結束殘留的 Node 行程…");
-                PortHelper.ReleasePortForNode(adminPort, Log);
-            }
-
-            if (_chkDriverDev.Checked && PortHelper.IsPortListening(driverPort))
-            {
-                AppendLog($"偵測到埠 {driverPort} 已被佔用，嘗試結束殘留的 Node 行程…");
-                PortHelper.ReleasePortForNode(driverPort, Log);
-            }
-
-            if (_chkLiffDev.Checked && PortHelper.IsPortListening(liffPort))
-            {
-                AppendLog($"偵測到埠 {liffPort} 已被佔用，嘗試結束殘留的 Node 行程…");
-                PortHelper.ReleasePortForNode(liffPort, Log);
-            }
-        }
-
-        if (PortHelper.IsPortListening(apiPort))
-        {
-            var blocking = DescribePortBlockers(apiPort);
-            MessageBox.Show(
-                this,
-                $"埠 {apiPort} 仍被佔用，無法啟動 API。\n\n{blocking}\n\n請關閉佔用程式後再試，或在工作管理員結束對應的 node.exe。",
-                Text,
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
-            return false;
-        }
-
-        return true;
     }
 
     private static string DescribePortBlockers(int port)
@@ -1221,1584 +1427,104 @@ internal sealed class MainForm : Form
         {
             try
             {
-                using var p = Process.GetProcessById(pid);
-                lines.Add($"PID {pid}：{p.ProcessName}.exe");
+                using var process = Process.GetProcessById(pid);
+                lines.Add($"PID {pid}：{process.ProcessName}.exe");
             }
-            catch
-            {
-                lines.Add($"PID {pid}");
-            }
+            catch { lines.Add($"PID {pid}"); }
         }
-
-        return lines.Count > 0 ? string.Join("\n", lines) : "（無法列出佔用程式）";
+        return lines.Count == 0 ? "無法列出占用行程" : string.Join("\n", lines);
     }
 
-    private async Task StartAllAsync()
+    private void ShowServiceError(string title, WindowsServiceResult result)
     {
-        try
-        {
-            ValidateProjectRoot();
-        }
-        catch (InvalidOperationException ex)
-        {
-            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        if (IsAnyServiceRunning())
-        {
-            MessageBox.Show(this, "已有服務在執行中，請先按「停止全部」。", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return;
-        }
-
-        if (_chkProductionMode.Checked && !ConfirmLineProductionReady(requireBuiltDist: true, actionLabel: "啟動服務"))
-            return;
-
-        var node = FindNodeExe();
-        if (string.IsNullOrEmpty(node))
-        {
-            MessageBox.Show(this, "找不到 node.exe，請確認已安裝 Node.js 並加入 PATH。", Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
-        }
-
-        var root = _projectRoot.Text.Trim();
-        var apiDir = Path.Combine(root, "apps", "api");
-        var distJs = Path.Combine(apiDir, "dist", "index.js");
-        if (!File.Exists(distJs))
-        {
-            MessageBox.Show(
-                this,
-                "找不到 apps\\api\\dist\\index.js。\n請先執行「建置專案」或於命令列執行 npm run build。",
-                Text,
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
-            return;
-        }
-
-        if (_chkProductionMode.Checked)
-        {
-            var adminDist = Path.Combine(root, "apps", "web-admin", "dist", "index.html");
-            var driverDist = Path.Combine(root, "apps", "web-driver", "dist", "index.html");
-            var liffDist = Path.Combine(root, "apps", "web-liff", "dist", "index.html");
-            if (!File.Exists(adminDist) || !File.Exists(driverDist) || !File.Exists(liffDist))
-            {
-                MessageBox.Show(
-                    this,
-                    "正式部署需要先建置前端靜態檔（含後台、司機端、LIFF 訂水）。\n請按「建置專案」後再啟動。",
-                    Text,
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning);
-                return;
-            }
-
-            if (GetNginxExePath() is null)
-            {
-                MessageBox.Show(this, "找不到 nginx.exe，請確認 Nginx 目錄設定正確。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-        }
-
-        var npmCmd = Path.Combine(Path.GetDirectoryName(node)!, "npm.cmd");
-        if (!_chkProductionMode.Checked && (_chkAdminDev.Checked || _chkDriverDev.Checked || _chkLiffDev.Checked) && !File.Exists(npmCmd))
-        {
-            MessageBox.Show(this, "已勾選啟動前端，但找不到 npm.cmd。", Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
-        }
-
-        if (!TryReleasePortsBeforeStart())
-            return;
-
-        if (_chkProductionMode.Checked)
-            NormalizeProductionUrls();
-
-        try
-        {
-            if (_chkProductionMode.Checked)
-                await GenerateNginxConfigAsync(root).ConfigureAwait(true);
-
-            var psi = new ProcessStartInfo
-            {
-                FileName = node,
-                Arguments = "dist/index.js",
-                WorkingDirectory = apiDir,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-                StandardOutputEncoding = Encoding.UTF8,
-                StandardErrorEncoding = Encoding.UTF8
-            };
-
-            _apiProcess = new Process { StartInfo = psi, EnableRaisingEvents = true };
-            _apiProcess.OutputDataReceived += OnApiOutputDataReceived;
-            _apiProcess.ErrorDataReceived += OnApiErrorDataReceived;
-            _apiProcess.Exited += OnApiProcessExited;
-
-            _apiProcess.Start();
-            _apiProcess.BeginOutputReadLine();
-            _apiProcess.BeginErrorReadLine();
-
-            AppendLog($"已啟動 API：{node} dist/index.js（{apiDir}）");
-
-            if (_chkProductionMode.Checked)
-            {
-                if (!TryStartNginx())
-                {
-                    await StopAllAsync().ConfigureAwait(true);
-                    return;
-                }
-            }
-            else if (_chkAdminDev.Checked)
-            {
-                _adminDevProcess = StartNpmDevProcess(npmCmd, root, "run dev:admin", "後台 Vite");
-                if (_adminDevProcess != null)
-                {
-                    _adminDevProcess.EnableRaisingEvents = true;
-                    _adminDevProcess.Exited += OnDevProcessExited;
-                    AppendLog("已啟動後台開發伺服器。");
-                }
-            }
-
-            if (!_chkProductionMode.Checked && _chkDriverDev.Checked)
-            {
-                _driverDevProcess = StartNpmDevProcess(npmCmd, root, "run dev:driver", "司機端 Vite");
-                if (_driverDevProcess != null)
-                {
-                    _driverDevProcess.EnableRaisingEvents = true;
-                    _driverDevProcess.Exited += OnDevProcessExited;
-                    AppendLog("已啟動司機端開發伺服器。");
-                }
-            }
-
-            if (!_chkProductionMode.Checked && _chkLiffDev.Checked)
-            {
-                _liffDevProcess = StartNpmDevProcess(npmCmd, root, "run dev:liff", "LIFF 訂水 Vite");
-                if (_liffDevProcess != null)
-                {
-                    _liffDevProcess.EnableRaisingEvents = true;
-                    _liffDevProcess.Exited += OnDevProcessExited;
-                    AppendLog("已啟動 LIFF 訂水開發伺服器（http://localhost:5175/liff/）。");
-                }
-            }
-
-            if (_chkStartNgrok.Checked)
-            {
-                if (!_chkProductionMode.Checked)
-                {
-                    AppendLogWarning("ngrok 建議在正式模式（Nginx:80）下使用；目前為開發模式，仍嘗試轉發本機 HTTP 埠。");
-                }
-                await StartNgrokAsync(showMessages: false).ConfigureAwait(true);
-            }
-
-            SyncStartStopButtons();
-            SyncNgrokButtons();
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, "啟動失敗：\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
-            await StopAllAsync().ConfigureAwait(true);
-        }
+        var hint = result.AccessDenied
+            ? "\n\n權限不足：請以系統管理員身分執行啟動器。"
+            : "\n\n請確認設定頁中的 Windows Service 名稱正確。";
+        AppendLogWarning($"{title}：{Compact(result.Output)}");
+        MessageBox.Show(this, title + "\n\n" + result.Output + hint, Text,
+            MessageBoxButtons.OK, MessageBoxIcon.Error);
     }
 
-    private Process? StartNpmDevProcess(string npmCmd, string projectRoot, string npmArguments, string nameForUser)
+    private void OnApiOutput(object sender, DataReceivedEventArgs e)
     {
-        try
-        {
-            var psi = new ProcessStartInfo
-            {
-                FileName = npmCmd,
-                Arguments = npmArguments,
-                WorkingDirectory = projectRoot,
-                UseShellExecute = false,
-                RedirectStandardOutput = false,
-                RedirectStandardError = false,
-                CreateNoWindow = true
-            };
-            var p = new Process { StartInfo = psi };
-            p.Start();
-            return p;
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, $"{nameForUser} 啟動失敗：\n{ex.Message}", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return null;
-        }
+        if (e.Data is not null)
+            AppendLog("[API] " + e.Data);
     }
 
-    private void OnDevProcessExited(object? sender, EventArgs e)
+    private void OnApiError(object sender, DataReceivedEventArgs e)
     {
-        if (sender is not Process p)
+        if (e.Data is not null)
+            AppendLogWarning("[API] " + e.Data);
+    }
+
+    private void OnApiExited(object? sender, EventArgs e)
+    {
+        if (_closing)
             return;
         ScheduleOnUiThread(() =>
         {
-            if (ReferenceEquals(_adminDevProcess, p))
-            {
-                TryDisposeProcessNoRedirect(_adminDevProcess);
-                _adminDevProcess = null;
-                AppendLog("後台開發伺服器已結束。");
-            }
-            else if (ReferenceEquals(_driverDevProcess, p))
-            {
-                TryDisposeProcessNoRedirect(_driverDevProcess);
-                _driverDevProcess = null;
-                AppendLog("司機端開發伺服器已結束。");
-            }
-            else if (ReferenceEquals(_liffDevProcess, p))
-            {
-                TryDisposeProcessNoRedirect(_liffDevProcess);
-                _liffDevProcess = null;
-                AppendLog("LIFF 訂水開發伺服器已結束。");
-            }
-
-            SyncStartStopButtons();
-        });
-    }
-
-    private void OnApiOutputDataReceived(object sender, DataReceivedEventArgs e)
-    {
-        if (e.Data != null)
-            ScheduleOnUiThread(() => AppendLog("[API stdout] " + e.Data));
-    }
-
-    private void OnApiErrorDataReceived(object sender, DataReceivedEventArgs e)
-    {
-        if (e.Data != null)
-            ScheduleOnUiThread(() => AppendLog("[API stderr] " + e.Data));
-    }
-
-    private void OnApiProcessExited(object? sender, EventArgs e)
-    {
-        if (sender is not Process p)
-            return;
-        ScheduleOnUiThread(() =>
-        {
-            if (!ReferenceEquals(_apiProcess, p))
+            if (sender is not Process process || !ReferenceEquals(process, _apiProcess))
                 return;
-            AppendLog("API 行程已結束。");
-            TryDisposeApiProcess(_apiProcess);
+            DetachApiEvents();
+            _apiProcess?.Dispose();
             _apiProcess = null;
-            SyncStartStopButtons();
+            AppendLogWarning("API 行程已結束。");
+            _ = CheckHealthAsync(force: true);
         });
     }
 
-    private async Task StopAllAsync()
+    private void DetachApiEvents()
     {
-        var api = _apiProcess;
-        var admin = _adminDevProcess;
-        var driver = _driverDevProcess;
-        var liff = _liffDevProcess;
-        var stopNginx = ShouldManageNginx();
-        var stopNgrok = _ngrokStartedByLauncher || NgrokHelper.IsNgrokProcessRunning();
-
-        if (api is null && admin is null && driver is null && liff is null && !stopNginx && !stopNgrok)
+        if (_apiProcess is null)
             return;
-
-        AppendLog("正在停止服務…");
-        _btnStop.Enabled = false;
-        _btnStart.Enabled = false;
-        SyncNgrokButtons();
-
-        await Task.Run(() => StopServicesCore()).ConfigureAwait(false);
-
-        if (!IsDisposed)
-        {
-            ScheduleOnUiThread(() =>
-            {
-                AppendLog("已停止全部服務。");
-                SyncStartStopButtons();
-                SyncNgrokButtons();
-                _ = CheckHealthAsync();
-            });
-        }
+        _apiProcess.OutputDataReceived -= OnApiOutput;
+        _apiProcess.ErrorDataReceived -= OnApiError;
+        _apiProcess.Exited -= OnApiExited;
     }
 
-    /// <summary>
-    /// 停止 API／網頁／隧道等應用服務。Windows 啟動器不管理 MySQL，清空／升級資料庫時請用此方法，避免文案誤導去手動關掉資料庫。
-    /// </summary>
-    private async Task StopApplicationServicesAsync()
+    private static void TryKillAndDisposeApi(Process? process)
     {
-        if (!IsAnyServiceRunning() && !IsNgrokRunning())
-            return;
-
-        AppendLog("正在停止應用服務（MySQL／資料庫保持運行）…");
-        _btnStop.Enabled = false;
-        _btnStart.Enabled = false;
-        SyncNgrokButtons();
-
-        await Task.Run(() => StopServicesCore()).ConfigureAwait(false);
-
-        if (!IsDisposed)
-        {
-            ScheduleOnUiThread(() =>
-            {
-                AppendLog("應用服務已停止；MySQL／資料庫服務請保持運行，以便清空或升級資料。");
-                SyncStartStopButtons();
-                SyncNgrokButtons();
-                _ = CheckHealthAsync();
-            });
-        }
-    }
-
-    private static void TryKillAndDisposeApi(Process? p)
-    {
-        if (p is null)
+        if (process is null)
             return;
         try
         {
-            if (!p.HasExited)
-                p.Kill(entireProcessTree: true);
+            if (!process.HasExited)
+                process.Kill(entireProcessTree: true);
+            process.WaitForExit(10000);
         }
-        catch
-        {
-            // ignore
-        }
-
-        try
-        {
-            p.WaitForExit(20000);
-        }
-        catch
-        {
-            // ignore
-        }
-
-        TryDisposeApiProcess(p);
+        catch { }
+        try { process.Dispose(); } catch { }
     }
 
-    private static void TryDisposeApiProcess(Process? p)
-    {
-        if (p is null)
-            return;
-        try
-        {
-            p.CancelOutputRead();
-        }
-        catch
-        {
-            // ignore
-        }
-
-        try
-        {
-            p.CancelErrorRead();
-        }
-        catch
-        {
-            // ignore
-        }
-
-        try
-        {
-            p.Dispose();
-        }
-        catch
-        {
-            // ignore
-        }
-    }
-
-    private static void TryKillAndDisposeSimple(Process? p)
-    {
-        if (p is null)
-            return;
-        try
-        {
-            if (!p.HasExited)
-                p.Kill(entireProcessTree: true);
-        }
-        catch
-        {
-            // ignore
-        }
-
-        try
-        {
-            p.WaitForExit(20000);
-        }
-        catch
-        {
-            // ignore
-        }
-
-        TryDisposeProcessNoRedirect(p);
-    }
-
-    private static void TryDisposeProcessNoRedirect(Process? p)
-    {
-        if (p is null)
-            return;
-        try
-        {
-            p.Dispose();
-        }
-        catch
-        {
-            // ignore
-        }
-    }
-
-    private static string? FindGitExe()
-    {
-        var pathEnv = Environment.GetEnvironmentVariable("PATH");
-        if (string.IsNullOrEmpty(pathEnv))
-            return null;
-        foreach (var dir in pathEnv.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
-        {
-            var candidate = Path.Combine(dir.Trim().Trim('"'), "git.exe");
-            if (File.Exists(candidate))
-                return candidate;
-        }
-        return null;
-    }
-
-    private void ValidateGitRepo()
-    {
-        var root = _projectRoot.Text.Trim();
-        if (!Directory.Exists(Path.Combine(root, ".git")))
-            throw new InvalidOperationException("此資料夾不是 Git 倉庫。請確認專案根目錄是否正確。");
-    }
-
-    private async Task<int?> RunGitCommandCoreAsync(string workingDirectory, string arguments)
-    {
-        var git = FindGitExe();
-        if (string.IsNullOrEmpty(git))
-        {
-            AppendLog("找不到 git.exe，請確認已安裝 Git 並加入 PATH。");
-            return null;
-        }
-
-        AppendLog($"> \"{workingDirectory}\" git {arguments}");
-        var exitCode = -1;
-        try
-        {
-            var psi = new ProcessStartInfo
-            {
-                FileName = git,
-                Arguments = arguments,
-                WorkingDirectory = workingDirectory,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-                StandardOutputEncoding = Encoding.UTF8,
-                StandardErrorEncoding = Encoding.UTF8
-            };
-
-            using var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
-            var stdout = new StringBuilder();
-            var stderr = new StringBuilder();
-            proc.OutputDataReceived += (_, e) =>
-            {
-                if (e.Data != null)
-                    stdout.AppendLine(e.Data);
-            };
-            proc.ErrorDataReceived += (_, e) =>
-            {
-                if (e.Data != null)
-                    stderr.AppendLine(e.Data);
-            };
-
-            proc.Start();
-            proc.BeginOutputReadLine();
-            proc.BeginErrorReadLine();
-            await proc.WaitForExitAsync().ConfigureAwait(true);
-            exitCode = proc.ExitCode;
-
-            if (stdout.Length > 0)
-                AppendLog(stdout.ToString().TrimEnd());
-            if (stderr.Length > 0)
-                AppendLog(stderr.ToString().TrimEnd());
-
-            AppendLog(exitCode == 0 ? "Git 命令完成（成功）。" : $"Git 命令結束，結束代碼 {exitCode}。");
-        }
-        catch (Exception ex)
-        {
-            AppendLog("Git 執行錯誤：" + ex.Message);
-            return null;
-        }
-
-        return exitCode;
-    }
-
-    private async Task GitPullAsync()
-    {
-        try
-        {
-            ValidateProjectRoot();
-            ValidateGitRepo();
-        }
-        catch (InvalidOperationException ex)
-        {
-            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        if (IsAnyServiceRunning())
-        {
-            var stopFirst = MessageBox.Show(
-                this,
-                "目前有服務在執行中。建議先停止服務再拉取程式，是否現在停止全部？",
-                Text,
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Question,
-                MessageBoxDefaultButton.Button1);
-            if (stopFirst == DialogResult.Yes)
-                await StopAllAsync().ConfigureAwait(true);
-        }
-
-        SetBusy(true);
-        try
-        {
-            var root = _projectRoot.Text.Trim();
-            var exitCode = await RunGitCommandCoreAsync(root, $"pull origin {_gitBranch}").ConfigureAwait(true);
-            if (exitCode == 0)
-            {
-                MessageBox.Show(
-                    this,
-                    $"已從 GitHub 拉取最新程式（分支 {_gitBranch}）。\n\n若要在正式環境生效，請按「建置專案」後再「啟動服務」，或直接按「更新並部署」。",
-                    Text,
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
-            }
-            else if (exitCode != null)
-            {
-                MessageBox.Show(
-                    this,
-                    $"Git 拉取失敗（結束代碼 {exitCode}）。\n請查看下方日誌。",
-                    Text,
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning);
-            }
-        }
-        finally
-        {
-            SetBusy(false);
-        }
-    }
-
-    private async Task<bool> BuildProductionCoreAsync(string projectRoot)
-    {
-        var steps = new (string Args, string Label)[]
-        {
-            ("install", "安裝依賴"),
-            ("run db:generate", "Prisma generate"),
-            ("run build", "建置 API / 後台 / 司機端 / LIFF")
-        };
-
-        foreach (var (args, label) in steps)
-        {
-            AppendLog($"==> {label}…");
-            var exitCode = await RunNpmCommandCoreAsync(projectRoot, args).ConfigureAwait(true);
-            if (exitCode != 0)
-            {
-                AppendLog($"建置中斷：{label} 失敗（結束代碼 {exitCode}）。");
-                return false;
-            }
-        }
-
-        var apiDist = Path.Combine(projectRoot, "apps", "api", "dist", "index.js");
-        var adminDist = Path.Combine(projectRoot, "apps", "web-admin", "dist", "index.html");
-        var driverDist = Path.Combine(projectRoot, "apps", "web-driver", "dist", "index.html");
-        var liffDist = Path.Combine(projectRoot, "apps", "web-liff", "dist", "index.html");
-        foreach (var path in new[] { apiDist, adminDist, driverDist, liffDist })
-        {
-            if (!File.Exists(path))
-            {
-                AppendLog($"建置失敗，缺少檔案：{path}");
-                return false;
-            }
-        }
-
-        await GenerateNginxConfigAsync(projectRoot).ConfigureAwait(true);
-        AppendLog("建置完成。");
-        return true;
-    }
-
-    private async Task PullAndDeployAsync()
-    {
-        try
-        {
-            ValidateProjectRoot();
-            ValidateGitRepo();
-        }
-        catch (InvalidOperationException ex)
-        {
-            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        if (!_chkProductionMode.Checked)
-        {
-            MessageBox.Show(
-                this,
-                "「更新並部署」請在正式部署模式下使用（勾選 Nginx + 靜態前端）。",
-                Text,
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
-            return;
-        }
-
-        var confirm = MessageBox.Show(
-            this,
-            "將執行以下步驟：\n"
-            + "1. 停止全部服務\n"
-            + $"2. git pull origin {_gitBranch}\n"
-            + "3. npm install → db:generate → build\n"
-            + "4. 更新 Nginx 設定\n"
-            + "5. 重新啟動服務\n\n"
-            + "不會覆蓋 apps\\api\\.env、apps\\web-liff\\.env 與資料庫資料。\n\n"
-            + "確定要繼續嗎？",
-            "更新並部署",
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.Question,
-            MessageBoxDefaultButton.Button1);
-        if (confirm != DialogResult.Yes)
-            return;
-
-        if (!ConfirmLineProductionReady(requireBuiltDist: false, actionLabel: "更新並部署"))
-            return;
-
-        SetBusy(true);
-        try
-        {
-            AppendLog("=== 開始更新並部署 ===");
-
-            if (IsAnyServiceRunning())
-            {
-                AppendLog("正在停止服務…");
-                await StopAllAsync().ConfigureAwait(true);
-            }
-
-            var root = _projectRoot.Text.Trim();
-            AppendLog($"=> Git 拉取 origin/{_gitBranch}…");
-            var pullCode = await RunGitCommandCoreAsync(root, $"pull origin {_gitBranch}").ConfigureAwait(true);
-            if (pullCode != 0)
-            {
-                MessageBox.Show(this, "Git 拉取失敗，部署已中止。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            if (!await BuildProductionCoreAsync(root).ConfigureAwait(true))
-            {
-                MessageBox.Show(this, "建置失敗，部署已中止。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            AppendLog("=> 重新啟動服務…");
-            await StartAllAsync().ConfigureAwait(true);
-
-            MessageBox.Show(
-                this,
-                "更新並部署完成。\n\n"
-                + $"後台：{_adminUrl.Text.Trim()}\n"
-                + $"司機端：{_driverUrl.Text.Trim()}\n"
-                + $"LIFF 訂水：{_liffUrl.Text.Trim()}\n"
-                + $"健康檢查：{_apiBaseUrl.Text.Trim().TrimEnd('/')}/api/health",
-                Text,
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
-        }
-        catch (Exception ex)
-        {
-            AppendLog("更新並部署錯誤：" + ex.Message);
-            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
-        finally
-        {
-            SetBusy(false);
-        }
-    }
-
-    private async Task<int?> RunNpmCommandCoreAsync(string workingDirectory, string npmArguments)
-    {
-        var node = FindNodeExe();
-        if (string.IsNullOrEmpty(node))
-        {
-            AppendLog("找不到 node.exe。");
-            return null;
-        }
-
-        var npmCmd = Path.Combine(Path.GetDirectoryName(node)!, "npm.cmd");
-        if (!File.Exists(npmCmd))
-        {
-            AppendLog("找不到 npm.cmd。");
-            return null;
-        }
-
-        AppendLog($"> \"{workingDirectory}\" npm {npmArguments}");
-        var exitCode = -1;
-        try
-        {
-            var psi = new ProcessStartInfo
-            {
-                FileName = npmCmd,
-                Arguments = npmArguments,
-                WorkingDirectory = workingDirectory,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-                StandardOutputEncoding = Encoding.UTF8,
-                StandardErrorEncoding = Encoding.UTF8
-            };
-
-            using var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
-            var stdout = new StringBuilder();
-            var stderr = new StringBuilder();
-            proc.OutputDataReceived += (_, e) =>
-            {
-                if (e.Data != null)
-                    stdout.AppendLine(e.Data);
-            };
-            proc.ErrorDataReceived += (_, e) =>
-            {
-                if (e.Data != null)
-                    stderr.AppendLine(e.Data);
-            };
-
-            proc.Start();
-            proc.BeginOutputReadLine();
-            proc.BeginErrorReadLine();
-            await proc.WaitForExitAsync().ConfigureAwait(true);
-            exitCode = proc.ExitCode;
-
-            if (stdout.Length > 0)
-                AppendLog(stdout.ToString().TrimEnd());
-            if (stderr.Length > 0)
-                AppendLog(stderr.ToString().TrimEnd());
-        }
-        catch (Exception ex)
-        {
-            AppendLog("執行錯誤：" + ex.Message);
-            return null;
-        }
-
-        return exitCode;
-    }
-
-    private async Task RunRootNpmCommandAsync(string npmArguments)
-    {
-        try
-        {
-            ValidateProjectRoot();
-        }
-        catch (InvalidOperationException ex)
-        {
-            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        await RunNpmCommandAsync(_projectRoot.Text.Trim(), npmArguments).ConfigureAwait(true);
-    }
-
-    private async Task<int?> RunNpmCommandAsync(string workingDirectory, string npmArguments)
-    {
-        var node = FindNodeExe();
-        if (string.IsNullOrEmpty(node))
-        {
-            MessageBox.Show(this, "找不到 node.exe。", Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return null;
-        }
-
-        var npmCmd = Path.Combine(Path.GetDirectoryName(node)!, "npm.cmd");
-        if (!File.Exists(npmCmd))
-        {
-            MessageBox.Show(this, "找不到 npm.cmd。", Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return null;
-        }
-
-        SetBusy(true);
-        try
-        {
-            var exitCode = await RunNpmCommandCoreAsync(workingDirectory, npmArguments).ConfigureAwait(true) ?? -1;
-            AppendLog(exitCode == 0 ? "命令完成（成功）。" : $"命令結束，結束代碼 {exitCode}。");
-
-            if (exitCode != 0)
-            {
-                MessageBox.Show(
-                    this,
-                    $"命令執行失敗（結束代碼 {exitCode}）。\n請查看下方日誌。",
-                    Text,
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning);
-            }
-
-            return exitCode;
-        }
-        catch (Exception ex)
-        {
-            AppendLog("執行錯誤：" + ex.Message);
-            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return null;
-        }
-        finally
-        {
-            SetBusy(false);
-        }
-    }
-
-    private async Task CheckSchemaQuietlyOnLoadAsync()
-    {
-        try
-        {
-            var root = _projectRoot.Text.Trim();
-            if (string.IsNullOrEmpty(root))
-                return;
-            if (!File.Exists(Path.Combine(root, "apps", "api", ".env")))
-            {
-                _schemaStatusLabel.Text = "結構：尚未設定 DATABASE_URL";
-                return;
-            }
-
-            var status = await FetchSchemaStatusAsync(root, logToUi: false).ConfigureAwait(true);
-            if (status is null)
-                return;
-
-            UpdateSchemaStatusLabel(status);
-            if (status.ok && status.pending.Length > 0)
-                AppendLogWarning("資料庫結構落後，請按「檢查結構」或「升級結構」。");
-        }
-        catch
-        {
-            // 啟動時靜默檢查，略過錯誤
-        }
-    }
-
-    private async Task CheckSchemaAsync()
-    {
-        try
-        {
-            ValidateProjectRoot();
-        }
-        catch (InvalidOperationException ex)
-        {
-            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        var root = _projectRoot.Text.Trim();
-        if (!ValidateApiEnvExists())
-            return;
-
-        SetBusy(true);
-        try
-        {
-            await RefreshSchemaStatusAsync(root, showDialog: true).ConfigureAwait(true);
-        }
-        finally
-        {
-            SetBusy(false);
-        }
-    }
-
-    private async Task ApplySchemaAsync()
-    {
-        try
-        {
-            ValidateProjectRoot();
-        }
-        catch (InvalidOperationException ex)
-        {
-            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        var root = _projectRoot.Text.Trim();
-        if (!ValidateApiEnvExists())
-            return;
-
-        var status = await FetchSchemaStatusAsync(root, logToUi: false).ConfigureAwait(true);
-        if (status is null)
-        {
-            MessageBox.Show(this, "無法讀取資料庫結構狀態，請查看日誌。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        if (!status.ok)
-        {
-            MessageBox.Show(this, status.message ?? "檢查資料庫結構失敗。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        UpdateSchemaStatusLabel(status);
-        if (status.pending.Length == 0)
-        {
-            MessageBox.Show(this, "資料庫結構已是最新，無需升級。", "升級資料庫結構", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return;
-        }
-
-        var listText = string.Join("\n", status.pending);
-        var confirm = MessageBox.Show(
-            this,
-            "將套用以下 migration 至本機 water_erp：\n"
-            + listText
-            + "\n\n建議先備份資料庫（mysqldump）。\n升級前會建議停止 API。\n\n確定繼續？",
-            "升級資料庫結構",
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.Warning,
-            MessageBoxDefaultButton.Button2);
-        if (confirm != DialogResult.Yes)
-            return;
-
-        if (IsAnyServiceRunning())
-        {
-            var stopFirst = MessageBox.Show(
-                this,
-                "目前有服務在執行中。升級結構前建議先停止 API 與網頁服務；MySQL／資料庫會保持運行。\n\n是否現在停止應用服務？",
-                Text,
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Question,
-                MessageBoxDefaultButton.Button1);
-            if (stopFirst == DialogResult.Yes)
-                await StopApplicationServicesAsync().ConfigureAwait(true);
-        }
-
-        SetBusy(true);
-        try
-        {
-            AppendLog("開始升級資料庫結構…");
-            var applyCode = await RunNpmCommandCoreAsync(root, "run db:schema-apply").ConfigureAwait(true);
-            if (applyCode != 0)
-            {
-                MessageBox.Show(this, $"升級失敗（結束代碼 {applyCode}）。\n請查看下方日誌。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            AppendLog("升級完成，正在 Prisma generate…");
-            var genCode = await RunNpmCommandCoreAsync(root, "run db:generate").ConfigureAwait(true);
-            if (genCode != 0)
-            {
-                MessageBox.Show(this, $"Prisma generate 失敗（結束代碼 {genCode}）。\n請查看下方日誌。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            await RefreshSchemaStatusAsync(root, showDialog: true).ConfigureAwait(true);
-            AppendLogWarning("資料庫結構已升級。若 API 正在執行，請重啟 API。");
-            MessageBox.Show(
-                this,
-                "資料庫結構已升級完成。\n\n若 API 正在執行，請按「停止全部」後再「啟動服務」。",
-                "升級完成",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
-        }
-        finally
-        {
-            SetBusy(false);
-        }
-    }
-
-    private bool ValidateApiEnvExists()
-    {
-        var root = _projectRoot.Text.Trim();
-        var apiEnv = Path.Combine(root, "apps", "api", ".env");
-        if (File.Exists(apiEnv))
-            return true;
-
-        MessageBox.Show(
-            this,
-            "找不到 apps\\api\\.env，無法連線資料庫。\n請先設定 DATABASE_URL 後再試。",
-            Text,
-            MessageBoxButtons.OK,
-            MessageBoxIcon.Warning);
-        return false;
-    }
-
-    private async Task RefreshSchemaStatusAsync(string projectRoot, bool showDialog)
-    {
-        var status = await FetchSchemaStatusAsync(projectRoot, logToUi: showDialog).ConfigureAwait(true);
-        if (status is null)
-        {
-            _schemaStatusLabel.Text = "結構：無法讀取狀態";
-            _schemaStatusLabel.ForeColor = Color.DarkRed;
-            if (showDialog)
-                MessageBox.Show(this, "無法解析 db:schema-status 輸出，請查看日誌。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        if (!status.ok)
-        {
-            _schemaStatusLabel.Text = "結構：檢查失敗";
-            _schemaStatusLabel.ForeColor = Color.DarkRed;
-            if (showDialog)
-                MessageBox.Show(this, status.message ?? "檢查資料庫結構失敗。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        UpdateSchemaStatusLabel(status);
-        if (!showDialog)
-            return;
-
-        var message = $"已套用 {status.applied.Length} 支 migration。";
-        if (status.pending.Length == 0)
-            message += "\n\n資料庫結構已最新。";
-        else
-            message += $"\n\n待升級 {status.pending.Length} 支：\n{string.Join("\n", status.pending)}";
-
-        MessageBox.Show(
-            this,
-            message,
-            "資料庫結構檢查",
-            MessageBoxButtons.OK,
-            status.pending.Length == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
-    }
-
-    private void UpdateSchemaStatusLabel(SchemaMigrationStatus status)
-    {
-        _schemaStatusLabel.Text = FormatSchemaSummary(status);
-        _schemaStatusLabel.ForeColor = status.pending.Length == 0 ? Color.DarkGreen : Color.DarkOrange;
-    }
-
-    private static string FormatSchemaSummary(SchemaMigrationStatus status)
-    {
-        if (!status.ok)
-            return status.message ?? "結構：檢查失敗";
-        if (status.pending.Length == 0)
-            return $"結構：已最新（已套用 {status.applied.Length} 支）";
-
-        var preview = status.pending.Length <= 2
-            ? string.Join(", ", status.pending)
-            : $"{status.pending[0]}, … 共 {status.pending.Length} 支";
-        return $"結構：待升級 {status.pending.Length} 支（{preview}）";
-    }
-
-    private async Task<SchemaMigrationStatus?> FetchSchemaStatusAsync(string projectRoot, bool logToUi)
-    {
-        if (logToUi)
-            AppendLog("正在檢查資料庫結構…");
-
-        var (exitCode, stdout, stderr) = await RunNpmCommandCaptureAsync(projectRoot, "run db:schema-status").ConfigureAwait(true);
-        if (logToUi)
-        {
-            if (!string.IsNullOrWhiteSpace(stdout))
-                AppendLog(stdout.TrimEnd());
-            if (!string.IsNullOrWhiteSpace(stderr))
-                AppendLog(stderr.TrimEnd());
-        }
-
-        if (exitCode != 0)
-            return null;
-
-        return ParseSchemaStatus(stdout + "\n" + stderr);
-    }
-
-    private static SchemaMigrationStatus? ParseSchemaStatus(string output)
-    {
-        var lines = output
-            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(line => !string.IsNullOrWhiteSpace(line))
-            .Reverse();
-
-        foreach (var line in lines)
-        {
-            if (!line.StartsWith('{'))
-                continue;
-            try
-            {
-                return JsonSerializer.Deserialize<SchemaMigrationStatus>(line);
-            }
-            catch (JsonException)
-            {
-                // try previous line
-            }
-        }
-
-        return null;
-    }
-
-    private async Task<(int? ExitCode, string Stdout, string Stderr)> RunNpmCommandCaptureAsync(string workingDirectory, string npmArguments)
-    {
-        var node = FindNodeExe();
-        if (string.IsNullOrEmpty(node))
-            return (null, "", "找不到 node.exe");
-
-        var npmCmd = Path.Combine(Path.GetDirectoryName(node)!, "npm.cmd");
-        if (!File.Exists(npmCmd))
-            return (null, "", "找不到 npm.cmd");
-
-        try
-        {
-            var psi = new ProcessStartInfo
-            {
-                FileName = npmCmd,
-                Arguments = npmArguments,
-                WorkingDirectory = workingDirectory,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-                StandardOutputEncoding = Encoding.UTF8,
-                StandardErrorEncoding = Encoding.UTF8
-            };
-
-            using var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
-            var stdout = new StringBuilder();
-            var stderr = new StringBuilder();
-            proc.OutputDataReceived += (_, e) =>
-            {
-                if (e.Data != null)
-                    stdout.AppendLine(e.Data);
-            };
-            proc.ErrorDataReceived += (_, e) =>
-            {
-                if (e.Data != null)
-                    stderr.AppendLine(e.Data);
-            };
-
-            proc.Start();
-            proc.BeginOutputReadLine();
-            proc.BeginErrorReadLine();
-            await proc.WaitForExitAsync().ConfigureAwait(true);
-            return (proc.ExitCode, stdout.ToString(), stderr.ToString());
-        }
-        catch (Exception ex)
-        {
-            return (null, "", ex.Message);
-        }
-    }
-
-    private async Task MigrateLegacyAsync(string npmArguments, string title, string confirmMessage)
-    {
-        try
-        {
-            ValidateProjectRoot();
-        }
-        catch (InvalidOperationException ex)
-        {
-            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        var root = _projectRoot.Text.Trim();
-        var apiEnv = Path.Combine(root, "apps", "api", ".env");
-        if (!File.Exists(apiEnv))
-        {
-            MessageBox.Show(
-                this,
-                "找不到 apps\\api\\.env，無法連線資料庫。\n請先設定 DATABASE_URL 後再試。",
-                Text,
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
-            return;
-        }
-
-        if (MessageBox.Show(this, confirmMessage, title, MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2)
-            != DialogResult.Yes)
-            return;
-
-        if (IsAnyServiceRunning())
-        {
-            var stopFirst = MessageBox.Show(
-                this,
-                "目前有服務在執行中。轉換資料前建議先停止 API 與網頁服務；MySQL／資料庫會保持運行。\n\n是否現在停止應用服務？",
-                Text,
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Question,
-                MessageBoxDefaultButton.Button1);
-            if (stopFirst == DialogResult.Yes)
-                await StopApplicationServicesAsync().ConfigureAwait(true);
-        }
-
-        AppendLog($"開始{title}…");
-        var exitCode = await RunNpmCommandAsync(root, npmArguments).ConfigureAwait(true);
-        if (exitCode == 0)
-        {
-            MessageBox.Show(this, $"{title}完成。\n請至後台確認資料。", title, MessageBoxButtons.OK, MessageBoxIcon.Information);
-        }
-    }
-
-    private async Task ClearTransactionsAsync()
-    {
-        try
-        {
-            ValidateProjectRoot();
-        }
-        catch (InvalidOperationException ex)
-        {
-            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        var root = _projectRoot.Text.Trim();
-        var clearSql = Path.Combine(root, "database", "migrations", "019_clear_transaction_data_keep_masters.sql");
-        if (!File.Exists(clearSql))
-        {
-            MessageBox.Show(
-                this,
-                "找不到清空腳本：\n" + clearSql,
-                Text,
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
-            return;
-        }
-
-        var apiEnv = Path.Combine(root, "apps", "api", ".env");
-        if (!File.Exists(apiEnv))
-        {
-            MessageBox.Show(
-                this,
-                "找不到 apps\\api\\.env，無法連線資料庫。\n請先設定 DATABASE_URL 後再試。",
-                Text,
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
-            return;
-        }
-
-        var confirm = MessageBox.Show(
-            this,
-            "此操作將清空交易資料（訂單、配送、收空桶、服務單、庫存異動、帳款、支出單據等），\n"
-            + "並把庫存現量與空桶數歸零。\n\n"
-            + "會保留：客戶、送貨地址、商品、司機、車輛、使用者、\n"
-            + "地址分區、隸屬公司、支出類別、優惠活動、印刷標語等主檔／設定。\n\n"
-            + "清空前可先停止 API／網頁服務，但 MySQL／資料庫必須保持運行。\n\n"
-            + "此動作無法復原，建議先備份資料庫。\n\n"
-            + "確定要繼續嗎？",
-            "清空交易資料（保留主檔）",
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.Warning,
-            MessageBoxDefaultButton.Button2);
-        if (confirm != DialogResult.Yes)
-            return;
-
-        if (IsAnyServiceRunning())
-        {
-            var stopFirst = MessageBox.Show(
-                this,
-                "目前有服務在執行中。清空資料前建議先停止 API 與網頁服務；MySQL／資料庫會保持運行。\n\n是否現在停止應用服務？",
-                Text,
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Question,
-                MessageBoxDefaultButton.Button1);
-            if (stopFirst == DialogResult.Yes)
-                await StopApplicationServicesAsync().ConfigureAwait(true);
-        }
-
-        AppendLog("開始清空交易資料（保留主檔）…");
-        AppendLog("注意：清空資料需要 MySQL 保持運行；本啟動器不會停止資料庫服務。");
-        var exitCode = await RunNpmCommandAsync(root, "run db:clear-transactions").ConfigureAwait(true);
-        if (exitCode == 0)
-        {
-            MessageBox.Show(
-                this,
-                "交易資料已清空。\n\n客戶、商品、司機、使用者等主檔仍保留，可直接登入後台使用。",
-                "清空完成",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
-        }
-    }
-
-    private async Task ResetDataAsync()
-    {
-        try
-        {
-            ValidateProjectRoot();
-        }
-        catch (InvalidOperationException ex)
-        {
-            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        var root = _projectRoot.Text.Trim();
-        var resetSql = Path.Combine(root, "database", "migrations", "004_reset_data_keep_single_admin.sql");
-        if (!File.Exists(resetSql))
-        {
-            MessageBox.Show(
-                this,
-                "找不到清空腳本：\n" + resetSql,
-                Text,
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
-            return;
-        }
-
-        var apiEnv = Path.Combine(root, "apps", "api", ".env");
-        if (!File.Exists(apiEnv))
-        {
-            MessageBox.Show(
-                this,
-                "找不到 apps\\api\\.env，無法連線資料庫。\n請先設定 DATABASE_URL 後再試。",
-                Text,
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
-            return;
-        }
-
-        var confirm = MessageBox.Show(
-            this,
-            "此操作將清空所有業務資料（客戶、商品、訂單、配送、帳務、司機、車輛、使用者等）。\n"
-            + "清空後將無法登入，須再執行「轉換使用者資料」建立帳號。\n\n"
-            + "若只想清訂單／帳款並保留主檔，請改用「清空交易資料（保留主檔）」。\n\n"
-            + "清空前可先停止 API／網頁服務，但 MySQL／資料庫必須保持運行。\n\n"
-            + "此動作無法復原，建議先備份資料庫。\n\n"
-            + "確定要繼續嗎？",
-            "清空全部業務資料",
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.Warning,
-            MessageBoxDefaultButton.Button2);
-        if (confirm != DialogResult.Yes)
-            return;
-
-        if (IsAnyServiceRunning())
-        {
-            var stopFirst = MessageBox.Show(
-                this,
-                "目前有服務在執行中。清空資料前建議先停止 API 與網頁服務；MySQL／資料庫會保持運行。\n\n是否現在停止應用服務？",
-                Text,
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Question,
-                MessageBoxDefaultButton.Button1);
-            if (stopFirst == DialogResult.Yes)
-                await StopApplicationServicesAsync().ConfigureAwait(true);
-        }
-
-        AppendLog("開始清空全部業務資料（含使用者）…");
-        AppendLog("注意：清空資料需要 MySQL 保持運行；本啟動器不會停止資料庫服務。");
-        var exitCode = await RunNpmCommandAsync(root, "run db:reset").ConfigureAwait(true);
-        if (exitCode == 0)
-        {
-            MessageBox.Show(
-                this,
-                "業務資料已清空（含所有使用者）。\n\n請執行「轉換使用者資料」匯入帳號並建立 id=1 的 admin。\n完成後再啟動服務並登入後台。",
-                "清空完成",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
-        }
-    }
-
-    private void SetBusy(bool busy)
-    {
-        _uiBusy = busy;
-        _btnCheckLine.Enabled = !busy;
-        _btnBuild.Enabled = !busy;
-        _btnGitPull.Enabled = !busy;
-        _btnDeployUpdate.Enabled = !busy;
-        _btnPrisma.Enabled = !busy;
-        _btnClearTransactions.Enabled = !busy;
-        _btnResetData.Enabled = !busy;
-        _btnCheckSchema.Enabled = !busy;
-        _btnApplySchema.Enabled = !busy;
-        _btnMigrateZones.Enabled = !busy;
-        _btnMigrateCompanies.Enabled = !busy;
-        _btnMigrateCustomers.Enabled = !busy;
-        _btnMigrateUsers.Enabled = !busy;
-        _btnMigrateDrivers.Enabled = !busy;
-        _btnMigrateProducts.Enabled = !busy;
-        _btnBrowse.Enabled = !busy;
-        _btnBrowseNginx.Enabled = !busy && _chkProductionMode.Checked;
-        _chkProductionMode.Enabled = !busy;
-        _chkAdminDev.Enabled = !busy && !_chkProductionMode.Checked;
-        _chkDriverDev.Enabled = !busy && !_chkProductionMode.Checked;
-        _chkLiffDev.Enabled = !busy && !_chkProductionMode.Checked;
-        _btnStartNgrok.Enabled = !busy;
-        _btnStopNgrok.Enabled = !busy;
-        _btnOpenNgrokDashboard.Enabled = !busy;
-        _ngrokDomain.Enabled = !busy;
-        _chkStartNgrok.Enabled = !busy;
-        Cursor = busy ? Cursors.WaitCursor : Cursors.Default;
-        SyncStartStopButtons();
-    }
-
-    private async Task CheckHealthAsync()
-    {
-        var baseUrl = _apiBaseUrl.Text.Trim().TrimEnd('/');
-        if (!string.IsNullOrEmpty(baseUrl))
-        {
-            string text;
-            Color color;
-            try
-            {
-                using var resp = await _http.GetAsync(new Uri(new Uri(baseUrl), "/api/health")).ConfigureAwait(true);
-                if (resp.IsSuccessStatusCode)
-                {
-                    text = $"API 狀態：線上 ({(int)resp.StatusCode})";
-                    color = Color.DarkGreen;
-                }
-                else
-                {
-                    text = $"API 狀態：回應異常 ({(int)resp.StatusCode})";
-                    color = Color.DarkOrange;
-                }
-            }
-            catch
-            {
-                text = "API 狀態：離線或無法連線";
-                color = Color.DarkRed;
-            }
-
-            _healthLabel.Text = text;
-            _healthLabel.ForeColor = color;
-        }
-
-        try
-        {
-            var ngrokStatus = await NgrokHelper.QueryStatusAsync(_http).ConfigureAwait(true);
-            ApplyNgrokStatusToUi(ngrokStatus);
-            if (!_uiBusy)
-                SyncNgrokButtons();
-        }
-        catch
-        {
-            // ignore polling errors
-        }
-    }
-
-    private void ShowLineProductionCheck(bool requireBuiltDist)
-    {
-        try
-        {
-            ValidateProjectRoot();
-        }
-        catch (InvalidOperationException ex)
-        {
-            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        var check = LineProductionHelper.Check(_projectRoot.Text.Trim(), _liffUrl.Text.Trim(), requireBuiltDist);
-        foreach (var e in check.Errors)
-            AppendLogWarning("LINE 檢查：" + e);
-        foreach (var w in check.Warnings)
-            AppendLogWarning("LINE 檢查：" + w);
-        if (check.Ok && check.Warnings.Count == 0)
-            AppendLog("LINE 正式設定檢查通過。");
-
-        MessageBox.Show(
-            this,
-            check.FormatMessage()
-                + "\n\n設定完成後請：建置專案 → 升級結構（035/036）→ 啟動服務。\n"
-                + "LINE Developers：Webhook = 網站基底 URL + /api/line/webhook\n"
-                + "LIFF Endpoint = LIFF 訂水網址（通常 …/liff/）",
-            "檢查 LINE 正式設定",
-            MessageBoxButtons.OK,
-            check.Ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
-    }
-
-    /// <summary>
-    /// 正式模式部署 LINE 前確認。若有必須修正項目，詢問是否仍要繼續（方便只跑後台時略過）。
-    /// </summary>
-    private bool ConfirmLineProductionReady(bool requireBuiltDist, string actionLabel)
-    {
-        var check = LineProductionHelper.Check(_projectRoot.Text.Trim(), _liffUrl.Text.Trim(), requireBuiltDist);
-        if (check.Ok)
-        {
-            foreach (var w in check.Warnings)
-                AppendLogWarning("LINE：" + w);
-            return true;
-        }
-
-        foreach (var e in check.Errors)
-            AppendLogWarning("LINE：" + e);
-
-        var answer = MessageBox.Show(
-            this,
-            check.FormatMessage()
-                + $"\n\n若要正式上線 LINE 訂水，請先修正上述項目後再建置／啟動。\n"
-                + $"若本次「{actionLabel}」僅服務後台／司機端、暫不上 LINE，可選「是」繼續。\n\n"
-                + "是否仍要繼續？",
-            "LINE 正式設定尚未完成",
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.Warning,
-            MessageBoxDefaultButton.Button2);
-        return answer == DialogResult.Yes;
-    }
-
-    private async Task BuildForProductionAsync()
-    {
-        try
-        {
-            ValidateProjectRoot();
-        }
-        catch (InvalidOperationException ex)
-        {
-            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        if (_chkProductionMode.Checked && !ConfirmLineProductionReady(requireBuiltDist: false, actionLabel: "建置專案"))
-            return;
-
-        if (!_chkProductionMode.Checked)
-        {
-            await RunRootNpmCommandAsync("run build").ConfigureAwait(true);
-            return;
-        }
-
-        SetBusy(true);
-        try
-        {
-            var root = _projectRoot.Text.Trim();
-            if (!await BuildProductionCoreAsync(root).ConfigureAwait(true))
-            {
-                MessageBox.Show(this, "建置失敗，請查看下方日誌。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-            MessageBox.Show(
-                this,
-                "建置完成（含 LIFF 訂水靜態檔）。\n可按「啟動服務」上線。",
-                Text,
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
-        }
-        catch (Exception ex)
-        {
-            AppendLog("建置錯誤：" + ex.Message);
-            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
-        finally
-        {
-            SetBusy(false);
-        }
-    }
-
-    private static void OpenUrl(string url)
-    {
-        if (string.IsNullOrWhiteSpace(url))
-            return;
-        try
-        {
-            Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
-        }
-        catch
-        {
-            // ignore
-        }
-    }
-
-    private void AppendLog(string line)
-    {
-        AppendColoredLog(line, null);
-    }
-
-    private void AppendLogWarning(string line)
-    {
-        AppendColoredLog(line, Color.DarkGoldenrod);
-    }
+    private void AppendLog(string line) => AppendColoredLog(line, null);
+    private void AppendLogWarning(string line) => AppendColoredLog(line, Color.FromArgb(251, 191, 36));
 
     private void AppendColoredLog(string line, Color? color)
     {
-        if (IsDisposed)
+        if (_closing || IsDisposed)
             return;
         if (InvokeRequired)
         {
             BeginInvoke(() => AppendColoredLog(line, color));
             return;
         }
-
+        var normalized = line.Replace("\r\n", "\n").TrimEnd();
+        if (normalized.Length == 0)
+            return;
         var stamp = DateTime.Now.ToString("HH:mm:ss");
-        var defaultColor = _log.ForeColor;
+        var previous = _log.SelectionColor;
         if (color.HasValue)
             _log.SelectionColor = color.Value;
-        _log.AppendText($"[{stamp}] {line}\n");
-        if (color.HasValue)
-            _log.SelectionColor = defaultColor;
+        _log.AppendText($"[{stamp}] {normalized}\n");
+        _log.SelectionColor = previous;
         _log.SelectionStart = _log.TextLength;
         _log.ScrollToCaret();
+        _recentLog.Text = $"[{stamp}] {normalized.Replace('\n', ' ')}";
     }
 
-    /// <summary>以非同步方式將動作排回 UI 執行緒，避免與 Process.Dispose 互相 Invoke 造成死結。</summary>
     private void ScheduleOnUiThread(Action action)
     {
-        if (IsDisposed)
+        if (_closing || IsDisposed)
             return;
         if (InvokeRequired)
             BeginInvoke(action);
@@ -2806,13 +1532,257 @@ internal sealed class MainForm : Form
             action();
     }
 
+    private static string Compact(string value)
+    {
+        var text = value.Replace("\r", " ").Replace("\n", " ").Trim();
+        return text.Length <= 120 ? text : text[..117] + "…";
+    }
+
+    private static void OpenUrl(string url)
+    {
+        if (Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri))
+            Process.Start(new ProcessStartInfo { FileName = uri.ToString(), UseShellExecute = true });
+    }
+
+    private void BrowseFolder(TextBox target, string description)
+    {
+        using var dialog = new FolderBrowserDialog
+        {
+            InitialDirectory = Directory.Exists(target.Text) ? target.Text : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            UseDescriptionForTitle = true,
+            Description = description
+        };
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+            target.Text = dialog.SelectedPath;
+    }
+
+    private static TabPage NewTab(string text) => new(text) { BackColor = UiTheme.Background };
+
+    private static Panel NewScrollPanel() => new()
+    {
+        Dock = DockStyle.Fill,
+        AutoScroll = true,
+        BackColor = UiTheme.Background,
+        Padding = new Padding(20)
+    };
+
+    private static TableLayoutPanel NewContentTable(int rows)
+    {
+        var table = new TableLayoutPanel
+        {
+            AutoSize = true,
+            Dock = DockStyle.Top,
+            ColumnCount = 1,
+            RowCount = rows,
+            BackColor = UiTheme.Background,
+            Margin = Padding.Empty
+        };
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        return table;
+    }
+
+    private static void AddContentRow(TableLayoutPanel table, Control control)
+    {
+        control.Dock = DockStyle.Fill;
+        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        table.Controls.Add(control, 0, table.Controls.Count);
+    }
+
+    private static Control PageHeader(string title, string subtitle)
+    {
+        var panel = new Panel { Height = 74, Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 12) };
+        panel.Controls.Add(new Label
+        {
+            Text = subtitle,
+            AutoSize = true,
+            Location = new Point(2, 43),
+            ForeColor = UiTheme.Muted
+        });
+        panel.Controls.Add(UiTheme.Heading(title));
+        return panel;
+    }
+
+    private static Control SectionTitle(string title, string subtitle)
+    {
+        var panel = new Panel { Height = 58, Dock = DockStyle.Fill, Margin = new Padding(0, 8, 0, 2) };
+        panel.Controls.Add(new Label
+        {
+            Text = subtitle,
+            AutoSize = true,
+            Location = new Point(2, 31),
+            ForeColor = UiTheme.Muted
+        });
+        panel.Controls.Add(new Label
+        {
+            Text = title,
+            AutoSize = true,
+            Font = new Font("Segoe UI", 13f, FontStyle.Bold),
+            ForeColor = UiTheme.Text
+        });
+        return panel;
+    }
+
+    private static Panel BuildToolCard(string title, string description, Control actions, Control? footer = null)
+    {
+        var card = UiTheme.Card();
+        card.Dock = DockStyle.Fill;
+        card.AutoSize = true;
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1 };
+        layout.Controls.Add(new Label
+        {
+            Text = title,
+            AutoSize = true,
+            Font = new Font("Segoe UI", 13f, FontStyle.Bold),
+            ForeColor = UiTheme.Text
+        });
+        layout.Controls.Add(new Label
+        {
+            Text = description,
+            AutoSize = true,
+            MaximumSize = new Size(900, 0),
+            ForeColor = UiTheme.Muted,
+            Margin = new Padding(0, 6, 0, 8)
+        });
+        actions.Dock = DockStyle.Fill;
+        layout.Controls.Add(actions);
+        if (footer is not null)
+        {
+            footer.Margin = new Padding(0, 10, 0, 0);
+            layout.Controls.Add(footer);
+        }
+        card.Controls.Add(layout);
+        return card;
+    }
+
+    private static FlowLayoutPanel NewButtonRow(params Control[] controls)
+    {
+        var panel = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            WrapContents = true,
+            FlowDirection = FlowDirection.LeftToRight,
+            Margin = Padding.Empty
+        };
+        panel.Controls.AddRange(controls);
+        return panel;
+    }
+
+    private static void AddSettingRow(TableLayoutPanel form, int row, string label, TextBox input, Button? suffix)
+    {
+        form.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        form.Controls.Add(new Label
+        {
+            Text = label,
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            ForeColor = UiTheme.Text,
+            Margin = new Padding(0, 12, 12, 12)
+        }, 0, row);
+        input.Dock = DockStyle.Fill;
+        input.Margin = new Padding(0, 7, 8, 7);
+        form.Controls.Add(input, 1, row);
+        if (suffix is not null)
+            form.Controls.Add(suffix, 2, row);
+        else
+            form.SetColumnSpan(input, 2);
+    }
+
+    private static ServiceCard CreateServiceCard(string name, string subtitle)
+    {
+        var root = UiTheme.Card();
+        root.Dock = DockStyle.Fill;
+        root.Height = 176;
+        var title = new Label
+        {
+            Text = name,
+            AutoSize = true,
+            Font = new Font("Segoe UI", 13f, FontStyle.Bold),
+            ForeColor = UiTheme.Text,
+            Location = new Point(18, 16)
+        };
+        var type = new Label { Text = subtitle, AutoSize = true, ForeColor = UiTheme.Muted, Location = new Point(19, 45) };
+        var dot = new Label
+        {
+            Text = "●",
+            AutoSize = true,
+            ForeColor = UiTheme.Unknown,
+            Font = new Font("Segoe UI", 13f),
+            Location = new Point(18, 72)
+        };
+        var status = new Label
+        {
+            Text = "尚未檢查",
+            AutoSize = true,
+            Font = new Font("Segoe UI", 10f, FontStyle.Bold),
+            ForeColor = UiTheme.Unknown,
+            Location = new Point(43, 75)
+        };
+        var detail = new Label
+        {
+            Text = "等待狀態更新",
+            AutoEllipsis = true,
+            ForeColor = UiTheme.Muted,
+            Location = new Point(20, 103),
+            Size = new Size(290, 22),
+            Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top
+        };
+        var start = UiTheme.Button("啟動");
+        start.Location = new Point(18, 132);
+        start.MinimumSize = new Size(86, 32);
+        var stop = UiTheme.Button("停止");
+        stop.Location = new Point(112, 132);
+        stop.MinimumSize = new Size(86, 32);
+        root.Controls.AddRange([title, type, dot, status, detail, start, stop]);
+        return new ServiceCard { Root = root, Dot = dot, Status = status, Detail = detail, Start = start, Stop = stop };
+    }
+
+    private static EndpointCard CreateEndpointCard(string name)
+    {
+        var root = UiTheme.Card();
+        root.Dock = DockStyle.Fill;
+        root.Height = 145;
+        var title = new Label
+        {
+            Text = name,
+            AutoSize = true,
+            Font = new Font("Segoe UI", 12f, FontStyle.Bold),
+            ForeColor = UiTheme.Text,
+            Location = new Point(18, 15)
+        };
+        var dot = new Label { Text = "●", AutoSize = true, ForeColor = UiTheme.Unknown, Location = new Point(18, 48) };
+        var status = new Label { Text = "尚未檢查", AutoSize = true, ForeColor = UiTheme.Unknown, Location = new Point(39, 48) };
+        var detail = new Label
+        {
+            Text = "由共用 Nginx 提供",
+            AutoEllipsis = true,
+            ForeColor = UiTheme.Muted,
+            Location = new Point(18, 73),
+            Size = new Size(290, 20)
+        };
+        var open = UiTheme.Button("開啟網站");
+        open.Location = new Point(18, 100);
+        root.Controls.AddRange([title, dot, status, detail, open]);
+        return new EndpointCard { Root = root, Dot = dot, Status = status, Detail = detail, Open = open };
+    }
+
+    private static string MigrateZonesConfirmText() =>
+        "將從舊庫 database.area 匯入 address_zones，並依 customer.area_id 重連客戶區域。\n舊庫只讀。確定繼續？";
+    private static string MigrateCompaniesConfirmText() =>
+        "將從舊庫 customer.company 匯入 affiliated_companies，並重建新庫隸屬公司。\n舊庫只讀。確定繼續？";
+    private static string MigrateCustomersConfirmText() =>
+        "將從舊庫 customer 匯入 customers 與 delivery_addresses。\n請先轉換地址分區及隸屬公司。舊庫只讀。確定繼續？";
+    private static string MigrateUsersConfirmText() =>
+        "將重建 users / drivers，建立系統管理員後匯入舊庫 personnel_list。\n舊庫只讀。確定繼續？";
+    private static string MigrateDriversConfirmText() =>
+        "將重建司機帳號並從舊庫 driver 匯入，預設密碼為 888888。\n舊庫只讀。確定繼續？";
+    private static string MigrateProductsConfirmText() =>
+        "將重建 products 與庫存並匯入舊庫實體商品；已有單據時會拒絕執行。\n舊庫只讀。確定繼續？";
+
     private sealed class SchemaMigrationStatus
     {
         public bool ok { get; set; }
         public string[] applied { get; set; } = [];
         public string[] pending { get; set; } = [];
-        public string? latest { get; set; }
         public string? message { get; set; }
-        public string[]? appliedNow { get; set; }
     }
 }
