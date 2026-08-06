@@ -122,10 +122,10 @@ function paymentMethodLabel(method: string): string {
   }
 }
 
-function fmtDateTime(iso: string | null | undefined): string {
+function fmtPaidAtDate(iso: string | null | undefined): string {
   if (!iso) return "—";
   try {
-    return new Date(iso).toLocaleString("zh-TW", { hour12: false });
+    return new Date(iso).toLocaleDateString("zh-TW");
   } catch {
     return iso;
   }
@@ -153,7 +153,9 @@ export default function BillingArPage() {
 
   const [amount, setAmount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("transfer");
+  const [receiptPaidAtYmd, setReceiptPaidAtYmd] = useState(() => todayLocalYmd());
   const [topupAmount, setTopupAmount] = useState("");
+  const [topupPaidAtYmd, setTopupPaidAtYmd] = useState(() => todayLocalYmd());
   const [topupInvoiceMode, setTopupInvoiceMode] = useState<"none" | "tax_exclusive" | "tax_inclusive">("none");
   const [applyOpenItemId, setApplyOpenItemId] = useState("");
   const [applyAmount, setApplyAmount] = useState("");
@@ -338,7 +340,7 @@ export default function BillingArPage() {
       const res = await fetch("/api/ar/receipt-vouchers", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ customerId, amount: v, paymentMethod }),
+        body: JSON.stringify({ customerId, amount: v, paymentMethod, paidAtYmd: receiptPaidAtYmd }),
       });
       const payload = await res.json();
       if (!res.ok || !payload.ok) {
@@ -373,6 +375,7 @@ export default function BillingArPage() {
           amount: v,
           note: "AR 作業台預收儲值",
           invoiceMode: topupInvoiceMode,
+          paidAtYmd: topupPaidAtYmd,
         }),
       });
       const payload = await res.json();
@@ -659,9 +662,20 @@ export default function BillingArPage() {
             <div className="ar-workspace__panel">
               <div className="ar-panel-block">
                 <h3 className="ar-panel-block__title">收款沖帳（FIFO）</h3>
-                <p className="card__hint">客戶實際付款時使用；系統依到期日自動沖銷全部未清應收。</p>
+                <p className="card__hint">
+                  客戶實際付款時使用；請填<strong>收款／匯款日</strong>（可早於今日，例如補登匯款）。系統依到期日自動沖銷全部未清應收。
+                </p>
                 <form onSubmit={receiveAllByFifo} className="form-grid form-grid--wide">
                   <div className="form-row-2">
+                    <div className="field">
+                      <span>收款／匯款日</span>
+                      <input
+                        type="date"
+                        value={receiptPaidAtYmd}
+                        onChange={(e) => setReceiptPaidAtYmd(e.target.value)}
+                        required
+                      />
+                    </div>
                     <div className="field">
                       <span>收款方式</span>
                       <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
@@ -671,6 +685,8 @@ export default function BillingArPage() {
                         <option value="other">其他</option>
                       </select>
                     </div>
+                  </div>
+                  <div className="form-row-2">
                     <div className="field">
                       <span>收款金額</span>
                       <input type="number" min={0} step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
@@ -747,7 +763,7 @@ export default function BillingArPage() {
                         <th>方式</th>
                         <th className="num">金額</th>
                         <th>狀態</th>
-                        <th>時間</th>
+                        <th>收款／匯款日</th>
                         <th>備註</th>
                       </tr>
                     </thead>
@@ -766,7 +782,7 @@ export default function BillingArPage() {
                             <td>{paymentMethodLabel(v.paymentMethod)}</td>
                             <td className="num">{moneyText(v.totalAmount)}</td>
                             <td>{arStatusLabel(v.status)}</td>
-                            <td className="cell-nowrap">{fmtDateTime(v.paidAt ?? v.createdAt)}</td>
+                            <td className="cell-nowrap">{fmtPaidAtDate(v.paidAt ?? v.createdAt)}</td>
                             <td>
                               <small className="text-muted">{v.note ?? "—"}</small>
                             </td>
@@ -784,7 +800,7 @@ export default function BillingArPage() {
                   <table className="data-table data-table--compact">
                     <thead>
                       <tr>
-                        <th>時間</th>
+                        <th>收款／匯款日</th>
                         <th className="num">金額</th>
                         <th>方式</th>
                         <th>訂單</th>
@@ -801,7 +817,7 @@ export default function BillingArPage() {
                       ) : (
                         payments.map((p) => (
                           <tr key={p.id}>
-                            <td className="cell-nowrap">{fmtDateTime(p.paidAt)}</td>
+                            <td className="cell-nowrap">{fmtPaidAtDate(p.paidAt)}</td>
                             <td className="num">{moneyText(p.amount)}</td>
                             <td>{paymentMethodLabel(p.paymentMethod)}</td>
                             <td className="mono-text">{p.orderNo ?? "—"}</td>
@@ -1040,9 +1056,20 @@ export default function BillingArPage() {
                 <form onSubmit={topupPrepayment} className="form-grid form-grid--wide">
                   <div className="form-row-2">
                     <div className="field">
+                      <span>收款／匯款日</span>
+                      <input
+                        type="date"
+                        value={topupPaidAtYmd}
+                        onChange={(e) => setTopupPaidAtYmd(e.target.value)}
+                        required
+                      />
+                    </div>
+                    <div className="field">
                       <span>儲值金額</span>
                       <input type="number" min={0} step="0.01" value={topupAmount} onChange={(e) => setTopupAmount(e.target.value)} />
                     </div>
+                  </div>
+                  <div className="form-row-2">
                     <div className="field">
                       <span>發票</span>
                       <select
@@ -1100,7 +1127,7 @@ export default function BillingArPage() {
                         <th>單號</th>
                         <th>類型</th>
                         <th className="num">金額</th>
-                        <th>時間</th>
+                        <th>收款／匯款日</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1118,7 +1145,7 @@ export default function BillingArPage() {
                               <td className="mono-text">{v.voucherNo}</td>
                               <td>{voucherTypeLabel(v.voucherType)}</td>
                               <td className="num">{moneyText(v.totalAmount)}</td>
-                              <td className="cell-nowrap">{fmtDateTime(v.paidAt ?? v.createdAt)}</td>
+                              <td className="cell-nowrap">{fmtPaidAtDate(v.paidAt ?? v.createdAt)}</td>
                             </tr>
                           ))
                       )}

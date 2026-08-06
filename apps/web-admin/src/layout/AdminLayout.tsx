@@ -12,9 +12,7 @@ const navGroups: { id: string; title: string; items: { to: string; label: string
     id: "orders",
     title: "訂單作業",
     items: [
-      { to: "/orders/new", label: "新增訂單" },
-      { to: "/orders/patrol", label: "產生巡查單" },
-      { to: "/orders/liff-review", label: "確認 LINE 訂單" },
+      { to: "/orders/new", label: "建立訂單" },
       { to: "/orders/assign", label: "分配訂單" },
       { to: "/orders/proxy-report", label: "代登配送回報" },
       { to: "/orders/complete", label: "核銷訂單" },
@@ -52,6 +50,7 @@ const navGroups: { id: string; title: string; items: { to: string; label: string
     items: [
       { to: "/reports/daily", label: "日報表" },
       { to: "/reports/monthly", label: "月報表" },
+      { to: "/reports/customer-lifecycle", label: "客戶增減" },
       { to: "/reports/driver-daily", label: "司機日收款核對" },
       { to: "/orders/floor-bonus", label: "司機薪資統計" },
       { to: "/reports/billing-ar", label: "AR 沖帳與稽核" },

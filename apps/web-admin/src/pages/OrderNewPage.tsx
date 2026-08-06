@@ -214,7 +214,12 @@ function lineFieldKey(rowId: string, field: OrderLineField): string {
   return `${rowId}-${field}`;
 }
 
-export default function OrderNewPage() {
+type OrderNewPageProps = {
+  /** 嵌入「建立訂單」分頁殼層時略過外層 card／hero */
+  embedded?: boolean;
+};
+
+export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
   const { customers, products, saving, formMessage, form, setForm, onSubmitCreateOrder, selectedCustomer, lastOrderSlipForPrint } =
     useDashboard();
   const [billingSummary, setBillingSummary] = useState<CustomerBillingSummary | null>(null);
@@ -726,21 +731,7 @@ export default function OrderNewPage() {
     });
   };
 
-  return (
-    <section className="card order-new-page order-new-page--pro">
-      <header className="order-new__hero">
-        <div className="order-new__hero-top">
-          <div className="order-new__hero-titles">
-            <span className="order-new__badge">建立訂單</span>
-            <h2 className="order-new__page-title">新增訂單</h2>
-          </div>
-        </div>
-        <p className="order-new__hero-lead">
-          區塊 <strong>①②③</strong> 為客戶與參考資訊；區塊 <strong>④</strong> 為商品明細。左欄輸入<strong>6 碼編號</strong>
-          或電話／名稱即自動匹配，右欄可對照歷史叫貨。
-        </p>
-      </header>
-
+  const formBody = (
       <form onSubmit={onSubmitCreateOrder} className="order-new__form order-new__form--layout" onKeyDown={onOrderLinesKeyDown}>
         <div className="order-new__workspace" aria-label="訂單資料分區">
           <section className="order-new__zone order-new__zone--tools" aria-labelledby="order-new-zone-tools-title">
@@ -1349,6 +1340,25 @@ export default function OrderNewPage() {
         </div>
         </div>
       </form>
+  );
+
+  if (embedded) return formBody;
+
+  return (
+    <section className="card order-new-page order-new-page--pro">
+      <header className="order-new__hero">
+        <div className="order-new__hero-top">
+          <div className="order-new__hero-titles">
+            <span className="order-new__badge">建立訂單</span>
+            <h2 className="order-new__page-title">新增訂單</h2>
+          </div>
+        </div>
+        <p className="order-new__hero-lead">
+          區塊 <strong>①②③</strong> 為客戶與參考資訊；區塊 <strong>④</strong> 為商品明細。左欄輸入<strong>6 碼編號</strong>
+          或電話／名稱即自動匹配，右欄可對照歷史叫貨。
+        </p>
+      </header>
+      {formBody}
     </section>
   );
 }

@@ -24,6 +24,8 @@
   --nav-orders-bg: rgba(15, 118, 110, 0.09);
   --nav-barrel: #0891b2;
   --nav-barrel-bg: rgba(8, 145, 178, 0.1);
+  --nav-service: #4f46e5;
+  --nav-service-bg: rgba(79, 70, 229, 0.1);
   --nav-data: #2563eb;
   --nav-data-bg: rgba(37, 99, 235, 0.08);
   --nav-expenses: #be185d;
@@ -421,6 +423,11 @@
   background: linear-gradient(145deg, rgba(5, 150, 105, 0.2) 0%, rgba(15, 23, 42, 0.65) 100%);
 }
 
+.admin-nav__accordion--service-tickets {
+  border-color: rgba(129, 140, 248, 0.28);
+  background: linear-gradient(145deg, rgba(79, 70, 229, 0.24) 0%, rgba(15, 23, 42, 0.65) 100%);
+}
+
 .admin-nav__accordion--data {
   border-color: rgba(96, 165, 250, 0.22);
   background: linear-gradient(145deg, rgba(37, 99, 235, 0.2) 0%, rgba(15, 23, 42, 0.65) 100%);
@@ -506,6 +513,11 @@
   color: #6ee7b7;
 }
 
+.admin-nav__accordion--service-tickets .admin-nav__accordion-head--route-active,
+.admin-nav__accordion--service-tickets .admin-nav__accordion-head--open {
+  color: #a5b4fc;
+}
+
 .admin-nav__accordion--data .admin-nav__accordion-head--route-active,
 .admin-nav__accordion--data .admin-nav__accordion-head--open {
   color: #93c5fd;
@@ -553,6 +565,10 @@
 
 .admin-nav__accordion--barrel-pickup .admin-nav__chevron--open {
   color: #67e8f9;
+}
+
+.admin-nav__accordion--service-tickets .admin-nav__chevron--open {
+  color: #a5b4fc;
 }
 
 .admin-nav__accordion--data .admin-nav__chevron--open {
@@ -608,6 +624,11 @@
 .admin-nav__accordion--barrel-pickup .admin-nav__sublist {
   background: linear-gradient(180deg, rgba(5, 150, 105, 0.14) 0%, rgba(15, 23, 42, 0.85) 100%);
   border-top-color: rgba(52, 211, 153, 0.2);
+}
+
+.admin-nav__accordion--service-tickets .admin-nav__sublist {
+  background: linear-gradient(180deg, rgba(79, 70, 229, 0.16) 0%, rgba(15, 23, 42, 0.85) 100%);
+  border-top-color: rgba(129, 140, 248, 0.24);
 }
 
 .admin-nav__accordion--data .admin-nav__sublist {
@@ -692,6 +713,13 @@
   color: #5eead4;
   border-left-color: #2dd4bf;
   background: linear-gradient(90deg, rgba(45, 212, 191, 0.2) 0%, rgba(15, 23, 42, 0.4) 100%);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+
+.admin-nav__accordion--service-tickets .admin-nav__sublink--active {
+  color: #a5b4fc;
+  border-left-color: #818cf8;
+  background: linear-gradient(90deg, rgba(99, 102, 241, 0.24) 0%, rgba(15, 23, 42, 0.4) 100%);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
 }
 
@@ -2253,6 +2281,33 @@
 .data-table--compact td {
   padding: 0.5rem 0.65rem;
   vertical-align: top;
+}
+
+.master-table {
+  min-width: 0;
+}
+
+.data-table.master-table th,
+.data-table.master-table td {
+  padding: 0.38rem 0.65rem;
+  vertical-align: middle;
+}
+
+.master-table__actions-col {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.master-table__actions {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.master-table__actions .btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .cell-datetime {
@@ -4844,6 +4899,284 @@
   line-height: 1.45;
 }
 
+/* 建立訂單：巡查單／LINE 確認分頁 */
+.order-create-page.order-new-page {
+  overflow: visible;
+}
+
+.order-create-page.order-new-page--pro.card {
+  overflow: visible;
+}
+
+.order-create-panel {
+  gap: 1rem;
+}
+
+.order-new__form--layout.order-create-panel {
+  gap: 1rem;
+}
+
+.order-create-panel > .order-new__zone--lines {
+  margin-top: 0;
+}
+
+.order-create-panel__week-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.65rem 0.85rem;
+}
+
+.order-create-panel__week-field {
+  flex: 0 1 16rem;
+  min-width: 12rem;
+  margin: 0;
+}
+
+.order-create-panel__week-field label {
+  display: block;
+  margin-bottom: 0.28rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.order-create-panel__field-hint {
+  margin: 0.35rem 0 0;
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.order-create-panel__week-chip {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  width: fit-content;
+  margin: 0;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--bg-app) 70%, #fff);
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  border-radius: 999px;
+}
+
+.order-create-panel__week-chip strong {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.order-create-panel__stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+@media (max-width: 520px) {
+  .order-create-panel__stats {
+    grid-template-columns: 1fr;
+  }
+}
+
+.order-create-panel__stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.75rem 0.85rem;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  background: linear-gradient(180deg, #fafbfc 0%, #ffffff 100%);
+}
+
+.order-create-panel__stat--accent {
+  border-color: rgba(15, 118, 110, 0.28);
+  background: linear-gradient(180deg, rgba(204, 251, 241, 0.45) 0%, #ffffff 100%);
+}
+
+.order-create-panel__stat-value {
+  font-size: 1.35rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  color: var(--text);
+}
+
+.order-create-panel__stat--accent .order-create-panel__stat-value {
+  color: #0f766e;
+}
+
+.order-create-panel__stat-label {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.order-create-panel__note {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.order-create-panel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.55rem;
+}
+
+.order-create-panel__created {
+  padding-top: 0.15rem;
+}
+
+.order-create-panel__created-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.order-create-panel__created-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.45rem 0.75rem;
+  padding: 0.45rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: var(--bg-card);
+  font-size: 0.8125rem;
+}
+
+.order-create-panel__zone-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.order-create-panel__table-wrap {
+  margin: 0;
+}
+
+.order-create-panel__table {
+  min-width: 640px;
+}
+
+.order-create-panel__table--liff {
+  min-width: 720px;
+}
+
+.order-create-panel__table td {
+  vertical-align: top;
+}
+
+.order-create-panel__cell-date {
+  white-space: nowrap;
+}
+
+.order-create-panel__cell-customer {
+  min-width: 10rem;
+  max-width: 18rem;
+}
+
+.order-create-panel__cell-order {
+  width: 11rem;
+  max-width: 13rem;
+}
+
+.order-create-panel__cell-goods {
+  max-width: 10rem;
+  font-size: 0.8125rem;
+}
+
+.order-create-panel__cell-amt {
+  white-space: nowrap;
+}
+
+.order-create-panel__cust-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem;
+}
+
+.order-create-panel__cust-code {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.order-create-panel__sub {
+  font-size: 0.78rem;
+  line-height: 1.35;
+  margin-top: 0.15rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.order-create-panel__remark {
+  margin-top: 0.3rem;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  color: var(--text-secondary);
+}
+
+.order-create-panel__skip {
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.order-create-panel__order-no {
+  display: block;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.75rem;
+}
+
+.order-create-panel__order-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  margin-top: 0.35rem;
+}
+
+.order-create-panel__order-meta .badge {
+  white-space: nowrap;
+}
+
+.order-create-panel__col-actions {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.order-create-panel__row-actions {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.order-create-panel__footnote {
+  margin: 0.15rem 0 0;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
 /* 司機薪資：費率設定區塊 */
 .payroll-rates {
   display: flex;
@@ -5977,6 +6310,17 @@
   line-height: 1.35;
 }
 
+.order-assign__pick-addr {
+  margin-top: 0.2rem;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: var(--text);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
 .order-assign__selected-order {
   margin-top: 0.65rem;
   padding: 0.75rem 0.85rem;
@@ -6220,6 +6564,7 @@ body {
 .admin-nav__accordion:hover,
 .admin-nav__accordion--orders,
 .admin-nav__accordion--barrel-pickup,
+.admin-nav__accordion--service-tickets,
 .admin-nav__accordion--data,
 .admin-nav__accordion--expenses,
 .admin-nav__accordion--reports,
@@ -6259,6 +6604,7 @@ body {
 .admin-nav__sublist,
 .admin-nav__accordion--orders .admin-nav__sublist,
 .admin-nav__accordion--barrel-pickup .admin-nav__sublist,
+.admin-nav__accordion--service-tickets .admin-nav__sublist,
 .admin-nav__accordion--data .admin-nav__sublist,
 .admin-nav__accordion--expenses .admin-nav__sublist,
 .admin-nav__accordion--reports .admin-nav__sublist,
@@ -6279,6 +6625,7 @@ body {
 .admin-nav__sublink--active,
 .admin-nav__accordion--orders .admin-nav__sublink--active,
 .admin-nav__accordion--barrel-pickup .admin-nav__sublink--active,
+.admin-nav__accordion--service-tickets .admin-nav__sublink--active,
 .admin-nav__accordion--data .admin-nav__sublink--active,
 .admin-nav__accordion--expenses .admin-nav__sublink--active,
 .admin-nav__accordion--reports .admin-nav__sublink--active,
@@ -6450,6 +6797,34 @@ body {
   font-size: 0.86rem;
 }
 
+.data-table.master-table {
+  min-width: 0;
+}
+
+.data-table.master-table th,
+.data-table.master-table td {
+  padding: 0.36rem 0.6rem;
+  vertical-align: middle;
+}
+
+.data-table.master-table .master-table__actions-col {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.data-table.master-table .master-table__actions {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.data-table.master-table .master-table__actions .btn {
+  flex: 0 0 auto;
+  padding: 0.28rem 0.55rem;
+  white-space: nowrap;
+}
+
 .data-table tbody tr:hover td {
   background: #fbfcfd;
 }
@@ -6584,6 +6959,8 @@ body {
   --nav-orders-bg: #e0f5f1;
   --nav-barrel: #0e7fa0;
   --nav-barrel-bg: #dcf3fb;
+  --nav-service: #5b5bd6;
+  --nav-service-bg: #ececfb;
   --nav-data: #256fc2;
   --nav-data-bg: #e5f0fb;
   --nav-expenses: #b44d7a;
@@ -6679,6 +7056,12 @@ body,
   border-color: rgba(14, 127, 160, 0.18);
 }
 
+.admin-nav__accordion--service-tickets .admin-nav__accordion-head {
+  color: var(--nav-service) !important;
+  background: var(--nav-service-bg) !important;
+  border-color: rgba(91, 91, 214, 0.18);
+}
+
 .admin-nav__accordion--data .admin-nav__accordion-head {
   color: var(--nav-data) !important;
   background: var(--nav-data-bg) !important;
@@ -6721,6 +7104,13 @@ body,
 .admin-nav__accordion--barrel-pickup .admin-nav__accordion-head--route-active {
   background: #cfeaf5 !important;
   box-shadow: inset 0 0 0 1px rgba(14, 127, 160, 0.12);
+}
+
+.admin-nav__accordion--service-tickets .admin-nav__accordion-head:hover,
+.admin-nav__accordion--service-tickets .admin-nav__accordion-head--open,
+.admin-nav__accordion--service-tickets .admin-nav__accordion-head--route-active {
+  background: #dddcf8 !important;
+  box-shadow: inset 0 0 0 1px rgba(91, 91, 214, 0.12);
 }
 
 .admin-nav__accordion--data .admin-nav__accordion-head:hover,
@@ -6772,6 +7162,12 @@ body,
   color: var(--nav-barrel);
   background: var(--nav-barrel-bg);
   box-shadow: inset 4px 0 0 var(--nav-barrel);
+}
+
+.admin-nav__accordion--service-tickets .admin-nav__sublink--active {
+  color: var(--nav-service);
+  background: var(--nav-service-bg);
+  box-shadow: inset 4px 0 0 var(--nav-service);
 }
 
 .admin-nav__accordion--data .admin-nav__sublink--active {
@@ -7205,6 +7601,8 @@ body,
   --nav-orders-bg: rgba(33, 199, 177, 0.16);
   --nav-barrel: #5ad0ec;
   --nav-barrel-bg: rgba(56, 189, 224, 0.17);
+  --nav-service: #a5b4fc;
+  --nav-service-bg: rgba(99, 102, 241, 0.18);
   --nav-data: #73b7ff;
   --nav-data-bg: rgba(80, 151, 230, 0.16);
   --nav-expenses: #ff8ec0;
@@ -7293,6 +7691,12 @@ body,
   box-shadow: inset 4px 0 0 var(--nav-barrel);
 }
 
+:root[data-theme="dark"] .admin-nav__accordion--service-tickets .admin-nav__sublink--active {
+  color: var(--nav-service);
+  background: var(--nav-service-bg);
+  box-shadow: inset 4px 0 0 var(--nav-service);
+}
+
 :root[data-theme="dark"] .admin-nav__accordion--data .admin-nav__sublink--active {
   color: var(--nav-data);
   background: var(--nav-data-bg);
@@ -7333,6 +7737,11 @@ body,
   background: var(--nav-barrel-bg) !important;
 }
 
+:root[data-theme="dark"] .admin-nav__accordion--service-tickets .admin-nav__accordion-head {
+  color: var(--nav-service) !important;
+  background: var(--nav-service-bg) !important;
+}
+
 :root[data-theme="dark"] .admin-nav__accordion--data .admin-nav__accordion-head {
   color: var(--nav-data) !important;
   background: var(--nav-data-bg) !important;
@@ -7360,6 +7769,7 @@ body,
 
 :root[data-theme="dark"] .admin-nav__accordion--orders .admin-nav__accordion-head,
 :root[data-theme="dark"] .admin-nav__accordion--barrel-pickup .admin-nav__accordion-head,
+:root[data-theme="dark"] .admin-nav__accordion--service-tickets .admin-nav__accordion-head,
 :root[data-theme="dark"] .admin-nav__accordion--data .admin-nav__accordion-head,
 :root[data-theme="dark"] .admin-nav__accordion--expenses .admin-nav__accordion-head,
 :root[data-theme="dark"] .admin-nav__accordion--reports .admin-nav__accordion-head,
@@ -7679,6 +8089,30 @@ body,
 
 :root[data-theme="dark"] .order-assign-status {
   background: linear-gradient(185deg, #071017 0%, #0b141c 42%, #091119 100%);
+}
+
+:root[data-theme="dark"] .order-create-panel__stat {
+  background: linear-gradient(180deg, #111b24 0%, #0f1821 100%);
+  border-color: rgba(96, 132, 150, 0.28);
+}
+
+:root[data-theme="dark"] .order-create-panel__stat--accent {
+  background: linear-gradient(180deg, rgba(15, 118, 110, 0.22) 0%, #0f1821 100%);
+  border-color: rgba(45, 212, 191, 0.28);
+}
+
+:root[data-theme="dark"] .order-create-panel__stat--accent .order-create-panel__stat-value {
+  color: #5eead4;
+}
+
+:root[data-theme="dark"] .order-create-panel__week-chip {
+  background: #0c151d;
+  border-color: rgba(96, 132, 150, 0.28);
+}
+
+:root[data-theme="dark"] .order-create-panel__created-list li {
+  background: #111b24;
+  border-color: rgba(96, 132, 150, 0.28);
 }
 
 :root[data-theme="dark"] .payroll-rates__block {

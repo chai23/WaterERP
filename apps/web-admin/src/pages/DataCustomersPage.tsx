@@ -5,7 +5,9 @@ import type {
   Customer,
   CustomerBillingLedgerData,
   CustomerBillingSummary,
+  CustomerChurnReason,
   CustomerDetail,
+  CustomerLifecycleEventRow,
   CustomerMasterOption,
   CustomerPaymentRow,
 } from "../adminUtils";
@@ -23,6 +25,7 @@ import {
   PATROL_WEEKDAY_OPTIONS,
   patrolWeekdayLabel,
   sumCustomerBarrelsOnSite,
+  todayLocalYmd,
 } from "../adminUtils";
 import { OrderDetailModal, type OrderRecord } from "../components/OrderDetailModal";
 import { cashInvoiceModeLabel } from "../taxDisplay";
@@ -57,6 +60,7 @@ import { useMediaQuery } from "../useMediaQuery";
 type WorkspaceTab = "summary" | "orders" | "billing" | "edit";
 type PageMode = "browse" | "create";
 type BillingFilter = "all" | "cash" | "monthly" | "prepaid";
+type LifecycleFilter = "all" | "active" | "churned";
 
 type AddressFormRow = {
   key: string;
@@ -191,6 +195,19 @@ function billingTypeBadgeClass(code: string | null | undefined): string {
   }
 }
 
+function lifecycleEventLabel(type: string): string {
+  switch (type) {
+    case "created":
+      return "建檔";
+    case "churned":
+      return "流失";
+    case "reactivated":
+      return "回流";
+    default:
+      return type;
+  }
+}
+
 export default function DataCustomersPage() {
   const { customers, addressZones, affiliatedCompanies, products, loadDashboard } = useDashboard();
   const activeProducts = useMemo(() => products.filter((p) => p.isActive !== false), [products]);
@@ -201,6 +218,17 @@ export default function DataCustomersPage() {
   const [detailId, setDetailId] = useState<string | null>(null);
   const [customerSearch, setCustomerSearch] = useState("");
   const [billingFilter, setBillingFilter] = useState<BillingFilter>("all");
+  const [lifecycleFilter, setLifecycleFilter] = useState<LifecycleFilter>("all");
+  const [churnReasons, setChurnReasons] = useState<CustomerChurnReason[]>([]);
+  const [lifecycleEvents, setLifecycleEvents] = useState<CustomerLifecycleEventRow[]>([]);
+  const [lifecycleEventsLoading, setLifecycleEventsLoading] = useState(false);
+  const [churnReasonId, setChurnReasonId] = useState("");
+  const [churnReasonNote, setChurnReasonNote] = useState("");
+  const [churnedAtYmd, setChurnedAtYmd] = useState(() => todayLocalYmd());
+  const [reactivateNote, setReactivateNote] = useState("");
+  const [reactivatedAtYmd, setReactivatedAtYmd] = useState(() => todayLocalYmd());
+  const [lifecycleActionMsg, setLifecycleActionMsg] = useState("");
+  const [lifecycleActionLoading, setLifecycleActionLoading] = useState(false);
   const [barrelCollections, setBarrelCollections] = useState<CustomerBarrelCollectionRow[]>([]);
   const [barrelCollectionsLoading, setBarrelCollectionsLoading] = useState(false);
   const [barrelCollectionsErr, setBarrelCollectionsErr] = useState("");
@@ -212,10 +240,15 @@ export default function DataCustomersPage() {
     if (billingFilter !== "all") {
       list = list.filter((c) => c.billingType === billingFilter);
     }
+    if (lifecycleFilter === "active") {
+      list = list.filter((c) => (c.lifecycleStatus ?? "active") !== "churned");
+    } else if (lifecycleFilter === "churned") {
+      list = list.filter((c) => c.lifecycleStatus === "churned");
+    }
     const q = customerSearch.trim().toLowerCase();
     if (q) list = list.filter((c) => matchCustomerOverviewQuery(c, q));
     return list;
-  }, [customers, customerSearch, billingFilter]);
+  }, [customers, customerSearch, billingFilter, lifecycleFilter]);
 
   const selectedListCustomer = useMemo(() => {
     if (!detailId) return null;
@@ -285,6 +318,105 @@ export default function DataCustomersPage() {
   const clearCustomerSearch = () => {
     setCustomerSearch("");
     setBillingFilter("all");
+    setLifecycleFilter("all");
+  };
+
+  useEffect(() => {
+    void fetch("/api/customer-churn-reasons")
+      .then((r) => r.json())
+      .then((payload) => {
+        if (payload?.ok && Array.isArray(payload.data)) {
+          setChurnReasons(payload.data as CustomerChurnReason[]);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const loadLifecycleEvents = useCallback(async (id: string) => {
+    setLifecycleEventsLoading(true);
+    try {
+      const res = await fetch(`/api/customers/${id}/lifecycle-events`);
+      const payload = await res.json();
+      setLifecycleEvents(payload?.ok && Array.isArray(payload.data) ? (payload.data as CustomerLifecycleEventRow[]) : []);
+    } catch {
+      setLifecycleEvents([]);
+    } finally {
+      setLifecycleEventsLoading(false);
+    }
+  }, []);
+
+  const markCustomerChurn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!detailId || !churnReasonId) {
+      setLifecycleActionMsg("請選擇流失原因");
+      return;
+    }
+    const reason = churnReasons.find((r) => r.id === churnReasonId);
+    if (reason?.code === "other" && !churnReasonNote.trim()) {
+      setLifecycleActionMsg("原因為「其他」時請填寫說明");
+      return;
+    }
+    if (!window.confirm("確定標記此客戶為流失？之後無法為其開新訂單，巡查亦會略過。")) return;
+    setLifecycleActionLoading(true);
+    setLifecycleActionMsg("");
+    try {
+      const res = await fetch(`/api/customers/${detailId}/churn`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          churnReasonId,
+          churnReasonNote: churnReasonNote.trim() || undefined,
+          churnedAtYmd,
+        }),
+      });
+      const payload = await res.json();
+      if (!res.ok || !payload.ok) {
+        setLifecycleActionMsg(payload.message ?? "標記流失失敗");
+        return;
+      }
+      const warnings = Array.isArray(payload.warnings) ? (payload.warnings as string[]) : [];
+      setLifecycleActionMsg(
+        warnings.length > 0 ? `已標記流失（提醒：${warnings.join("；")}）` : "已標記流失",
+      );
+      await loadDashboard();
+      await fetchDetail(detailId);
+      await loadLifecycleEvents(detailId);
+    } catch {
+      setLifecycleActionMsg("無法連線 API");
+    } finally {
+      setLifecycleActionLoading(false);
+    }
+  };
+
+  const reactivateCustomer = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!detailId) return;
+    if (!window.confirm("確定將此客戶標記為回流（恢復使用中）？")) return;
+    setLifecycleActionLoading(true);
+    setLifecycleActionMsg("");
+    try {
+      const res = await fetch(`/api/customers/${detailId}/reactivate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          note: reactivateNote.trim() || undefined,
+          reactivatedAtYmd,
+        }),
+      });
+      const payload = await res.json();
+      if (!res.ok || !payload.ok) {
+        setLifecycleActionMsg(payload.message ?? "標記回流失敗");
+        return;
+      }
+      setLifecycleActionMsg("已標記回流，客戶恢復使用中");
+      await loadDashboard();
+      await fetchDetail(detailId);
+      await loadLifecycleEvents(detailId);
+    } catch {
+      setLifecycleActionMsg("無法連線 API");
+    } finally {
+      setLifecycleActionLoading(false);
+    }
   };
 
   const [saving, setSaving] = useState(false);
@@ -479,6 +611,7 @@ export default function DataCustomersPage() {
       setEditAddrId(null);
       setPatchBasicMsg("");
       setPatchAddrMsg("");
+      void loadLifecycleEvents(id);
     } catch {
       setDetail(null);
       setBillingSummary(null);
@@ -488,7 +621,7 @@ export default function DataCustomersPage() {
     } finally {
       setDetailLoading(false);
     }
-  }, []);
+  }, [loadLifecycleEvents]);
 
   useEffect(() => {
     if (detailId) {
@@ -1097,12 +1230,28 @@ export default function DataCustomersPage() {
               {label}
             </button>
           ))}
+          {(
+            [
+              ["all", "全部狀態"],
+              ["active", "使用中"],
+              ["churned", "已流失"],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              className={`customer-hub__filter${lifecycleFilter === value ? " customer-hub__filter--active" : ""}`}
+              onClick={() => setLifecycleFilter(value)}
+            >
+              {label}
+            </button>
+          ))}
         </div>
         <div className="customer-hub__toolbar-meta">
           <span className="customer-hub__count">
             <strong>{displayedCustomers.length}</strong> / {customers.length} 筆
           </span>
-          {customerSearch || billingFilter !== "all" ? (
+          {customerSearch || billingFilter !== "all" || lifecycleFilter !== "all" ? (
             <button type="button" className="btn btn--ghost btn--sm" onClick={clearCustomerSearch}>
               清除篩選
             </button>
@@ -1133,6 +1282,9 @@ export default function DataCustomersPage() {
                     <div className="customer-hub__list-item-head">
                       <span className="customer-hub__list-code mono-text">{c.customerCode ?? "—"}</span>
                       <span className={billingTypeBadgeClass(c.billingType)}>{billingTypeLabel(c.billingType)}</span>
+                      {c.lifecycleStatus === "churned" ? (
+                        <span className="badge badge--cancelled">已流失</span>
+                      ) : null}
                     </div>
                     <strong className="customer-hub__list-name">{c.name}</strong>
                     <div className="customer-hub__list-meta">
@@ -1611,12 +1763,23 @@ export default function DataCustomersPage() {
                       ) : (
                         <span className="badge badge--default">未綁 LINE</span>
                       )}
+                      {workspaceCustomer.lifecycleStatus === "churned" ? (
+                        <span className="badge badge--cancelled">已流失</span>
+                      ) : (
+                        <span className="badge badge--confirmed">使用中</span>
+                      )}
                     </div>
                   </div>
                   <div className="customer-hub__hero-actions">
-                    <Link className="btn btn--secondary btn--sm" to="/orders/new">
-                      開新訂單
-                    </Link>
+                    {workspaceCustomer.lifecycleStatus === "churned" ? (
+                      <span className="text-muted" style={{ fontSize: "0.875rem" }}>
+                        已流失，無法開新訂單
+                      </span>
+                    ) : (
+                      <Link className="btn btn--secondary btn--sm" to="/orders/new">
+                        開新訂單
+                      </Link>
+                    )}
                     {detailId && workspaceCustomer.lineUserId ? (
                       <button
                         type="button"
@@ -1746,6 +1909,148 @@ export default function DataCustomersPage() {
                       </dl>
                     </section>
                   </div>
+
+                  <section className="customer-hub__panel">
+                    <h4 className="customer-hub__panel-title">客戶狀態</h4>
+                    {workspaceCustomer.lifecycleStatus === "churned" ? (
+                      <div className="form-grid form-grid--wide">
+                        <dl className="customer-overview-dl">
+                          <dt>現況</dt>
+                          <dd>
+                            <span className="badge badge--cancelled">已流失</span>
+                          </dd>
+                          <dt>流失日</dt>
+                          <dd className="mono-text">{fmtLocalYmd(workspaceCustomer.churnedAt) || "—"}</dd>
+                          <dt>原因</dt>
+                          <dd>{workspaceCustomer.churnReason?.label ?? "—"}</dd>
+                          {workspaceCustomer.churnReasonNote ? (
+                            <>
+                              <dt>說明</dt>
+                              <dd>{workspaceCustomer.churnReasonNote}</dd>
+                            </>
+                          ) : null}
+                        </dl>
+                        <form onSubmit={reactivateCustomer} className="form-grid form-grid--wide">
+                          <div className="form-row-2">
+                            <div className="field">
+                              <span>回流生效日</span>
+                              <input
+                                type="date"
+                                value={reactivatedAtYmd}
+                                onChange={(e) => setReactivatedAtYmd(e.target.value)}
+                                required
+                              />
+                            </div>
+                            <div className="field">
+                              <span>備註（選填）</span>
+                              <input
+                                type="text"
+                                value={reactivateNote}
+                                onChange={(e) => setReactivateNote(e.target.value)}
+                                placeholder="例如：恢復叫貨"
+                              />
+                            </div>
+                          </div>
+                          <div className="form-actions">
+                            <button type="submit" className="btn btn--primary btn--sm" disabled={lifecycleActionLoading}>
+                              {lifecycleActionLoading ? "處理中…" : "標記回流"}
+                            </button>
+                          </div>
+                        </form>
+                      </div>
+                    ) : (
+                      <form onSubmit={markCustomerChurn} className="form-grid form-grid--wide">
+                        <p className="card__hint">
+                          人工標記「決定不再服務日」；標記後無法開新訂單，巡查產生亦會略過此客戶。
+                        </p>
+                        <div className="form-row-2">
+                          <div className="field">
+                            <span>不再服務日</span>
+                            <input
+                              type="date"
+                              value={churnedAtYmd}
+                              onChange={(e) => setChurnedAtYmd(e.target.value)}
+                              required
+                            />
+                          </div>
+                          <div className="field">
+                            <span>流失原因</span>
+                            <select value={churnReasonId} onChange={(e) => setChurnReasonId(e.target.value)} required>
+                              <option value="">請選擇</option>
+                              {churnReasons.map((r) => (
+                                <option key={r.id} value={r.id}>
+                                  {r.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+                        <div className="field">
+                          <span>補充說明（原因為「其他」時必填）</span>
+                          <input
+                            type="text"
+                            value={churnReasonNote}
+                            onChange={(e) => setChurnReasonNote(e.target.value)}
+                          />
+                        </div>
+                        <div className="form-actions">
+                          <button type="submit" className="btn btn--danger btn--sm" disabled={lifecycleActionLoading}>
+                            {lifecycleActionLoading ? "處理中…" : "標記流失"}
+                          </button>
+                        </div>
+                      </form>
+                    )}
+                    {lifecycleActionMsg ? (
+                      <p
+                        className={
+                          lifecycleActionMsg.includes("失敗") || lifecycleActionMsg.includes("請")
+                            ? "feedback feedback--err"
+                            : "feedback feedback--ok"
+                        }
+                        style={{ marginTop: "0.75rem" }}
+                      >
+                        {lifecycleActionMsg}
+                      </p>
+                    ) : null}
+                    <div className="table-wrap" style={{ marginTop: "1rem" }}>
+                      <table className="data-table data-table--compact">
+                        <thead>
+                          <tr>
+                            <th>事件</th>
+                            <th>生效日</th>
+                            <th>原因</th>
+                            <th>說明</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {lifecycleEventsLoading ? (
+                            <tr>
+                              <td colSpan={4} className="text-muted">
+                                載入中…
+                              </td>
+                            </tr>
+                          ) : lifecycleEvents.length === 0 ? (
+                            <tr>
+                              <td colSpan={4} className="text-muted">
+                                尚無紀錄
+                              </td>
+                            </tr>
+                          ) : (
+                            lifecycleEvents.map((ev) => (
+                              <tr key={ev.id}>
+                                <td>{lifecycleEventLabel(ev.eventType)}</td>
+                                <td className="mono-text">{ev.effectiveAt ?? "—"}</td>
+                                <td>{ev.churnReason?.label ?? "—"}</td>
+                                <td>
+                                  <small className="text-muted">{ev.note ?? "—"}</small>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
 
                   {(workspaceCustomer.standingRemark || workspaceCustomer.notes) ? (
                     <section className="customer-hub__panel">

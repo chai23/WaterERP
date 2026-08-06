@@ -7,9 +7,7 @@ import { ThemeProvider } from "./ThemeContext";
 import AdminLayout from "./layout/AdminLayout";
 import LoginPage from "./pages/LoginPage";
 import OverviewPage from "./pages/OverviewPage";
-import OrderNewPage from "./pages/OrderNewPage";
-import OrderPatrolGeneratePage from "./pages/OrderPatrolGeneratePage";
-import OrderLiffReviewPage from "./pages/OrderLiffReviewPage";
+import OrderCreatePage from "./pages/OrderCreatePage";
 import OrderAssignPage from "./pages/OrderAssignPage";
 import OrderCompletePage from "./pages/OrderCompletePage";
 import OrderProxyReportPage from "./pages/OrderProxyReportPage";
@@ -25,6 +23,7 @@ import DataVehiclesPage from "./pages/DataVehiclesPage";
 import DataUsersPage from "./pages/DataUsersPage";
 import ReportDailyPage from "./pages/ReportDailyPage";
 import ReportMonthlyPage from "./pages/ReportMonthlyPage";
+import ReportCustomerLifecyclePage from "./pages/ReportCustomerLifecyclePage";
 import DriverDailyCollectionReportPage from "./pages/DriverDailyCollectionReportPage";
 import BillingArPage from "./pages/BillingArPage";
 import SettingsPromotionsPage from "./pages/SettingsPromotionsPage";
@@ -64,9 +63,9 @@ export default function App() {
               <Route path="overview" element={<OverviewPage />} />
 
               <Route path="orders" element={<Navigate to="/orders/new" replace />} />
-              <Route path="orders/new" element={<OrderNewPage />} />
-              <Route path="orders/patrol" element={<OrderPatrolGeneratePage />} />
-              <Route path="orders/liff-review" element={<OrderLiffReviewPage />} />
+              <Route path="orders/new" element={<OrderCreatePage />} />
+              <Route path="orders/patrol" element={<Navigate to="/orders/new?tab=patrol" replace />} />
+              <Route path="orders/liff-review" element={<Navigate to="/orders/new?tab=liff" replace />} />
               <Route path="orders/assign" element={<OrderAssignPage />} />
               <Route path="orders/assignment-status" element={<Navigate to="/orders/assign?tab=status" replace />} />
               <Route path="orders/proxy-report" element={<OrderProxyReportPage />} />
@@ -96,6 +95,7 @@ export default function App() {
               <Route path="reports" element={<Navigate to="/reports/daily" replace />} />
               <Route path="reports/daily" element={<ReportDailyPage />} />
               <Route path="reports/monthly" element={<ReportMonthlyPage />} />
+              <Route path="reports/customer-lifecycle" element={<ReportCustomerLifecyclePage />} />
               <Route path="reports/driver-daily" element={<DriverDailyCollectionReportPage />} />
               <Route path="reports/billing-ar" element={<BillingArPage />} />
               <Route path="reports/tax-invoices" element={<TaxInvoiceQueryPage />} />

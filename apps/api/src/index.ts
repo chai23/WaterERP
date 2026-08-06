@@ -543,6 +543,28 @@ const parseLocalYmdToDbDate = (ymd: string): Date | null => {
   return dt;
 };
 
+/** 收款／匯款日：paidAtYmd（YYYY-MM-DD 本地）優先；paidAt 可為 YYYY-MM-DD 或 ISO；未傳則為現在 */
+function resolvePaidAtFromBody(body: { paidAt?: unknown; paidAtYmd?: unknown }): Date | { error: string } {
+  const ymdRaw = typeof body.paidAtYmd === "string" ? body.paidAtYmd.trim() : "";
+  if (ymdRaw) {
+    const parsed = parseLocalYmdRange(ymdRaw);
+    if (!parsed) return { error: "paidAtYmd 須為 YYYY-MM-DD" };
+    return parsed.start;
+  }
+  const paidAtRaw = typeof body.paidAt === "string" ? body.paidAt.trim() : "";
+  if (paidAtRaw) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(paidAtRaw)) {
+      const parsed = parseLocalYmdRange(paidAtRaw);
+      if (!parsed) return { error: "paidAt 須為有效 YYYY-MM-DD" };
+      return parsed.start;
+    }
+    const d = new Date(paidAtRaw);
+    if (Number.isNaN(d.getTime())) return { error: "paidAt 須為有效日期時間" };
+    return d;
+  }
+  return new Date();
+}
+
 /** 單日 @db.Date 查詢條件 */
 const dbDateEqualsFilter = (ymd: string): Prisma.DateTimeFilter | null => {
   const day = parseLocalYmdToDbDate(ymd);
@@ -1123,8 +1145,21 @@ async function syncBillingStatementsAfterAllocations(tx: Prisma.TransactionClien
 
 async function applyAllocations(
   tx: Prisma.TransactionClient,
-  args: { voucherId: bigint; openItemAmounts: Array<{ openItemId: bigint; amount: Prisma.Decimal }> },
+  args: {
+    voucherId: bigint;
+    openItemAmounts: Array<{ openItemId: bigint; amount: Prisma.Decimal }>;
+    /** 沖帳時間；未傳則取收款單 paid_at */
+    allocatedAt?: Date;
+  },
 ) {
+  let allocatedAt = args.allocatedAt;
+  if (!allocatedAt) {
+    const voucher = await tx.receiptVoucher.findUnique({
+      where: { id: args.voucherId },
+      select: { paidAt: true },
+    });
+    allocatedAt = voucher?.paidAt ?? new Date();
+  }
   const cashSalesOrdersToCheck = new Set<bigint>();
   const touchedOpenItemsForStmt: bigint[] = [];
   for (const item of args.openItemAmounts) {
@@ -1147,7 +1182,7 @@ async function applyAllocations(
         receiptVoucherId: args.voucherId,
         arOpenItemId: open.id,
         allocatedAmount: allocAmount,
-        allocatedAt: new Date(),
+        allocatedAt,
       },
     });
     const nextStatus = arStatusFromOutstanding(outstandingAmount, open.dueDate ?? undefined);
@@ -1824,7 +1859,7 @@ async function postSettlementReceiptByMethod(
     allocs.push({ openItemId: open.id, amount: take });
     remain = remain.minus(take);
   }
-  await applyAllocations(tx, { voucherId: voucher.id, openItemAmounts: allocs });
+  await applyAllocations(tx, { voucherId: voucher.id, openItemAmounts: allocs, allocatedAt: args.settledAt });
   await tx.receiptVoucher.update({
     where: { id: voucher.id },
     data: {
@@ -2154,7 +2189,58 @@ const customerMasterInclude = {
   },
   addressZone: { select: { id: true, name: true, isActive: true } },
   affiliatedCompany: { select: { id: true, name: true, isActive: true } },
+  churnReason: { select: { id: true, code: true, label: true, isActive: true } },
 } as const;
+
+function monthRangeFromYearMonth(ym: string): { start: Date; end: Date; yearMonth: string } | { error: string } {
+  const trimmed = ym.trim();
+  if (!/^\d{4}-\d{2}$/.test(trimmed)) return { error: "yearMonth 須為 YYYY-MM" };
+  const startR = parseLocalYmdRange(`${trimmed}-01`);
+  if (!startR) return { error: "yearMonth 無效" };
+  const [y, mo] = trimmed.split("-").map(Number);
+  const nextM = mo === 12 ? 1 : mo + 1;
+  const nextY = mo === 12 ? y + 1 : y;
+  const endR = parseLocalYmdRange(`${nextY}-${String(nextM).padStart(2, "0")}-01`);
+  if (!endR) return { error: "yearMonth 無效" };
+  return { start: startR.start, end: endR.start, yearMonth: trimmed };
+}
+
+function customerReportScopeWhere(
+  addressZoneId: bigint | null,
+  affiliatedCompanyId: bigint | null,
+): Prisma.CustomerWhereInput {
+  const where: Prisma.CustomerWhereInput = {};
+  if (addressZoneId) where.addressZoneId = addressZoneId;
+  if (affiliatedCompanyId) where.affiliatedCompanyId = affiliatedCompanyId;
+  return where;
+}
+
+async function loadCustomerLifecycleWarnings(
+  tx: Pick<PrismaClient, "customer" | "arOpenItem">,
+  customerId: bigint,
+): Promise<string[]> {
+  const warnings: string[] = [];
+  const cust = await tx.customer.findUnique({
+    where: { id: customerId },
+    include: { addresses: { select: { barrelsOnSite: true } } },
+  });
+  if (!cust) return warnings;
+  const barrels = sumCustomerBarrelsOnSiteFromAddresses(cust.addresses);
+  if (barrels > 0) warnings.push(`此客戶尚有未收回空桶 ${barrels} 桶`);
+  const arAgg = await tx.arOpenItem.aggregate({
+    where: activeArOpenItemWhere({ customerId }),
+    _sum: { outstandingAmount: true },
+  });
+  const arOutstanding = new Prisma.Decimal(arAgg._sum.outstandingAmount ?? 0);
+  if (arOutstanding.greaterThan(0)) {
+    warnings.push(`此客戶尚有未清應收 $${arOutstanding.toString()}`);
+  }
+  return warnings;
+}
+
+function sumCustomerBarrelsOnSiteFromAddresses(addresses: Array<{ barrelsOnSite: number }>): number {
+  return addresses.reduce((s, a) => s + (a.barrelsOnSite ?? 0), 0);
+}
 
 function parseNonNegativeBarrelCount(raw: unknown, fieldLabel: string): number | "INVALID" {
   const n = Math.floor(Number(raw ?? 0));
@@ -3625,6 +3711,413 @@ app.post("/api/promotion-rules/preview", async (req, res) => {
   }
 });
 
+app.get("/api/customer-churn-reasons", async (_req, res) => {
+  try {
+    const rows = await prisma.customerChurnReason.findMany({
+      where: { isActive: true },
+      orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
+    });
+    res.json({
+      ok: true,
+      data: rows.map((r) => ({
+        id: r.id.toString(),
+        code: r.code,
+        label: r.label,
+        sortOrder: r.sortOrder,
+      })),
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+app.get("/api/customers/:customerId/lifecycle-events", async (req, res) => {
+  try {
+    const customerId = toBigInt(req.params.customerId);
+    if (!customerId) {
+      res.status(400).json({ ok: false, message: "參數錯誤：customerId" });
+      return;
+    }
+    const rows = await prisma.customerLifecycleEvent.findMany({
+      where: { customerId },
+      include: {
+        churnReason: { select: { id: true, code: true, label: true } },
+        recordedBy: { select: { id: true, name: true, employeeCode: true } },
+      },
+      orderBy: [{ effectiveAt: "desc" }, { id: "desc" }],
+    });
+    res.json({
+      ok: true,
+      data: rows.map((e) => ({
+        id: e.id.toString(),
+        eventType: e.eventType,
+        effectiveAt: e.effectiveAt ? fmtDbDateYmd(e.effectiveAt) : null,
+        churnReason: e.churnReason
+          ? { id: e.churnReason.id.toString(), code: e.churnReason.code, label: e.churnReason.label }
+          : null,
+        note: e.note,
+        recordedBy: e.recordedBy
+          ? { id: e.recordedBy.id.toString(), name: e.recordedBy.name, employeeCode: e.recordedBy.employeeCode }
+          : null,
+        createdAt: e.createdAt.toISOString(),
+      })),
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+app.post("/api/customers/:customerId/churn", async (req, res) => {
+  try {
+    const customerId = toBigInt(req.params.customerId);
+    if (!customerId) {
+      res.status(400).json({ ok: false, message: "參數錯誤：customerId" });
+      return;
+    }
+    const body = (req.body ?? {}) as {
+      churnReasonId?: unknown;
+      churnReasonNote?: unknown;
+      churnedAtYmd?: unknown;
+      churnedAt?: unknown;
+    };
+    const churnReasonId = toBigInt(body.churnReasonId);
+    if (!churnReasonId) {
+      res.status(400).json({ ok: false, message: "請選擇流失原因" });
+      return;
+    }
+    const reason = await prisma.customerChurnReason.findFirst({
+      where: { id: churnReasonId, isActive: true },
+    });
+    if (!reason) {
+      res.status(400).json({ ok: false, message: "流失原因不存在或已停用" });
+      return;
+    }
+    const note = typeof body.churnReasonNote === "string" ? body.churnReasonNote.trim() : "";
+    if (reason.code === "other" && !note) {
+      res.status(400).json({ ok: false, message: "原因為「其他」時請填寫說明" });
+      return;
+    }
+    const effectiveResolved = resolvePaidAtFromBody({
+      paidAtYmd: body.churnedAtYmd,
+      paidAt: body.churnedAt,
+    });
+    if ("error" in effectiveResolved) {
+      res.status(400).json({ ok: false, message: effectiveResolved.error });
+      return;
+    }
+    const effectiveDb = parseLocalYmdToDbDate(toLocalYmd(effectiveResolved));
+    if (!effectiveDb) {
+      res.status(400).json({ ok: false, message: "流失生效日無效" });
+      return;
+    }
+
+    const warnings = await loadCustomerLifecycleWarnings(prisma, customerId);
+
+    const result = await prisma.$transaction(async (tx) => {
+      const existing = await tx.customer.findUnique({ where: { id: customerId } });
+      if (!existing) throw new Error("CUSTOMER_NOT_FOUND");
+      if (existing.lifecycleStatus === "churned") throw new Error("ALREADY_CHURNED");
+
+      await tx.customer.update({
+        where: { id: customerId },
+        data: {
+          lifecycleStatus: "churned",
+          churnedAt: effectiveDb,
+          churnReasonId,
+          churnReasonNote: note || null,
+        },
+      });
+      await tx.customerLifecycleEvent.create({
+        data: {
+          customerId,
+          eventType: "churned",
+          effectiveAt: effectiveDb,
+          churnReasonId,
+          note: note || null,
+          recordedByUserId: DEFAULT_CREATOR_USER_ID,
+        },
+      });
+      return tx.customer.findUnique({
+        where: { id: customerId },
+        include: customerMasterInclude,
+      });
+    });
+
+    res.json({ ok: true, data: enrichCustomerBarrels(result!), warnings });
+  } catch (e) {
+    const msg = String(e);
+    if (msg.includes("CUSTOMER_NOT_FOUND")) {
+      res.status(404).json({ ok: false, message: "找不到客戶" });
+      return;
+    }
+    if (msg.includes("ALREADY_CHURNED")) {
+      res.status(400).json({ ok: false, message: "此客戶已是流失狀態" });
+      return;
+    }
+    res.status(500).json({ ok: false, message: msg });
+  }
+});
+
+app.post("/api/customers/:customerId/reactivate", async (req, res) => {
+  try {
+    const customerId = toBigInt(req.params.customerId);
+    if (!customerId) {
+      res.status(400).json({ ok: false, message: "參數錯誤：customerId" });
+      return;
+    }
+    const body = (req.body ?? {}) as { note?: unknown; reactivatedAtYmd?: unknown; reactivatedAt?: unknown };
+    const note = typeof body.note === "string" ? body.note.trim() : "";
+    const effectiveResolved = resolvePaidAtFromBody({
+      paidAtYmd: body.reactivatedAtYmd,
+      paidAt: body.reactivatedAt,
+    });
+    if ("error" in effectiveResolved) {
+      res.status(400).json({ ok: false, message: effectiveResolved.error });
+      return;
+    }
+    const effectiveDb = parseLocalYmdToDbDate(toLocalYmd(effectiveResolved));
+    if (!effectiveDb) {
+      res.status(400).json({ ok: false, message: "回流生效日無效" });
+      return;
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const existing = await tx.customer.findUnique({ where: { id: customerId } });
+      if (!existing) throw new Error("CUSTOMER_NOT_FOUND");
+      if (existing.lifecycleStatus !== "churned") throw new Error("NOT_CHURNED");
+
+      await tx.customer.update({
+        where: { id: customerId },
+        data: {
+          lifecycleStatus: "active",
+          churnedAt: null,
+          churnReasonId: null,
+          churnReasonNote: null,
+        },
+      });
+      await tx.customerLifecycleEvent.create({
+        data: {
+          customerId,
+          eventType: "reactivated",
+          effectiveAt: effectiveDb,
+          note: note || null,
+          recordedByUserId: DEFAULT_CREATOR_USER_ID,
+        },
+      });
+      return tx.customer.findUnique({
+        where: { id: customerId },
+        include: customerMasterInclude,
+      });
+    });
+
+    res.json({ ok: true, data: enrichCustomerBarrels(result!) });
+  } catch (e) {
+    const msg = String(e);
+    if (msg.includes("CUSTOMER_NOT_FOUND")) {
+      res.status(404).json({ ok: false, message: "找不到客戶" });
+      return;
+    }
+    if (msg.includes("NOT_CHURNED")) {
+      res.status(400).json({ ok: false, message: "此客戶目前不是流失狀態" });
+      return;
+    }
+    res.status(500).json({ ok: false, message: msg });
+  }
+});
+
+app.get("/api/reports/customer-lifecycle", async (req, res) => {
+  try {
+    const yearMonth =
+      typeof req.query.yearMonth === "string" && req.query.yearMonth.trim()
+        ? req.query.yearMonth.trim()
+        : billingPeriodKeyFromDate(new Date());
+    const range = monthRangeFromYearMonth(yearMonth);
+    if ("error" in range) {
+      res.status(400).json({ ok: false, message: range.error });
+      return;
+    }
+    const addressZoneId = req.query.addressZoneId ? toBigInt(req.query.addressZoneId) : null;
+    const affiliatedCompanyId = req.query.affiliatedCompanyId ? toBigInt(req.query.affiliatedCompanyId) : null;
+    const scope = customerReportScopeWhere(addressZoneId, affiliatedCompanyId);
+    const monthStartDb = parseLocalYmdToDbDate(toLocalYmd(range.start))!;
+    const monthEndExclusiveDb = parseLocalYmdToDbDate(toLocalYmd(range.end))!;
+    const effectiveInMonth = { gte: monthStartDb, lt: monthEndExclusiveDb };
+
+    const [newCustomers, churnEvents, reactivateEvents, reasonRows] = await Promise.all([
+      prisma.customer.findMany({
+        where: {
+          ...scope,
+          createdAt: { gte: range.start, lt: range.end },
+        },
+        include: {
+          addressZone: { select: { id: true, name: true } },
+          affiliatedCompany: { select: { id: true, name: true } },
+        },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      }),
+      prisma.customerLifecycleEvent.findMany({
+        where: {
+          eventType: "churned",
+          effectiveAt: effectiveInMonth,
+          customer: scope,
+        },
+        include: {
+          customer: {
+            include: {
+              addressZone: { select: { id: true, name: true } },
+              affiliatedCompany: { select: { id: true, name: true } },
+              churnReason: { select: { id: true, code: true, label: true } },
+            },
+          },
+          churnReason: { select: { id: true, code: true, label: true } },
+        },
+        orderBy: [{ effectiveAt: "asc" }, { id: "asc" }],
+      }),
+      prisma.customerLifecycleEvent.findMany({
+        where: {
+          eventType: "reactivated",
+          effectiveAt: effectiveInMonth,
+          customer: scope,
+        },
+        include: {
+          customer: {
+            include: {
+              addressZone: { select: { id: true, name: true } },
+              affiliatedCompany: { select: { id: true, name: true } },
+            },
+          },
+        },
+        orderBy: [{ effectiveAt: "asc" }, { id: "asc" }],
+      }),
+      prisma.customerLifecycleEvent.groupBy({
+        by: ["churnReasonId"],
+        where: {
+          eventType: "churned",
+          effectiveAt: effectiveInMonth,
+          customer: scope,
+          churnReasonId: { not: null },
+        },
+        _count: { id: true },
+      }),
+    ]);
+
+    const churnCustomerIds = [...new Set(churnEvents.map((e) => e.customerId))];
+    const eventCountRows =
+      churnCustomerIds.length > 0
+        ? await prisma.customerLifecycleEvent.groupBy({
+            by: ["customerId", "eventType"],
+            where: { customerId: { in: churnCustomerIds } },
+            _count: { id: true },
+          })
+        : [];
+    const eventCountMap = new Map<string, { churned: number; reactivated: number }>();
+    for (const row of eventCountRows) {
+      const key = row.customerId.toString();
+      const cur = eventCountMap.get(key) ?? { churned: 0, reactivated: 0 };
+      if (row.eventType === "churned") cur.churned = row._count.id;
+      if (row.eventType === "reactivated") cur.reactivated = row._count.id;
+      eventCountMap.set(key, cur);
+    }
+
+    const lastDeliveryRows =
+      churnCustomerIds.length > 0
+        ? await prisma.salesOrder.findMany({
+            where: {
+              customerId: { in: churnCustomerIds },
+              status: "completed",
+              officeSettledAt: { not: null },
+            },
+            select: { customerId: true, officeSettledAt: true, orderNo: true },
+            orderBy: [{ officeSettledAt: "desc" }, { id: "desc" }],
+          })
+        : [];
+    const lastDeliveryByCustomer = new Map<string, { date: string; orderNo: string }>();
+    for (const o of lastDeliveryRows) {
+      const cid = o.customerId.toString();
+      if (lastDeliveryByCustomer.has(cid)) continue;
+      lastDeliveryByCustomer.set(cid, {
+        date: o.officeSettledAt ? fmtDbDateYmd(o.officeSettledAt) : "",
+        orderNo: o.orderNo,
+      });
+    }
+
+    const reasonLabels = await prisma.customerChurnReason.findMany({
+      where: { id: { in: reasonRows.map((r) => r.churnReasonId!).filter(Boolean) } },
+    });
+    const reasonLabelMap = new Map(reasonLabels.map((r) => [r.id.toString(), r.label]));
+
+    const byReason = reasonRows
+      .map((r) => ({
+        reasonId: r.churnReasonId?.toString() ?? "",
+        reasonLabel: r.churnReasonId ? (reasonLabelMap.get(r.churnReasonId.toString()) ?? "—") : "—",
+        count: r._count.id,
+      }))
+      .sort((a, b) => b.count - a.count);
+
+    res.json({
+      ok: true,
+      data: {
+        yearMonth: range.yearMonth,
+        filters: {
+          addressZoneId: addressZoneId?.toString() ?? null,
+          affiliatedCompanyId: affiliatedCompanyId?.toString() ?? null,
+        },
+        summary: {
+          newCount: newCustomers.length,
+          churnedCount: churnEvents.length,
+          churnedCustomerCount: churnCustomerIds.length,
+          reactivatedCount: reactivateEvents.length,
+          netNewMinusChurn: newCustomers.length - churnEvents.length,
+        },
+        newCustomers: newCustomers.map((c) => ({
+          id: c.id.toString(),
+          customerCode: c.customerCode,
+          name: c.name,
+          billingType: c.billingType,
+          createdAt: c.createdAt.toISOString(),
+          addressZone: c.addressZone,
+          affiliatedCompany: c.affiliatedCompany,
+        })),
+        churnedCustomers: churnEvents.map((e) => {
+          const c = e.customer;
+          const counts = eventCountMap.get(c.id.toString()) ?? { churned: 0, reactivated: 0 };
+          const last = lastDeliveryByCustomer.get(c.id.toString());
+          return {
+            eventId: e.id.toString(),
+            id: c.id.toString(),
+            customerCode: c.customerCode,
+            name: c.name,
+            billingType: c.billingType,
+            lifecycleStatus: c.lifecycleStatus,
+            churnedAt: fmtDbDateYmd(e.effectiveAt),
+            reasonLabel: e.churnReason?.label ?? c.churnReason?.label ?? "—",
+            reasonNote: e.note ?? c.churnReasonNote,
+            addressZone: c.addressZone,
+            affiliatedCompany: c.affiliatedCompany,
+            lastDeliveryDate: last?.date ?? null,
+            lastOrderNo: last?.orderNo ?? null,
+            totalChurnCount: counts.churned,
+            totalReactivatedCount: counts.reactivated,
+          };
+        }),
+        reactivatedCustomers: reactivateEvents.map((e) => ({
+          eventId: e.id.toString(),
+          id: e.customer.id.toString(),
+          customerCode: e.customer.customerCode,
+          name: e.customer.name,
+          reactivatedAt: fmtDbDateYmd(e.effectiveAt),
+          note: e.note,
+          addressZone: e.customer.addressZone,
+          affiliatedCompany: e.customer.affiliatedCompany,
+        })),
+        byReason,
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
 app.get("/api/customers", async (_req, res) => {
   try {
     const rows = await prisma.customer.findMany({
@@ -4287,28 +4780,42 @@ app.post("/api/customers", async (req, res) => {
       return;
     }
 
-    const created = await prisma.customer.create({
-      data: {
-        customerCode,
-        name,
-        contactName,
-        phone,
-        mobile,
-        taxId: taxIdNorm,
-        billingType,
-        defaultCashInvoiceMode,
-        addressZoneId: addressZoneId ?? undefined,
-        affiliatedCompanyId: affiliatedCompanyId ?? undefined,
-        creditLimit,
-        notes,
-        standingRemark,
-        monthlySettlementDay: monthlySettlementDay ?? undefined,
-        allowPrepaidOverdraft,
-        addresses: {
-          create: addressCreates,
-        },
-      } as Prisma.CustomerCreateInput,
-      include: customerMasterInclude,
+    const created = await prisma.$transaction(async (tx) => {
+      const row = await tx.customer.create({
+        data: {
+          customerCode,
+          name,
+          contactName,
+          phone,
+          mobile,
+          taxId: taxIdNorm,
+          billingType,
+          defaultCashInvoiceMode,
+          addressZoneId: addressZoneId ?? undefined,
+          affiliatedCompanyId: affiliatedCompanyId ?? undefined,
+          creditLimit,
+          notes,
+          standingRemark,
+          monthlySettlementDay: monthlySettlementDay ?? undefined,
+          allowPrepaidOverdraft,
+          addresses: {
+            create: addressCreates,
+          },
+        } as Prisma.CustomerCreateInput,
+        include: customerMasterInclude,
+      });
+      const effectiveDb = parseLocalYmdToDbDate(toLocalYmd(row.createdAt));
+      if (effectiveDb) {
+        await tx.customerLifecycleEvent.create({
+          data: {
+            customerId: row.id,
+            eventType: "created",
+            effectiveAt: effectiveDb,
+            recordedByUserId: DEFAULT_CREATOR_USER_ID,
+          },
+        });
+      }
+      return row;
     });
 
     res.status(201).json({ ok: true, data: enrichCustomerBarrels(created) });
@@ -7759,6 +8266,9 @@ async function createConfirmedSalesOrder(
     if (!cust) {
       return { status: 400, payload: { ok: false, message: "客戶不存在" } };
     }
+    if (cust.lifecycleStatus === "churned") {
+      return { status: 400, payload: { ok: false, message: "此客戶已標記流失，無法開新訂單" } };
+    }
 
     const linesInResolved: LineIn[] = linesIn
       .filter((l) => !l.isPromotionGift)
@@ -8006,6 +8516,13 @@ function weekYmdByWeekday(monday: Date): Map<number, string> {
   return m;
 }
 
+const PATROL_BLOCKING_ORDER_STATUSES = ["completed", "cancelled", "pending_review"] as const;
+
+function formatPatrolBlockingOrderReason(orderNo: string, scheduledDeliveryDate: string | null): string {
+  const dateNote = scheduledDeliveryDate ? `配送日 ${scheduledDeliveryDate}` : "配送日未設定";
+  return `尚有未完成訂單 ${orderNo}（${dateNote}）`;
+}
+
 type PatrolCandidate = {
   addressId: string;
   customerId: string;
@@ -8021,6 +8538,8 @@ type PatrolCandidate = {
   productId: string;
   productName: string;
   skipReason: string | null;
+  blockingOrderNo: string | null;
+  blockingOrderDate: string | null;
 };
 
 async function listPatrolCandidatesForWeek(weekAnchorYmd: string): Promise<
@@ -8037,6 +8556,7 @@ async function listPatrolCandidatesForWeek(weekAnchorYmd: string): Promise<
     where: {
       patrolWeekday: { not: null },
       patrolProductId: { not: null },
+      customer: { lifecycleStatus: { not: "churned" } },
     },
     include: {
       customer: { select: { id: true, customerCode: true, name: true, billingType: true } },
@@ -8045,23 +8565,49 @@ async function listPatrolCandidatesForWeek(weekAnchorYmd: string): Promise<
     orderBy: [{ patrolWeekday: "asc" }, { id: "asc" }],
   });
 
-  const existing = await prisma.salesOrder.findMany({
-    where: {
-      deliveryAddressId: { in: addresses.map((a) => a.id) },
-      scheduledDeliveryDate: {
-        gte: parseLocalYmdToDbDate(weekStart)!,
-        lte: parseLocalYmdToDbDate(weekEnd)!,
-      },
-      status: { not: "cancelled" },
-    },
-    select: { deliveryAddressId: true, scheduledDeliveryDate: true, orderNo: true },
-  });
+  const addressIds = addresses.map((a) => a.id);
+
+  const existing =
+    addressIds.length === 0
+      ? []
+      : await prisma.salesOrder.findMany({
+          where: {
+            deliveryAddressId: { in: addressIds },
+            scheduledDeliveryDate: {
+              gte: parseLocalYmdToDbDate(weekStart)!,
+              lte: parseLocalYmdToDbDate(weekEnd)!,
+            },
+            status: { not: "cancelled" },
+          },
+          select: { deliveryAddressId: true, scheduledDeliveryDate: true, orderNo: true },
+        });
   const existingKey = new Set(
     existing.map((o) => {
       const ymd = o.scheduledDeliveryDate ? fmtDbDateYmd(o.scheduledDeliveryDate) : "";
       return `${o.deliveryAddressId.toString()}|${ymd}`;
     }),
   );
+
+  const incompleteOrders =
+    addressIds.length === 0
+      ? []
+      : await prisma.salesOrder.findMany({
+          where: {
+            deliveryAddressId: { in: addressIds },
+            status: { notIn: [...PATROL_BLOCKING_ORDER_STATUSES] },
+          },
+          select: { deliveryAddressId: true, orderNo: true, scheduledDeliveryDate: true },
+          orderBy: [{ scheduledDeliveryDate: "asc" }, { id: "asc" }],
+        });
+  const blockingByAddress = new Map<string, { orderNo: string; scheduledDeliveryDate: string | null }>();
+  for (const o of incompleteOrders) {
+    const addrId = o.deliveryAddressId.toString();
+    if (blockingByAddress.has(addrId)) continue;
+    blockingByAddress.set(addrId, {
+      orderNo: o.orderNo,
+      scheduledDeliveryDate: o.scheduledDeliveryDate ? fmtDbDateYmd(o.scheduledDeliveryDate) : null,
+    });
+  }
 
   const candidates: PatrolCandidate[] = [];
   for (const addr of addresses) {
@@ -8070,7 +8616,15 @@ async function listPatrolCandidatesForWeek(weekAnchorYmd: string): Promise<
     if (!scheduledDeliveryDate) continue;
     const product = addr.patrolProduct;
     let skipReason: string | null = null;
+    let blockingOrderNo: string | null = null;
+    let blockingOrderDate: string | null = null;
     if (!product || !product.isActive) skipReason = "預設商品停用或不存在";
+    const blocking = blockingByAddress.get(addr.id.toString());
+    if (!skipReason && blocking) {
+      skipReason = formatPatrolBlockingOrderReason(blocking.orderNo, blocking.scheduledDeliveryDate);
+      blockingOrderNo = blocking.orderNo;
+      blockingOrderDate = blocking.scheduledDeliveryDate;
+    }
     const key = `${addr.id.toString()}|${scheduledDeliveryDate}`;
     if (!skipReason && existingKey.has(key)) skipReason = "本週同日已有訂單";
 
@@ -8089,6 +8643,8 @@ async function listPatrolCandidatesForWeek(weekAnchorYmd: string): Promise<
       productId: product?.id.toString() ?? "",
       productName: product?.name ?? "—",
       skipReason,
+      blockingOrderNo,
+      blockingOrderDate,
     });
   }
 
@@ -9016,6 +9572,7 @@ app.post("/api/ar/receipt-vouchers", async (req, res) => {
       allocations?: unknown;
       toPrepayment?: unknown;
       paidAt?: unknown;
+      paidAtYmd?: unknown;
     };
     const customerId = toBigInt(body.customerId);
     const amount = new Prisma.Decimal(Number(body.amount ?? 0));
@@ -9025,12 +9582,12 @@ app.post("/api/ar/receipt-vouchers", async (req, res) => {
     }
 
     const toPrepayment = body.toPrepayment === true;
-    const paidAtRaw = typeof body.paidAt === "string" ? body.paidAt.trim() : "";
-    const paidAt = paidAtRaw ? new Date(paidAtRaw) : new Date();
-    if (Number.isNaN(paidAt.getTime())) {
-      res.status(400).json({ ok: false, message: "paidAt 須為有效日期時間" });
+    const paidAtResolved = resolvePaidAtFromBody(body);
+    if ("error" in paidAtResolved) {
+      res.status(400).json({ ok: false, message: paidAtResolved.error });
       return;
     }
+    const paidAt = paidAtResolved;
 
     const result = await prisma.$transaction(async (tx) => {
       const voucher = await tx.receiptVoucher.create({
@@ -9045,6 +9602,7 @@ app.post("/api/ar/receipt-vouchers", async (req, res) => {
           paidAt,
           note: typeof body.note === "string" ? body.note.trim() || null : null,
           createdByUserId: DEFAULT_CREATOR_USER_ID,
+          createdAt: paidAt,
         },
       });
 
@@ -9114,7 +9672,7 @@ app.post("/api/ar/receipt-vouchers", async (req, res) => {
             remain = remain.minus(take);
           }
         }
-        await applyAllocations(tx, { voucherId: voucher.id, openItemAmounts: allocRows });
+        await applyAllocations(tx, { voucherId: voucher.id, openItemAmounts: allocRows, allocatedAt: paidAt });
         const sumAlloc = allocRows.reduce((s, a) => s.plus(a.amount), new Prisma.Decimal(0));
         const unapplied = decMax(amount.minus(sumAlloc), new Prisma.Decimal(0));
         await tx.receiptVoucher.update({
@@ -9193,6 +9751,13 @@ app.post("/api/customers/:customerId/prepayment-topup-money", async (req, res) =
       return;
     }
 
+    const paidAtResolved = resolvePaidAtFromBody(req.body ?? {});
+    if ("error" in paidAtResolved) {
+      res.status(400).json({ ok: false, message: paidAtResolved.error });
+      return;
+    }
+    const paidAt = paidAtResolved;
+
     const result = await prisma.$transaction(async (tx) => {
       const cust = await tx.customer.findUnique({ where: { id: customerId } });
       if (!cust) throw new Error("CUSTOMER_NOT_FOUND");
@@ -9209,8 +9774,10 @@ app.post("/api/customers/:customerId/prepayment-topup-money", async (req, res) =
           totalAmount: amount,
           unappliedAmount: new Prisma.Decimal(0),
           status: "applied",
+          paidAt,
           note: note || "預收款儲值",
           createdByUserId: DEFAULT_CREATOR_USER_ID,
+          createdAt: paidAt,
         },
       });
       await tx.payment.create({
@@ -9221,6 +9788,8 @@ app.post("/api/customers/:customerId/prepayment-topup-money", async (req, res) =
           paymentMethod: "transfer",
           note: note || "預收款儲值",
           recordedByUserId: DEFAULT_CREATOR_USER_ID,
+          paidAt,
+          createdAt: paidAt,
           receiptVoucherId: voucher.id,
         },
       });

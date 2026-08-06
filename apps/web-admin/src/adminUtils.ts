@@ -134,7 +134,31 @@ export type Customer = {
   /** LINE 綁定 userId */
   lineUserId?: string | null;
   lineBoundAt?: string | null;
+  /** active | churned */
+  lifecycleStatus?: string;
+  churnedAt?: string | null;
+  churnReasonId?: string | null;
+  churnReasonNote?: string | null;
+  churnReason?: { id: string; code: string; label: string; isActive?: boolean } | null;
+  lifecycleEventCounts?: { churned: number; reactivated: number };
   addresses: Address[];
+};
+
+export type CustomerChurnReason = {
+  id: string;
+  code: string;
+  label: string;
+  sortOrder?: number;
+};
+
+export type CustomerLifecycleEventRow = {
+  id: string;
+  eventType: string;
+  effectiveAt: string | null;
+  churnReason?: { id: string; code: string; label: string } | null;
+  note?: string | null;
+  recordedBy?: { id: string; name: string; employeeCode?: string } | null;
+  createdAt: string;
 };
 
 /** 客戶關鍵字搜尋（編號、名稱、聯絡、電話、地址等） */

@@ -52,7 +52,8 @@ function goodsSummary(o: PendingOrder): string {
     .join("、");
 }
 
-export default function OrderLiffReviewPage() {
+/** 確認 LINE 訂單內容區（供建立訂單分頁嵌入） */
+export function OrderLiffReviewPanel() {
   const { loadDashboard } = useDashboard();
   const [rows, setRows] = useState<PendingOrder[]>([]);
   const [loading, setLoading] = useState(true);
@@ -143,140 +144,158 @@ export default function OrderLiffReviewPage() {
     }
   };
 
+  const titleCount = loading ? "…" : `${rows.length} 筆`;
+
   return (
-    <section className="card">
-      <h2 className="card__title">
-        確認 LINE 訂單{" "}
-        <span className="card__title-count">{loading ? "…" : `${rows.length} 筆待確認`}</span>
-      </h2>
-      <p className="card__hint">
-        客戶自 LINE 下單後會先進入<strong>待確認</strong>，請核對客戶、地址與品項後再確認。
-        一般訂水確認後會出現在 <Link to="/orders/assign">分配訂單</Link>；若為<strong>預付儲值</strong>或<strong>配送＋儲值</strong>（品項含儲值），確認後請派車配送並於現場／AR 完成現金收款，沖清後桶數入帳。
-        若打錯或異常可駁回（取消）。
-      </p>
-
-      <div className="form-actions" style={{ marginBottom: "1rem" }}>
-        <button type="button" className="btn btn--secondary" onClick={() => void load()} disabled={loading}>
-          重新整理
-        </button>
-        {message ? (
-          <span className={message.includes("失敗") || message.includes("錯誤") ? "feedback feedback--err" : "feedback feedback--ok"}>
-            {message}
+    <div className="order-new__form order-new__form--layout order-create-panel">
+      <section className="order-new__zone order-new__zone--lines" aria-labelledby="order-liff-zone-title">
+        <header className="order-new__zone-head">
+          <span className="order-new__zone-index" aria-hidden="true">
+            1
           </span>
-        ) : null}
-      </div>
+          <div className="order-new__zone-head-text">
+            <p className="order-new__zone-eyebrow">LINE · 待確認</p>
+            <div className="order-new__lines-title-row">
+              <h3 id="order-liff-zone-title" className="order-new__zone-title">
+                待確認佇列
+              </h3>
+              <span className="order-new__zone-tag">{titleCount}</span>
+            </div>
+          </div>
+          <div className="order-create-panel__zone-actions">
+            <button type="button" className="btn btn--secondary btn--sm" onClick={() => void load()} disabled={loading}>
+              {loading ? "載入中…" : "重新整理"}
+            </button>
+            <Link to="/orders/assign" className="btn btn--ghost btn--sm">
+              去分配訂單
+            </Link>
+          </div>
+        </header>
+        <div className="order-new__zone-body order-new__zone-body--lines">
+          {message ? (
+            <p
+              className={
+                message.includes("失敗") || message.includes("錯誤") ? "feedback feedback--err" : "feedback feedback--ok"
+              }
+            >
+              {message}
+            </p>
+          ) : null}
 
-      <div className="table-wrap">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>單號</th>
-              <th>客戶</th>
-              <th>地址</th>
-              <th>品項</th>
-              <th>希望配送日</th>
-              <th className="num">金額</th>
-              <th>備註</th>
-              <th>狀態</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr>
-                <td colSpan={9} className="text-muted">
-                  載入中…
-                </td>
-              </tr>
-            ) : rows.length === 0 ? (
-              <tr>
-                <td colSpan={9} className="text-muted">
-                  目前沒有待確認的 LINE 訂單。
-                </td>
-              </tr>
-            ) : (
-              rows.map((o) => {
-                const id = String(o.id);
-                const busy = busyId === id;
-                const topup = isTopupOrder(o);
-                const mixedTopup = !topup && hasTopupLines(o);
-                return (
-                  <tr key={id}>
-                    <td>
-                      <code style={{ fontSize: "0.8em" }}>{String(o.orderNo ?? "")}</code>
-                      {topup ? (
-                        <div>
-                          <span className="badge badge--pending" style={{ marginTop: "0.25rem" }}>
-                            預付儲值
-                          </span>
-                        </div>
-                      ) : null}
-                      {mixedTopup ? (
-                        <div>
-                          <span className="badge badge--progress" style={{ marginTop: "0.25rem" }}>
-                            配送＋儲值
-                          </span>
-                        </div>
-                      ) : null}
-                    </td>
-                    <td>
-                      {o.customer?.name ?? "—"}
-                      {o.customer?.mobile || o.customer?.phone ? (
-                        <div className="text-muted" style={{ fontSize: "0.85em" }}>
-                          {String(o.customer?.mobile || o.customer?.phone)}
-                        </div>
-                      ) : null}
-                    </td>
-                    <td style={{ maxWidth: "14rem" }}>
-                      {o.deliveryAddress?.addressLine ?? "—"}
-                    </td>
-                    <td style={{ maxWidth: "12rem" }}>{goodsSummary(o)}</td>
-                    <td>{fmtLocalYmd(o.scheduledDeliveryDate)}</td>
-                    <td className="num">{moneyText(o.orderBillableAmount ?? o.totalAmount)}</td>
-                    <td style={{ maxWidth: "10rem" }}>{String(o.remark ?? "") || "—"}</td>
-                    <td>
-                      <span className={orderStatusBadgeClass(String(o.status ?? ""))}>
-                        {orderStatusLabel(String(o.status ?? ""))}
-                      </span>
-                    </td>
-                    <td>
-                      <div className="form-actions" style={{ flexWrap: "wrap", gap: "0.35rem" }}>
-                        <button
-                          type="button"
-                          className="btn btn--secondary btn--sm"
-                          onClick={() => setDetailOrder(o)}
-                        >
-                          詳情
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn--primary btn--sm"
-                          disabled={busy}
-                          onClick={() => void confirmOrder(id)}
-                        >
-                          {busy ? "處理中…" : "確認"}
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn--danger btn--sm"
-                          disabled={busy}
-                          onClick={() => void rejectOrder(id, String(o.orderNo ?? id))}
-                        >
-                          駁回
-                        </button>
-                      </div>
-                    </td>
+          {!loading && rows.length === 0 ? (
+            <div className="order-new__empty-state">
+              <p className="order-new__empty-state-title">目前沒有待確認的 LINE 訂單</p>
+              <p className="order-new__empty-state-desc">客戶自 LINE 下單後會出現在此，核對後即可確認或駁回。</p>
+            </div>
+          ) : (
+            <div className="table-wrap order-create-panel__table-wrap">
+              <table className="data-table data-table--compact order-create-panel__table order-create-panel__table--liff">
+                <thead>
+                  <tr>
+                    <th>訂單</th>
+                    <th>客戶／地址</th>
+                    <th>品項</th>
+                    <th>希望配送日</th>
+                    <th className="num">金額</th>
+                    <th className="order-create-panel__col-actions">操作</th>
                   </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
+                </thead>
+                <tbody>
+                  {loading ? (
+                    <tr>
+                      <td colSpan={6} className="text-muted">
+                        載入中…
+                      </td>
+                    </tr>
+                  ) : (
+                    rows.map((o) => {
+                      const id = String(o.id);
+                      const busy = busyId === id;
+                      const topup = isTopupOrder(o);
+                      const mixedTopup = !topup && hasTopupLines(o);
+                      const phone = o.customer?.mobile || o.customer?.phone;
+                      const remark = String(o.remark ?? "").trim();
+                      return (
+                        <tr key={id}>
+                          <td className="order-create-panel__cell-order">
+                            <code className="order-create-panel__order-no">{String(o.orderNo ?? "")}</code>
+                            <div className="order-create-panel__order-meta">
+                              <span className={orderStatusBadgeClass(String(o.status ?? ""))}>
+                                {orderStatusLabel(String(o.status ?? ""))}
+                              </span>
+                              {topup ? <span className="badge badge--pending">預付儲值</span> : null}
+                              {mixedTopup ? <span className="badge badge--progress">配送＋儲值</span> : null}
+                            </div>
+                          </td>
+                          <td className="order-create-panel__cell-customer">
+                            <div className="order-create-panel__cust-name">
+                              {o.customer?.customerCode ? (
+                                <span className="mono-text order-create-panel__cust-code">{o.customer.customerCode}</span>
+                              ) : null}
+                              <span>{o.customer?.name ?? "—"}</span>
+                            </div>
+                            {phone ? <div className="order-create-panel__sub">{String(phone)}</div> : null}
+                            <div className="order-create-panel__sub">
+                              {o.deliveryAddress?.addressLine ?? "—"}
+                            </div>
+                            {remark ? <div className="order-create-panel__remark">備註：{remark}</div> : null}
+                          </td>
+                          <td className="order-create-panel__cell-goods">{goodsSummary(o)}</td>
+                          <td className="order-create-panel__cell-date mono-text">
+                            {fmtLocalYmd(o.scheduledDeliveryDate)}
+                          </td>
+                          <td className="num order-create-panel__cell-amt">
+                            {moneyText(o.orderBillableAmount ?? o.totalAmount)}
+                          </td>
+                          <td className="order-create-panel__col-actions">
+                            <div className="order-create-panel__row-actions">
+                              <button
+                                type="button"
+                                className="btn btn--secondary btn--sm"
+                                onClick={() => setDetailOrder(o)}
+                              >
+                                詳情
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn--primary btn--sm"
+                                disabled={busy}
+                                onClick={() => void confirmOrder(id)}
+                              >
+                                {busy ? "處理中…" : "確認"}
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn--danger btn--sm"
+                                disabled={busy}
+                                onClick={() => void rejectOrder(id, String(o.orderNo ?? id))}
+                              >
+                                駁回
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <p className="order-create-panel__footnote text-muted">
+            一般訂水確認後可至分配訂單派車；預付儲值或配送＋儲值需完成現金收款後桶數才會入帳。
+          </p>
+        </div>
+      </section>
 
       {detailOrder ? (
         <OrderDetailModal order={detailOrder as OrderRecord} onClose={() => setDetailOrder(null)} />
       ) : null}
-    </section>
+    </div>
   );
+}
+
+export default function OrderLiffReviewPage() {
+  return <OrderLiffReviewPanel />;
 }

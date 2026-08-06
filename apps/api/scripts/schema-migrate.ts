@@ -128,6 +128,7 @@ const MIGRATION_PROBES: Record<string, MigrationProbe> = {
   "045_service_ticket_driver_collection.sql": (p) => columnExists(p, "service_tickets", "collector_driver_id"),
   "046_drop_floor_bonus_wage.sql": async (p) =>
     !(await columnExists(p, "payroll_settings", "floor_bonus_wage")),
+  "047_customer_lifecycle.sql": (p) => tableExists(p, "customer_lifecycle_events"),
 };
 
 async function bootstrapFromExistingDb(prisma: PrismaClient): Promise<void> {

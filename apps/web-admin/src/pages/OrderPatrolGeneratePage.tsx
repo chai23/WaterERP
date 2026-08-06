@@ -17,6 +17,8 @@ type PatrolCandidate = {
   productId: string;
   productName: string;
   skipReason: string | null;
+  blockingOrderNo: string | null;
+  blockingOrderDate: string | null;
 };
 
 type PreviewData = {
@@ -39,7 +41,8 @@ type GenerateResult = {
   errors: Array<{ customerName: string; message: string }>;
 };
 
-export default function OrderPatrolGeneratePage() {
+/** 產生巡查單內容區（供建立訂單分頁嵌入） */
+export function OrderPatrolGeneratePanel() {
   const [weekStart, setWeekStart] = useState(todayLocalYmd());
   const [preview, setPreview] = useState<PreviewData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -103,135 +106,194 @@ export default function OrderPatrolGeneratePage() {
     }
   };
 
+  const feedbackClass =
+    message.includes("失敗") || message.includes("無法") ? "feedback feedback--err" : "feedback feedback--ok";
+
   return (
-    <section className="card">
-      <div className="card__head">
-        <h2>產生本週巡查單</h2>
-        <p className="card__hint">
-          依送貨點設定的巡查星期／預設商品開單；數量為 0（現場回報），結帳方式跟客戶主檔（現金／月結／預付扣桶）。
-          目標水位寫進備註供司機參考。同點同日已有訂單會自動略過。
-        </p>
-      </div>
+    <div className="order-new__form order-new__form--layout order-create-panel">
+      <section className="order-new__zone order-new__zone--tools" aria-labelledby="order-patrol-zone-tools-title">
+        <header className="order-new__zone-head">
+          <span className="order-new__zone-index" aria-hidden="true">
+            1
+          </span>
+          <div className="order-new__zone-head-text">
+            <p className="order-new__zone-eyebrow">選擇 · 預覽</p>
+            <h3 id="order-patrol-zone-tools-title" className="order-new__zone-title">
+              週次與產生
+            </h3>
+          </div>
+        </header>
+        <div className="order-new__zone-body">
+          <div className="order-create-panel__week-row">
+            <div className="field order-create-panel__week-field">
+              <label htmlFor="order-patrol-week-start">週次錨點日</label>
+              <input
+                id="order-patrol-week-start"
+                type="date"
+                value={weekStart}
+                onChange={(e) => setWeekStart(e.target.value)}
+              />
+              <p className="order-create-panel__field-hint">會對齊該週週一～週日</p>
+            </div>
+            <button
+              type="button"
+              className="btn btn--secondary"
+              disabled={loading || !weekStart}
+              onClick={() => void loadPreview(weekStart)}
+            >
+              {loading ? "載入中…" : "重新預覽"}
+            </button>
+          </div>
 
-      <div className="form-row-2" style={{ maxWidth: "36rem", marginBottom: "1rem" }}>
-        <div className="field">
-          <span>週次錨點日（會對齊該週週一～週日）</span>
-          <input
-            type="date"
-            value={weekStart}
-            onChange={(e) => setWeekStart(e.target.value)}
-          />
-        </div>
-        <div className="field" style={{ justifyContent: "flex-end" }}>
-          <span>&nbsp;</span>
-          <button
-            type="button"
-            className="btn btn--secondary"
-            disabled={loading || !weekStart}
-            onClick={() => void loadPreview(weekStart)}
-          >
-            {loading ? "載入中…" : "重新預覽"}
-          </button>
-        </div>
-      </div>
-
-      {preview ? (
-        <p className="card__hint">
-          本週 <strong>{preview.weekStart}</strong>〜<strong>{preview.weekEnd}</strong>
-          {" · "}可產生 <strong>{preview.creatable}</strong>
-          {" · "}略過 {preview.skipped}
-          {" · "}設定總計 {preview.total}
-          {preview.creatable === 0 && preview.total > 0 ? (
+          {preview ? (
             <>
-              <br />
-              目前沒有可新開的巡查單（見下方「狀態」欄）。若要開下週，請把錨點日改到下週任一日期後按「重新預覽」。
+              <div className="order-create-panel__week-chip" aria-live="polite">
+                本週 <strong>{preview.weekStart}</strong>
+                <span aria-hidden="true">〜</span>
+                <strong>{preview.weekEnd}</strong>
+              </div>
+              <div className="order-create-panel__stats" role="group" aria-label="本週預覽統計">
+                <div className="order-create-panel__stat order-create-panel__stat--accent">
+                  <span className="order-create-panel__stat-value">{preview.creatable}</span>
+                  <span className="order-create-panel__stat-label">可產生</span>
+                </div>
+                <div className="order-create-panel__stat">
+                  <span className="order-create-panel__stat-value">{preview.skipped}</span>
+                  <span className="order-create-panel__stat-label">略過</span>
+                </div>
+                <div className="order-create-panel__stat">
+                  <span className="order-create-panel__stat-value">{preview.total}</span>
+                  <span className="order-create-panel__stat-label">設定總計</span>
+                </div>
+              </div>
+              {preview.creatable === 0 && preview.total > 0 ? (
+                <p className="order-create-panel__note">
+                  目前沒有可新開的巡查單（見下方「狀態」欄）。同送貨點若有未完成訂單會先略過；若要開下週，請把錨點日改到下週任一日期後按「重新預覽」。
+                </p>
+              ) : null}
             </>
           ) : null}
-        </p>
-      ) : null}
 
-      <div className="customer-detail-actions" style={{ marginBottom: "1rem", gap: "0.5rem", flexWrap: "wrap" }}>
-        <button
-          type="button"
-          className="btn btn--primary"
-          disabled={generating || loading || !preview || preview.creatable <= 0}
-          onClick={() => void onGenerate()}
-        >
-          {generating ? "產生中…" : `一鍵產生本週巡查單${preview ? `（${preview.creatable}）` : ""}`}
-        </button>
-        <Link to="/data/customers" className="btn btn--ghost">
-          去客戶主檔設定巡查
-        </Link>
-        <Link to="/orders/assign" className="btn btn--ghost">
-          去分配訂單
-        </Link>
-      </div>
+          <div className="order-create-panel__actions">
+            <button
+              type="button"
+              className="btn btn--primary"
+              disabled={generating || loading || !preview || preview.creatable <= 0}
+              onClick={() => void onGenerate()}
+            >
+              {generating ? "產生中…" : `一鍵產生本週巡查單${preview ? `（${preview.creatable}）` : ""}`}
+            </button>
+            <Link to="/data/customers" className="btn btn--ghost btn--sm">
+              客戶主檔設定巡查
+            </Link>
+            <Link to="/orders/assign" className="btn btn--ghost btn--sm">
+              去分配訂單
+            </Link>
+          </div>
 
-      {message ? (
-        <p className={message.includes("失敗") || message.includes("無法") ? "feedback feedback--err" : "feedback feedback--ok"}>
-          {message}
-        </p>
-      ) : null}
+          {message ? <p className={feedbackClass}>{message}</p> : null}
 
-      {result && result.created.length > 0 ? (
-        <div style={{ marginBottom: "1rem" }}>
-          <h3 className="customer-hub__panel-title">剛產生的訂單</h3>
-          <ul>
-            {result.created.map((r) => (
-              <li key={r.orderNo}>
-                <span className="mono-text">{r.orderNo}</span> · {r.customerName} · {r.scheduledDeliveryDate}
-              </li>
-            ))}
-          </ul>
+          {result && result.created.length > 0 ? (
+            <div className="order-create-panel__created">
+              <p className="order-new__tool-section-label">剛產生的訂單</p>
+              <ul className="order-create-panel__created-list">
+                {result.created.map((r) => (
+                  <li key={r.orderNo}>
+                    <span className="mono-text">{r.orderNo}</span>
+                    <span>{r.customerName}</span>
+                    <span className="text-muted">{r.scheduledDeliveryDate}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
         </div>
-      ) : null}
+      </section>
 
-      {preview && preview.candidates.length > 0 ? (
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>配送日</th>
-                <th>星期</th>
-                <th>客戶</th>
-                <th>結帳</th>
-                <th>送貨點</th>
-                <th>商品</th>
-                <th>目標水位</th>
-                <th>狀態</th>
-              </tr>
-            </thead>
-            <tbody>
-              {preview.candidates.map((c) => (
-                <tr key={`${c.addressId}-${c.scheduledDeliveryDate}`}>
-                  <td className="mono-text">{c.scheduledDeliveryDate}</td>
-                  <td>{c.patrolWeekdayLabel}</td>
-                  <td>
-                    {c.customerCode ? <span className="mono-text">{c.customerCode} </span> : null}
-                    {c.customerName}
-                  </td>
-                  <td>{billingTypeLabel(c.billingType)}</td>
-                  <td>
-                    {c.addressLabel ? `${c.addressLabel} · ` : ""}
-                    {c.addressLine}
-                  </td>
-                  <td>{c.productName}</td>
-                  <td className="num">{c.targetWaterLevel != null ? c.targetWaterLevel : "—"}</td>
-                  <td>
-                    {c.skipReason ? (
-                      <span className="text-muted">{c.skipReason}</span>
-                    ) : (
-                      <span className="badge badge--confirmed">可產生</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <section className="order-new__zone order-new__zone--lines" aria-labelledby="order-patrol-zone-list-title">
+        <header className="order-new__zone-head">
+          <span className="order-new__zone-index order-new__zone-index--slate" aria-hidden="true">
+            2
+          </span>
+          <div className="order-new__zone-head-text">
+            <p className="order-new__zone-eyebrow">預覽清單</p>
+            <div className="order-new__lines-title-row">
+              <h3 id="order-patrol-zone-list-title" className="order-new__zone-title">
+                本週候選
+              </h3>
+              {preview ? (
+                <span className="order-new__zone-tag">{preview.candidates.length} 筆</span>
+              ) : null}
+            </div>
+          </div>
+        </header>
+        <div className="order-new__zone-body order-new__zone-body--lines">
+          {preview && preview.candidates.length > 0 ? (
+            <div className="table-wrap order-create-panel__table-wrap">
+              <table className="data-table data-table--compact order-create-panel__table">
+                <thead>
+                  <tr>
+                    <th>配送日</th>
+                    <th>客戶／送貨點</th>
+                    <th>結帳</th>
+                    <th>商品</th>
+                    <th className="num">目標水位</th>
+                    <th>狀態</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {preview.candidates.map((c) => (
+                    <tr key={`${c.addressId}-${c.scheduledDeliveryDate}`}>
+                      <td className="order-create-panel__cell-date">
+                        <span className="mono-text">{c.scheduledDeliveryDate}</span>
+                        <span className="order-create-panel__sub">{c.patrolWeekdayLabel}</span>
+                      </td>
+                      <td className="order-create-panel__cell-customer">
+                        <div className="order-create-panel__cust-name">
+                          {c.customerCode ? <span className="mono-text order-create-panel__cust-code">{c.customerCode}</span> : null}
+                          <span>{c.customerName}</span>
+                        </div>
+                        <div className="order-create-panel__sub">
+                          {c.addressLabel ? `${c.addressLabel} · ` : ""}
+                          {c.addressLine}
+                        </div>
+                      </td>
+                      <td>{billingTypeLabel(c.billingType)}</td>
+                      <td>{c.productName}</td>
+                      <td className="num">{c.targetWaterLevel != null ? c.targetWaterLevel : "—"}</td>
+                      <td>
+                        {c.skipReason ? (
+                          <span className="text-muted order-create-panel__skip">{c.skipReason}</span>
+                        ) : (
+                          <span className="badge badge--confirmed">可產生</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : loading ? (
+            <p className="text-muted" style={{ margin: 0 }}>
+              載入預覽中…
+            </p>
+          ) : (
+            <div className="order-new__empty-state">
+              <p className="order-new__empty-state-title">本週沒有已設定巡查的送貨點</p>
+              <p className="order-new__empty-state-desc">
+                請至客戶資料 → 送貨地址填寫巡查星期、目標水位、預設商品。
+              </p>
+              <Link to="/data/customers" className="btn btn--secondary btn--sm">
+                去客戶主檔
+              </Link>
+            </div>
+          )}
         </div>
-      ) : !loading ? (
-        <p className="card__hint">本週沒有已設定巡查的送貨點。請至客戶資料 → 送貨地址填寫巡查星期、目標水位、預設商品。</p>
-      ) : null}
-    </section>
+      </section>
+    </div>
   );
+}
+
+export default function OrderPatrolGeneratePage() {
+  return <OrderPatrolGeneratePanel />;
 }
