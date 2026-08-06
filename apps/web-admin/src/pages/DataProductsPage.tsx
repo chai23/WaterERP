@@ -501,7 +501,17 @@ export default function DataProductsPage() {
                   <td className="num">{p.salePrice}</td>
                   <td className="num">{p.costPrice ?? "0"}</td>
                   <td className="num">{p.driverDeliveryWage ?? "0"}</td>
-                  <td className="num">{p.inventory?.qtyOnHand ?? 0}</td>
+                  <td
+                    className="num"
+                    style={
+                      Number(p.inventory?.qtyOnHand ?? 0) < 0
+                        ? { color: "var(--danger, #b42318)", fontWeight: 600 }
+                        : undefined
+                    }
+                    title={Number(p.inventory?.qtyOnHand ?? 0) < 0 ? "負庫存異常" : undefined}
+                  >
+                    {p.inventory?.qtyOnHand ?? 0}
+                  </td>
                 </tr>
               ))}
             </tbody>

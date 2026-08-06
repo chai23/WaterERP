@@ -529,6 +529,11 @@ export default function DataCustomersPage() {
   const fetchDetail = useCallback(async (id: string) => {
     setDetailLoading(true);
     setDetailErr("");
+    setBillingSummary(null);
+    setBillingLedger(null);
+    setBillingLedgerErr("");
+    setCustomerPayments([]);
+    setPaymentsErr("");
     try {
       const res = await fetch(`/api/customers/${id}`);
       const data = await res.json();
@@ -1055,12 +1060,16 @@ export default function DataCustomersPage() {
       }
       setFormMessage("建立成功。");
       resetCreateForm();
-      setPageMode("browse");
+      setBillingSummary(null);
+      setBillingLedger(null);
+      setCustomerPayments([]);
+      setDetail(null);
+      await loadDashboard();
       if (payload.data?.id != null) {
         setDetailId(String(payload.data.id));
         setWorkspaceTab("summary");
       }
-      loadDashboard();
+      setPageMode("browse");
     } catch {
       setFormMessage("無法連線 API");
     } finally {

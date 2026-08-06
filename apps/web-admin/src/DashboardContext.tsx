@@ -113,7 +113,7 @@ export type DashboardContextValue = {
   summaryFilter: { range: string; startDate: string; endDate: string };
   setSummaryFilter: React.Dispatch<React.SetStateAction<{ range: string; startDate: string; endDate: string }>>;
   error: string;
-  loadDashboard: () => void;
+  loadDashboard: () => Promise<void>;
   selectedCustomer: Customer | undefined;
   saving: boolean;
   formMessage: string;
@@ -293,7 +293,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     initialQty: "0",
   });
 
-  const loadDashboard = useCallback(() => {
+  const loadDashboard = useCallback((): Promise<void> => {
     setError("");
     const params = new URLSearchParams();
     params.set("range", summaryFilter.range);
@@ -331,7 +331,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       }
     };
 
-    Promise.all([
+    return Promise.all([
       fetchJson("/api/health"),
       fetchJson("/api/customers"),
       fetchJsonOrEmpty("/api/address-zones"),
@@ -470,7 +470,9 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         setAssignMessage(payload.message ?? "分派失敗");
         return false;
       }
-      setAssignMessage(`分派成功：${payload.data.salesOrder?.orderNo ?? ""}`);
+      const warnings = Array.isArray(payload.warnings) ? (payload.warnings as string[]) : [];
+      const warnText = warnings.length > 0 ? `（注意：${warnings.join("；")}）` : "";
+      setAssignMessage(`分派成功：${payload.data.salesOrder?.orderNo ?? ""}${warnText}`);
       setAssignForm((prev) => ({ ...prev, estimatedDeliverySlot: "" }));
       loadDashboard();
       return true;

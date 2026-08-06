@@ -3,7 +3,9 @@
  * 用法：npx tsx scripts/api-full-smoke.ts
  */
 import "dotenv/config";
+import bcrypt from "bcryptjs";
 import { PrismaClient, Prisma } from "@prisma/client";
+import { ADMIN_EMPLOYEE_CODE, ADMIN_PASSWORD, ensureAdminUser } from "./ensure-admin-user-core.js";
 
 const BASE = `http://127.0.0.1:${process.env.PORT ?? "3000"}`;
 const prisma = new PrismaClient();
@@ -11,6 +13,7 @@ const prisma = new PrismaClient();
 type Result = { name: string; ok: boolean; detail?: string };
 
 const results: Result[] = [];
+let authToken = "";
 
 function pass(name: string, detail?: string) {
   results.push({ name, ok: true, detail });
@@ -21,9 +24,11 @@ function fail(name: string, detail: string) {
 }
 
 async function httpJson(method: string, path: string, body?: unknown): Promise<{ status: number; json: unknown }> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (authToken) headers.Authorization = `Bearer ${authToken}`;
   const res = await fetch(`${BASE}${path}`, {
     method,
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
@@ -59,6 +64,28 @@ async function main() {
   }
   pass("GET /api/health");
 
+  await ensureAdminUser(prisma);
+  await prisma.user.updateMany({
+    where: { employeeCode: ADMIN_EMPLOYEE_CODE },
+    data: { passwordHash: await bcrypt.hash(process.env.TEST_ADMIN_PASSWORD ?? ADMIN_PASSWORD, 10) },
+  });
+  const login = await httpJson("POST", "/api/auth/login", {
+    employeeCode: ADMIN_EMPLOYEE_CODE,
+    password: process.env.TEST_ADMIN_PASSWORD ?? ADMIN_PASSWORD,
+  });
+  const token = (login.json as { ok?: boolean; token?: string })?.token;
+  if (login.status !== 200 || !token) {
+    fail("POST /api/auth/login", `status=${login.status} ${JSON.stringify(login.json).slice(0, 200)}`);
+    console.log("\n=== API 全功能煙霧測試 ===\n");
+    for (const r of results) {
+      console.log(r.ok ? "✓" : "✗", r.name, r.detail ? `— ${r.detail}` : "");
+    }
+    await prisma.$disconnect();
+    process.exit(1);
+  }
+  authToken = token;
+  pass("POST /api/auth/login");
+
   for (const [name, path] of [
     ["GET /api/address-zones", "/api/address-zones"],
     ["GET /api/affiliated-companies", "/api/affiliated-companies"],
@@ -81,6 +108,7 @@ async function main() {
   await testGet("GET /api/ar/receipt-vouchers", "/api/ar/receipt-vouchers");
   await testGet("GET /api/reports/ar-aging", "/api/reports/ar-aging");
   await testGet("GET /api/reports/ar-exceptions", "/api/reports/ar-exceptions");
+  await testGet("GET /api/reports/inventory-exceptions", "/api/reports/inventory-exceptions");
   await testGet("GET /api/reports/driver-cash-close", `/api/reports/driver-cash-close?date=${todayYmd()}`);
   await testGet("GET /api/accounting/summary", `/api/accounting/summary?from=${todayYmd()}&to=${todayYmd()}`);
 
@@ -100,7 +128,12 @@ async function main() {
     const summaryRes = await httpJson("GET", `/api/customers/${c.id}/billing-summary`);
     const summary = (summaryRes.json as { data?: { arOutstandingAmount?: string; accountBalance?: number } })?.data;
     const arAgg = await prisma.arOpenItem.aggregate({
-      where: { customerId: BigInt(c.id), outstandingAmount: { gt: new Prisma.Decimal(0) } },
+      where: {
+        customerId: BigInt(c.id),
+        outstandingAmount: { gt: new Prisma.Decimal(0) },
+        arDocument: { status: { not: "voided" } },
+        OR: [{ salesOrderId: null }, { salesOrder: { status: { not: "cancelled" } } }],
+      },
       _sum: { outstandingAmount: true },
     });
     const dbAr = new Prisma.Decimal(arAgg._sum.outstandingAmount ?? 0);
@@ -173,14 +206,14 @@ async function main() {
     }
   }
 
-  const loginUser = await prisma.user.findFirst({ where: { isActive: true }, orderBy: { id: "asc" } });
-  if (loginUser) {
-    const badLogin = await httpJson("POST", "/api/auth/login", { employeeCode: loginUser.employeeCode, password: "__wrong__" });
-    if (badLogin.status === 401) {
-      pass("POST /api/auth/login (wrong password → 401)");
-    } else {
-      fail("POST /api/auth/login (wrong password)", `status=${badLogin.status}`);
-    }
+  const badLogin = await httpJson("POST", "/api/auth/login", {
+    employeeCode: ADMIN_EMPLOYEE_CODE,
+    password: "__wrong__",
+  });
+  if (badLogin.status === 401) {
+    pass("POST /api/auth/login (wrong password → 401)");
+  } else {
+    fail("POST /api/auth/login (wrong password)", `status=${badLogin.status}`);
   }
 
   const failed = results.filter((r) => !r.ok);

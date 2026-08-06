@@ -158,10 +158,11 @@ const generateTaxInvoiceNo = (): string => {
   return generateTimestampNo("TI");
 };
 
+/** @db.Date（UTC 午夜）→ 編號用曆日字串 */
 const allocatePickupNo = async (tx: Prisma.TransactionClient, pickupDate: Date): Promise<string> => {
-  const yyyy = pickupDate.getFullYear();
-  const mm = String(pickupDate.getMonth() + 1).padStart(2, "0");
-  const dd = String(pickupDate.getDate()).padStart(2, "0");
+  const yyyy = pickupDate.getUTCFullYear();
+  const mm = String(pickupDate.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(pickupDate.getUTCDate()).padStart(2, "0");
   const prefix = `BP${yyyy}${mm}${dd}`;
   const last = await tx.barrelPickup.findFirst({
     where: { pickupNo: { startsWith: prefix } },
@@ -1599,10 +1600,15 @@ const isMonthlyBillingOrder = (o: {
   customer: { billingType: string };
 }): boolean => orderHasMonthlyPortion(o);
 
-/** 截止日 YYYY-MM-DD：本地該日 00:00（UI／兼容舊欄位 cutoffStartsAtLocal）；配送區間上界請用 cutoffInclusiveDeliveryUpperBound */
+/** 截止日 YYYY-MM-DD：本地該日 00:00（供 DateTime 區間比較）；寫入 @db.Date 請用 parseLocalYmdToDbDate */
 function cutoffDateStartLocal(ymd: string): Date | null {
   const r = parseLocalYmdRange(ymd);
   return r?.start ?? null;
+}
+
+/** 截止日寫入 billing_statements.cutoff_date（@db.Date） */
+function cutoffDateToDbDate(ymd: string): Date | null {
+  return parseLocalYmdToDbDate(ymd);
 }
 
 /** 截止日「含當日」：實際送貨日須嚴格早於「截止日翌日 00:00（本地）」（與 parseLocalYmdRange 之 end 相同） */
@@ -2142,6 +2148,54 @@ const SERVICE_ORDER_SOURCE = "svc_ticket";
 function isNonInventoryLinePurpose(purpose: string | null | undefined): boolean {
   const p = (purpose ?? "delivery").trim();
   return p === "prepaid_barrel_topup" || p === FLOOR_FEE_LINE_PURPOSE || p === SERVICE_FEE_LINE_PURPOSE;
+}
+
+/** 彙總本單出庫需求並檢查庫存是否足夠（略過非庫存用途列） */
+async function analyzeOrderStockShortage(
+  tx: Prisma.TransactionClient,
+  salesOrderId: bigint,
+  lines?: Array<{
+    id: bigint;
+    productId: bigint;
+    qtyOrdered: number;
+    qtyDelivered: number | null;
+    linePurpose: string | null;
+    product?: { name?: string | null } | null;
+  }>,
+): Promise<Array<{ productId: string; productName: string; need: number; onHand: number }>> {
+  const orderLines =
+    lines ??
+    (await tx.salesOrderLine.findMany({
+      where: { salesOrderId },
+      include: { product: { select: { name: true } } },
+    }));
+  const needByProduct = new Map<bigint, { name: string; need: number }>();
+  for (const line of orderLines) {
+    if (isNonInventoryLinePurpose(line.linePurpose)) continue;
+    const qty =
+      line.qtyDelivered != null && Number(line.qtyDelivered) > 0
+        ? Number(line.qtyDelivered)
+        : Number(line.qtyOrdered);
+    if (qty <= 0) continue;
+    const name = line.product?.name ?? "商品";
+    const cur = needByProduct.get(line.productId);
+    if (cur) cur.need += qty;
+    else needByProduct.set(line.productId, { name, need: qty });
+  }
+  const shortages: Array<{ productId: string; productName: string; need: number; onHand: number }> = [];
+  for (const [productId, info] of needByProduct) {
+    const inv = await tx.inventoryBalance.findUnique({ where: { productId } });
+    const onHand = inv?.qtyOnHand ?? 0;
+    if (onHand < info.need) {
+      shortages.push({
+        productId: productId.toString(),
+        productName: info.name,
+        need: info.need,
+        onHand,
+      });
+    }
+  }
+  return shortages;
 }
 
 async function ensureServiceFeeProduct(tx: Prisma.TransactionClient): Promise<{ id: bigint; name: string; unit: string }> {
@@ -5244,6 +5298,19 @@ app.post("/api/products", async (req, res) => {
           qtyOnHand: initialQty,
         },
       });
+      if (initialQty > 0) {
+        await tx.stockMovement.create({
+          data: {
+            productId: p.id,
+            movementType: "adjust",
+            qtyDelta: initialQty,
+            refType: "manual",
+            refId: p.id,
+            note: "建立商品初始庫存",
+            createdByUserId: DEFAULT_CREATOR_USER_ID,
+          },
+        });
+      }
       return tx.product.findUnique({
         where: { id: p.id },
         include: { inventory: true },
@@ -6371,12 +6438,30 @@ app.post("/api/settlements/approve", async (req, res) => {
         },
       });
 
+      const stockShortages = await analyzeOrderStockShortage(tx, assignment.salesOrderId, assignment.salesOrder.lines);
+      if (stockShortages.length > 0) {
+        const s = stockShortages[0]!;
+        throw new Error(`INSUFFICIENT_STOCK:${s.productName}:${s.need}:${s.onHand}`);
+      }
+
       for (const line of assignment.salesOrder.lines) {
         if (isNonInventoryLinePurpose(line.linePurpose)) {
           continue;
         }
         const qty = effectiveLineDeliveryQty(line);
         if (qty <= 0) continue;
+        let inv = await tx.inventoryBalance.findUnique({ where: { productId: line.productId } });
+        if (!inv) {
+          await tx.inventoryBalance.create({
+            data: { productId: line.productId, qtyOnHand: 0 },
+          });
+          inv = await tx.inventoryBalance.findUnique({ where: { productId: line.productId } });
+        }
+        const onHand = inv?.qtyOnHand ?? 0;
+        if (onHand < qty) {
+          const pName = (line.product as { name?: string } | null)?.name ?? "商品";
+          throw new Error(`INSUFFICIENT_STOCK:${pName}:${qty}:${onHand}`);
+        }
         await tx.stockMovement.create({
           data: {
             productId: line.productId,
@@ -6389,17 +6474,10 @@ app.post("/api/settlements/approve", async (req, res) => {
             createdAt: settledAt,
           },
         });
-        let inv = await tx.inventoryBalance.findUnique({ where: { productId: line.productId } });
-        if (!inv) {
-          await tx.inventoryBalance.create({
-            data: { productId: line.productId, qtyOnHand: 0 },
-          });
-          inv = await tx.inventoryBalance.findUnique({ where: { productId: line.productId } });
-        }
         if (inv) {
           await tx.inventoryBalance.update({
             where: { productId: line.productId },
-            data: { qtyOnHand: inv.qtyOnHand - qty },
+            data: { qtyOnHand: onHand - qty },
           });
         }
       }
@@ -6609,6 +6687,14 @@ app.post("/api/settlements/approve", async (req, res) => {
       res.status(400).json({
         ok: false,
         message: `預付桶商品額度不足：${pName} 需 ${need} 桶、可用 ${avail} 桶。請先儲值同商品桶數後再核銷。`,
+      });
+      return;
+    }
+    if (msg.includes("INSUFFICIENT_STOCK:")) {
+      const [, pName, need, avail] = msg.split(":");
+      res.status(400).json({
+        ok: false,
+        message: `庫存不足，無法核銷出庫：${pName} 需 ${need}、庫存 ${avail}。請先入庫或調整庫存後再核銷。`,
       });
       return;
     }
@@ -7936,6 +8022,11 @@ app.post("/api/delivery-assignments", async (req, res) => {
       return;
     }
 
+    const stockShortages = await analyzeOrderStockShortage(prisma, salesOrderId);
+    const stockWarnings = stockShortages.map(
+      (s) => `缺貨警告：${s.productName} 需 ${s.need}、目前庫存 ${s.onHand}`,
+    );
+
     const created = await prisma.$transaction(async (tx) => {
       await tx.salesOrder.update({
         where: { id: salesOrderId },
@@ -7977,7 +8068,12 @@ app.post("/api/delivery-assignments", async (req, res) => {
       payload: { estimatedDeliveryAt: estimatedDeliveryAt?.toISOString() ?? null },
     }).catch((err) => console.error("[line-notify] order_assigned", err));
 
-    res.status(201).json({ ok: true, data: created });
+    res.status(201).json({
+      ok: true,
+      data: created,
+      warnings: stockWarnings,
+      stockShortages,
+    });
   } catch (e) {
     res.status(500).json({ ok: false, message: String(e) });
   }
@@ -9908,6 +10004,33 @@ app.get("/api/reports/ar-exceptions", async (_req, res) => {
   }
 });
 
+/** 負庫存／庫存異常清單 */
+app.get("/api/reports/inventory-exceptions", async (_req, res) => {
+  try {
+    const rows = await prisma.inventoryBalance.findMany({
+      where: { qtyOnHand: { lt: 0 } },
+      include: {
+        product: {
+          select: { id: true, productCode: true, name: true, sku: true, unit: true, isActive: true },
+        },
+      },
+      orderBy: { qtyOnHand: "asc" },
+    });
+    const data = rows.map((r) => ({
+      productId: r.productId.toString(),
+      productCode: r.product.productCode,
+      name: r.product.name,
+      sku: r.product.sku,
+      unit: r.product.unit,
+      isActive: r.product.isActive,
+      qtyOnHand: r.qtyOnHand,
+    }));
+    res.json({ ok: true, data, totalCount: data.length });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
 app.get("/api/reports/driver-cash-close", async (req, res) => {
   try {
     const ymd = typeof req.query.date === "string" ? req.query.date.trim() : toLocalYmd(new Date());
@@ -10029,16 +10152,38 @@ app.post("/api/billing/statements/post", async (req, res) => {
       return { salesOrderId: o.id, monthlyUntaxedAmount: cap };
     });
 
-    /** 整期未稅加總後計稅（策略 A）；invoice_mode=tax_inclusive 目前與外加同款數字寫入憑證，後續可再拆含稅總額語意 */
+    /**
+     * 發票與 AR 應收口徑：
+     * - tax_exclusive：訂單月結為未稅，稅外加 → AR／發票總額 = 未稅＋稅
+     * - tax_inclusive：訂單月結為含稅售價總額 → AR = 含稅總額；發票拆未稅／稅
+     * - none：不開發票 → AR = 訂單月結金額
+     */
     let taxAmount = new Prisma.Decimal(0);
+    let invoiceUntaxed = untaxedTotal;
     let totalWithTax = untaxedTotal;
-    if (invoiceMode !== "none") {
+    let arAmount = untaxedTotal;
+    if (invoiceMode === "tax_exclusive") {
       const c = computeTaxFromUntaxed(untaxedTotal, taxRate);
       taxAmount = c.taxAmount;
       totalWithTax = c.totalWithTax;
+      arAmount = c.totalWithTax;
+      invoiceUntaxed = untaxedTotal;
+    } else if (invoiceMode === "tax_inclusive") {
+      const br = breakdownCashTaxInvoice(untaxedTotal, "tax_inclusive", taxRate);
+      if (br) {
+        taxAmount = br.taxAmount;
+        invoiceUntaxed = br.untaxedAmount;
+        totalWithTax = br.totalWithTax;
+        arAmount = br.totalWithTax;
+      }
     }
 
     const dueDate = computeMonthlyDueDate(cust.monthlySettlementDay, new Date());
+    const cutoffDbDate = cutoffDateToDbDate(cutoffDate);
+    if (!cutoffDbDate) {
+      res.status(400).json({ ok: false, message: "cutoffDate 須為 YYYY-MM-DD" });
+      return;
+    }
 
     const postedBundle = await prisma.$transaction(async (tx) => {
       const stmt = await tx.billingStatement.create({
@@ -10046,8 +10191,8 @@ app.post("/api/billing/statements/post", async (req, res) => {
           statementNo: generateStatementNo(),
           customerId,
           status: "posted",
-          cutoffDate: cutoffDayStart,
-          untaxedTotal,
+          cutoffDate: cutoffDbDate,
+          untaxedTotal: invoiceUntaxed,
           taxAmount,
           totalWithTax,
           taxRate,
@@ -10072,7 +10217,7 @@ app.post("/api/billing/statements/post", async (req, res) => {
           billingStatementId: stmt.id,
           documentType: "delivery",
           billingType: "monthly",
-          documentAmount: untaxedTotal,
+          documentAmount: arAmount,
           dueDate,
           status: "open",
           postedAt: new Date(),
@@ -10084,12 +10229,12 @@ app.post("/api/billing/statements/post", async (req, res) => {
           arDocumentId: ar.id,
           customerId,
           salesOrderId: null,
-          originalAmount: untaxedTotal,
+          originalAmount: arAmount,
           allocatedAmount: new Prisma.Decimal(0),
-          outstandingAmount: untaxedTotal,
+          outstandingAmount: arAmount,
           dueDate,
           expectedCollectDate: dueDate,
-          status: arStatusFromOutstanding(untaxedTotal, dueDate),
+          status: arStatusFromOutstanding(arAmount, dueDate),
         },
       });
 
@@ -10098,11 +10243,11 @@ app.post("/api/billing/statements/post", async (req, res) => {
         data: {
           customerId,
           entryType: "statement_monthly_ar",
-          amount: untaxedTotal,
+          amount: arAmount,
           salesOrderId: null,
           sourceType: "billing_statement",
           sourceId: stmt.id,
-          note: `月結批次立帳 ${stmt.statementNo}（未稅 ${untaxedTotal.toString()}）：${orderNos}`,
+          note: `月結批次立帳 ${stmt.statementNo}（應收 ${arAmount.toString()}／未稅合計 ${invoiceUntaxed.toString()}）：${orderNos}`,
           createdByUserId: DEFAULT_CREATOR_USER_ID,
         },
       });
@@ -10114,7 +10259,7 @@ app.post("/api/billing/statements/post", async (req, res) => {
               basisType: "billing_statement",
               billingStatementId: stmt.id,
               invoiceMode,
-              untaxedAmount: untaxedTotal,
+              untaxedAmount: invoiceUntaxed,
               taxAmount,
               totalAmount: totalWithTax,
               taxRate,
@@ -11895,7 +12040,7 @@ app.post("/api/barrel-pickups", async (req, res) => {
       return;
     }
 
-    const parsedDate = parseLocalYmdRange(pickupDateYmd);
+    const parsedDate = parseLocalYmdToDbDate(pickupDateYmd);
     if (!parsedDate) {
       res.status(400).json({ ok: false, message: "pickupDateYmd 須為 YYYY-MM-DD" });
       return;
@@ -11937,7 +12082,7 @@ app.post("/api/barrel-pickups", async (req, res) => {
 
     const creatorId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
     const result = await prisma.$transaction(async (tx) => {
-      const pickupNo = await allocatePickupNo(tx, parsedDate.start);
+      const pickupNo = await allocatePickupNo(tx, parsedDate);
       const row = await tx.barrelPickup.create({
         data: {
           pickupNo,
@@ -11947,7 +12092,7 @@ app.post("/api/barrel-pickups", async (req, res) => {
           vehicleId,
           assignedByUserId: creatorId,
           createdByUserId: creatorId,
-          pickupDate: parsedDate.start,
+          pickupDate: parsedDate,
           status: "assigned",
           barrelsExpected,
           remark: remark || null,
@@ -12044,12 +12189,12 @@ app.patch("/api/barrel-pickups/:pickupId", async (req, res) => {
       }
       if (body.pickupDateYmd !== undefined) {
         const ymd = typeof body.pickupDateYmd === "string" ? body.pickupDateYmd.trim() : "";
-        const parsed = parseLocalYmdRange(ymd);
+        const parsed = parseLocalYmdToDbDate(ymd);
         if (!parsed) {
           res.status(400).json({ ok: false, message: "pickupDateYmd 須為 YYYY-MM-DD" });
           return;
         }
-        data.pickupDate = parsed.start;
+        data.pickupDate = parsed;
       }
     }
 

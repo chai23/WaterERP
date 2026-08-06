@@ -29,11 +29,12 @@ async function main() {
   });
 
   let updated = 0;
+  let unchanged = 0;
   for (const address of addresses) {
     const movements = await prisma.barrelMovement.findMany({
       where: { deliveryAddressId: address.id },
       orderBy: [{ occurredAt: "asc" }, { id: "asc" }],
-      select: { id: true, barrelDelta: true },
+      select: { id: true, barrelDelta: true, barrelsOnSiteBefore: true, barrelsOnSiteAfter: true },
     });
     if (movements.length === 0) continue;
 
@@ -41,6 +42,10 @@ async function main() {
     for (const movement of movements) {
       const site = reconciled.get(movement.id.toString());
       if (!site) continue;
+      if (movement.barrelsOnSiteBefore === site.before && movement.barrelsOnSiteAfter === site.after) {
+        unchanged += 1;
+        continue;
+      }
       await prisma.barrelMovement.update({
         where: { id: movement.id },
         data: {
@@ -52,7 +57,7 @@ async function main() {
     }
   }
 
-  console.log(`已更新 ${updated} 筆空桶流水之核銷前後在場桶數`);
+  console.log(`空桶流水核對完成：更新 ${updated} 筆，已一致略過 ${unchanged} 筆`);
 }
 
 main()
