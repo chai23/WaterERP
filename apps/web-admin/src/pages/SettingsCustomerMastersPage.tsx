@@ -116,14 +116,14 @@ function MasterSection({
 
       {loading ? <p className="card__hint">讀取中…</p> : null}
 
-      <div className="table-wrap">
-        <table className="data-table data-table--compact">
+      <div className="table-wrap master-table-wrap">
+        <table className="data-table data-table--compact data-table--no-card master-table">
           <thead>
             <tr>
               <th>排序</th>
               <th>名稱</th>
               <th>狀態</th>
-              <th className="customer-detail-actions-col">操作</th>
+              <th className="master-table__actions-col">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -134,8 +134,8 @@ function MasterSection({
                   <strong>{r.name}</strong>
                 </td>
                 <td>{r.isActive === false ? "已停用" : "使用中"}</td>
-                <td className="customer-detail-actions-col">
-                  <div className="customer-detail-actions customer-detail-actions--wrap">
+                <td className="master-table__actions-col">
+                  <div className="master-table__actions">
                     <button type="button" className="btn btn--ghost btn--sm" onClick={() => startEdit(r)}>
                       編輯
                     </button>

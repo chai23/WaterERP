@@ -119,6 +119,7 @@ type IncompleteOrder = {
   orderNo: string;
   status: string;
   scheduledDeliveryDate?: string | null;
+  deliveryAddress?: { label?: string | null; addressLine?: string | null } | null;
   lines?: Array<{
     qtyOrdered: number;
     linePurpose?: string | null;
@@ -134,6 +135,16 @@ type IncompleteOrder = {
     vehicle?: { plateNo?: string | null } | null;
   }>;
 };
+
+function deliveryAddressText(
+  addr: IncompleteOrder["deliveryAddress"] | undefined | null,
+): string {
+  if (!addr) return "";
+  const label = (addr.label ?? "").trim();
+  const line = (addr.addressLine ?? "").trim();
+  if (label && line) return `${label} · ${line}`;
+  return label || line;
+}
 
 function lineSummary(line: NonNullable<IncompleteOrder["lines"]>[number]): string {
   const name = line.product?.name?.trim() || "（商品）";
@@ -588,7 +599,13 @@ export default function OrderAssignPage() {
                     <div className="order-new__history-table order-assign__pick-scroll" role="list">
                       {incompleteOrders.map((o) => {
                         const sel = String(o.id) === assignForm.salesOrderId;
-                        const detailTitle = `${o.orderNo}\n${describeLatestAssignment(o)}\n${goodsSummary(o)}`;
+                        const addr = deliveryAddressText(o.deliveryAddress);
+                        const detailTitle = [
+                          o.orderNo,
+                          addr || "（無送貨地址）",
+                          describeLatestAssignment(o),
+                          goodsSummary(o),
+                        ].join("\n");
                         return (
                           <button
                             key={String(o.id)}
@@ -602,6 +619,9 @@ export default function OrderAssignPage() {
                               <span className="order-new__history-row__ymd mono-text">{fmtLocalYmd(o.scheduledDeliveryDate)}</span>
                               <span className="order-new__history-row__no mono-text">{o.orderNo}</span>
                               <span className={orderStatusBadgeClass(String(o.status))}>{orderStatusLabel(o.status)}</span>
+                            </span>
+                            <span className={`order-assign__pick-addr${addr ? "" : " text-muted"}`}>
+                              {addr || "（無送貨地址）"}
                             </span>
                             <span className="order-assign__assign-task text-muted">{describeLatestAssignment(o)}</span>
                             <span className="order-new__history-row__goods">{goodsSummary(o) || "無明細"}</span>
@@ -769,6 +789,9 @@ export default function OrderAssignPage() {
                     <span className={orderStatusBadgeClass(String(selectedOrderSummary.status))}>
                       {orderStatusLabel(selectedOrderSummary.status)}
                     </span>
+                  </p>
+                  <p className="order-assign__pick-addr">
+                    {deliveryAddressText(selectedOrderSummary.deliveryAddress) || "（無送貨地址）"}
                   </p>
                   <p className="text-muted">{describeLatestAssignment(selectedOrderSummary)}</p>
                   <p className="order-new__history-row__goods">{goodsSummary(selectedOrderSummary) || "無明細"}</p>

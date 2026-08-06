@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { barrelPickupStatusBadgeClass, barrelPickupStatusLabel } from "../adminUtils";
+import { barrelPickupStatusBadgeClass, barrelPickupStatusLabel, todayLocalYmd } from "../adminUtils";
 
 type PickupRow = {
   id: string;
@@ -53,10 +53,14 @@ export default function BarrelPickupSettlePage() {
   const [approvingId, setApprovingId] = useState<string | null>(null);
   const [approveMsg, setApproveMsg] = useState("");
   const [officeSettledAtLocal, setOfficeSettledAtLocal] = useState(() => toDatetimeLocalValue(new Date()));
+  const [driverReportDate, setDriverReportDate] = useState(todayLocalYmd);
+  const [reportingId, setReportingId] = useState<string | null>(null);
   const [drivers, setDrivers] = useState<{ id: string; user?: { employeeCode?: string; name?: string } }[]>([]);
   const [vehicles, setVehicles] = useState<{ id: string; plateNo: string }[]>([]);
   const [editDriverId, setEditDriverId] = useState<Record<string, string>>({});
   const [editVehicleId, setEditVehicleId] = useState<Record<string, string>>({});
+  const [editBarrelsReturned, setEditBarrelsReturned] = useState<Record<string, number>>({});
+  const [editDriverNote, setEditDriverNote] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -70,6 +74,8 @@ export default function BarrelPickupSettlePage() {
         return;
       }
       setRows(Array.isArray(data) ? data : []);
+      setEditBarrelsReturned({});
+      setEditDriverNote({});
     } catch {
       setErr("讀取失敗");
       setRows([]);
@@ -170,12 +176,48 @@ export default function BarrelPickupSettlePage() {
     await load();
   };
 
+  const reportPickup = async (pickupId: string) => {
+    const pickup = rows.find((r) => String(r.id) === pickupId);
+    if (!pickup) return;
+
+    const onSite = pickup.deliveryAddress?.barrelsOnSite ?? 0;
+    const barrelsInput = editBarrelsReturned[pickupId] ?? (pickup.barrelsReturned ?? 0);
+    const barrelsReturned = Math.max(0, Math.floor(Number(barrelsInput) || 0));
+    const note = String(editDriverNote[pickupId] ?? pickup.driverNote ?? pickup.remark ?? "").trim();
+
+    // 回報階段允許超過在場；核銷會拒絕。這裡只做輸入格式化。
+    setApproveMsg("");
+    setReportingId(pickupId);
+    try {
+      const res = await fetch(`/api/driver/barrel-pickups/${pickupId}/report`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          barrelsReturned,
+          note,
+          reportedAtYmd: driverReportDate,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setApproveMsg(data.message ?? "代登回報失敗");
+        return;
+      }
+      setApproveMsg(`已${pickup.status === "assigned" ? "代登回報" : "更新回報"}：${data.data?.pickupNo ?? pickup.pickupNo ?? pickupId}${barrelsReturned > onSite ? "（注意：可能超過在場，核銷會被拒絕）" : ""}`);
+      await load();
+    } catch {
+      setApproveMsg("代登回報時發生錯誤");
+    } finally {
+      setReportingId(null);
+    }
+  };
+
   return (
     <div className="page">
       <header className="page__head">
         <h2 className="page__title">核銷收空桶</h2>
         <p className="page__desc text-muted">
-          司機回報後為「待辦公室核銷」。確認後減少送貨點在場空桶；若回報桶數超過在場空桶數將拒絕核銷。
+          司機回報或辦公室代登回報後為「待辦公室核銷」。確認後減少送貨點在場空桶；若回報桶數超過在場空桶數將拒絕核銷。
         </p>
       </header>
 
@@ -202,6 +244,10 @@ export default function BarrelPickupSettlePage() {
             <div className="field field--md">
               <span>辦公室核銷時間</span>
               <input type="datetime-local" value={officeSettledAtLocal} onChange={(e) => setOfficeSettledAtLocal(e.target.value)} />
+            </div>
+            <div className="field field--md">
+              <span>司機回報日期</span>
+              <input type="date" value={driverReportDate} onChange={(e) => setDriverReportDate(e.target.value)} />
             </div>
           </div>
 
@@ -257,13 +303,82 @@ export default function BarrelPickupSettlePage() {
                         {row.driver?.user?.name ?? "—"}
                       </td>
                       <td className="num">
-                        {row.barrelsReturned != null ? returned : "—"}
-                        {over ? <span className="text-danger" style={{ display: "block", fontSize: "0.75rem" }}>超過在場</span> : null}
+                        {row.status === "assigned" || row.status === "pending_settlement" ? (
+                          (() => {
+                            const id = String(row.id);
+                            const current =
+                              editBarrelsReturned[id] ??
+                              (row.barrelsReturned != null ? row.barrelsReturned : 0);
+                            const overPreview = current > onSite;
+                            return (
+                              <>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step={1}
+                                  value={current}
+                                  onChange={(e) =>
+                                    setEditBarrelsReturned((p) => ({
+                                      ...p,
+                                      [id]: Math.max(0, Math.floor(Number(e.target.value) || 0)),
+                                    }))
+                                  }
+                                  style={{ width: "5.5rem" }}
+                                  aria-label="回報桶數"
+                                />
+                                {overPreview ? (
+                                  <span className="text-danger" style={{ display: "block", fontSize: "0.75rem" }}>
+                                    超過在場
+                                  </span>
+                                ) : null}
+                              </>
+                            );
+                          })()
+                        ) : (
+                          <>
+                            {row.barrelsReturned != null ? returned : "—"}
+                            {over ? <span className="text-danger" style={{ display: "block", fontSize: "0.75rem" }}>超過在場</span> : null}
+                          </>
+                        )}
                       </td>
                       <td className="cell-nowrap">{fmtDt(row.driverReportedAt)}</td>
                       <td className="cell-nowrap">{fmtDt(row.officeSettledAt)}</td>
-                      <td>{row.driverNote || row.remark || "—"}</td>
                       <td>
+                        {row.status === "assigned" || row.status === "pending_settlement" ? (
+                          (() => {
+                            const id = String(row.id);
+                            const current = editDriverNote[id] ?? row.driverNote ?? row.remark ?? "";
+                            return (
+                              <input
+                                type="text"
+                                value={current}
+                                onChange={(e) => setEditDriverNote((p) => ({ ...p, [id]: e.target.value }))}
+                                placeholder="備註（選填）"
+                                style={{ width: "100%", maxWidth: "18rem" }}
+                                aria-label="回報備註"
+                              />
+                            );
+                          })()
+                        ) : (
+                          row.driverNote || row.remark || "—"
+                        )}
+                      </td>
+                      <td>
+                        {row.status === "assigned" || row.status === "pending_settlement" ? (
+                          <button
+                            type="button"
+                            className="btn btn--secondary btn--sm"
+                            disabled={reportingId === String(row.id) || approvingId === String(row.id)}
+                            onClick={() => void reportPickup(String(row.id))}
+                            title={over ? "超過在場，核銷會被拒絕" : undefined}
+                          >
+                            {reportingId === String(row.id)
+                              ? "處理中…"
+                              : row.status === "assigned"
+                                ? "代登回報"
+                                : "更新回報"}
+                          </button>
+                        ) : null}
                         {row.status === "pending_settlement" ? (
                           <button
                             type="button"

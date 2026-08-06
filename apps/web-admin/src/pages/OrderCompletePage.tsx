@@ -3,6 +3,8 @@ import { Link } from "react-router-dom";
 import {
   deliveryAssignmentStatusBadgeClass,
   deliveryAssignmentStatusLabel,
+  driverEmployeeCode,
+  driverIsActive,
   fmtLocalDateTimeShort,
   formatOrderNoTail,
   moneyText,
@@ -10,6 +12,7 @@ import {
   settlementOutcomeLabel,
 } from "../adminUtils";
 import { DateTimeCell } from "../components/DateTimeCell";
+import { useDashboard } from "../DashboardContext";
 import { formatDeliveryFloor } from "../floorBonusUtils";
 
 type SettlementOrderLine = {
@@ -46,7 +49,8 @@ type SettlementRow = {
     lines?: SettlementOrderLine[];
     deliveryAddress?: { deliveryFloor?: number | null };
   };
-  driver?: { user?: { employeeCode?: string; name?: string } };
+  driverId?: string | number;
+  driver?: { id?: string | number; user?: { employeeCode?: string; name?: string } };
   vehicle?: { plateNo?: string };
   floorBonusRecords?: Array<{
     id?: string;
@@ -60,16 +64,6 @@ const PIPELINE_FILTERS: { value: string; label: string }[] = [
   { value: "", label: "全部流程" },
   { value: "pending_settlement", label: "待辦公室核銷" },
   { value: "settled", label: "已核銷結案" },
-];
-
-const OUTCOME_FILTERS: { value: string; label: string }[] = [
-  { value: "", label: "全部結果" },
-  { value: "not_delivered", label: "未送達" },
-  { value: "delivered_cash_exact", label: "已送達·足額" },
-  { value: "delivered_cash_short", label: "已送達·少收" },
-  { value: "delivered_cash_over", label: "已送達·多收" },
-  { value: "delivered_no_cash", label: "已送達·未收款" },
-  { value: "legacy", label: "舊資料（無分類）" },
 ];
 
 /** 供 datetime-local 使用（本地時間） */
@@ -89,16 +83,25 @@ function collectionVariance(row: SettlementRow): number | null {
 }
 
 export default function OrderCompletePage() {
+  const { drivers } = useDashboard();
   const [rows, setRows] = useState<SettlementRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [filterPipeline, setFilterPipeline] = useState("");
-  const [filterOutcome, setFilterOutcome] = useState("");
+  const [filterDriverId, setFilterDriverId] = useState("");
   const [q, setQ] = useState("");
   const [approvingId, setApprovingId] = useState<string | null>(null);
   const [approveMsg, setApproveMsg] = useState("");
   /** 辦公室核銷入帳時間（可改為測試日／補登） */
   const [officeSettledAtLocal, setOfficeSettledAtLocal] = useState(() => toDatetimeLocalValue(new Date()));
+
+  const activeDrivers = useMemo(
+    () =>
+      [...drivers]
+        .filter(driverIsActive)
+        .sort((a, b) => driverEmployeeCode(a).localeCompare(driverEmployeeCode(b), "zh-Hant")),
+    [drivers],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -124,6 +127,9 @@ export default function OrderCompletePage() {
     void load();
   }, [load]);
 
+  const rowDriverId = (row: SettlementRow): string =>
+    String(row.driverId ?? row.driver?.id ?? "");
+
   const filtered = useMemo(() => {
     let list = rows;
     if (filterPipeline === "pending_settlement") {
@@ -131,10 +137,8 @@ export default function OrderCompletePage() {
     } else if (filterPipeline === "settled") {
       list = list.filter((row) => row.status === "completed" || row.status === "not_delivered");
     }
-    if (filterOutcome === "legacy") {
-      list = list.filter((row) => row.settlementOutcome == null && row.status === "completed");
-    } else if (filterOutcome) {
-      list = list.filter((row) => row.settlementOutcome === filterOutcome);
+    if (filterDriverId) {
+      list = list.filter((row) => rowDriverId(row) === filterDriverId);
     }
     const s = q.trim().toLowerCase();
     if (s) {
@@ -146,7 +150,7 @@ export default function OrderCompletePage() {
       });
     }
     return list;
-  }, [rows, filterPipeline, filterOutcome, q]);
+  }, [rows, filterPipeline, filterDriverId, q]);
 
   const approveAssignment = async (row: SettlementRow) => {
     const id = String(row.id);
@@ -294,18 +298,23 @@ export default function OrderCompletePage() {
             </select>
           </div>
           <div className="field field--sm">
-            <span>司機回報結果</span>
-            <select value={filterOutcome} onChange={(e) => setFilterOutcome(e.target.value)}>
-              {OUTCOME_FILTERS.map((o) => (
-                <option key={o.value || "all"} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
+            <span>選擇司機</span>
+            <select value={filterDriverId} onChange={(e) => setFilterDriverId(e.target.value)}>
+              <option value="">全部司機</option>
+              {activeDrivers.map((d) => {
+                const code = driverEmployeeCode(d);
+                const name = d.user?.name ?? "（未命名）";
+                return (
+                  <option key={String(d.id)} value={String(d.id)}>
+                    {code ? `${code} ${name}` : name}
+                  </option>
+                );
+              })}
             </select>
           </div>
           <div className="field" style={{ flex: "1 1 12rem" }}>
             <span>關鍵字</span>
-            <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="單號、客戶、司機" />
+            <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="單號、客戶" />
           </div>
           <button type="button" className="btn btn--secondary btn--sm" onClick={() => void load()} disabled={loading}>
             {loading ? "載入中…" : "重新載入"}
