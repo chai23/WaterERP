@@ -1259,7 +1259,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
         <div className="order-new__trail">
           {selectedCustomer && estimatedByBilling.cash > 0 ? (
             <p className="order-new__cash-policy">
-              <strong>現金列：</strong>前期未清欠款與本單<strong>現金列</strong>金額由系統合併；司機端顯示前期未收＋本次現金列與建議收款，核銷時以<strong>FIFO</strong>沖銷實收。
+              <strong>現金列：</strong>建議收款＝本單現金 AR＋可催收舊欠 − 預收錢包；核銷時<strong>本單優先</strong>沖 AR，溢收進預收錢包。
             </p>
           ) : null}
 

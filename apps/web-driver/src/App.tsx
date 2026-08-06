@@ -791,7 +791,7 @@ export default function App() {
                           </div>
                         ) : null}
                         <div style={{ marginTop: "0.15rem", fontSize: "0.78rem", color: "var(--d-muted)", lineHeight: 1.45 }}>
-                          建議收款＝客戶名下<strong>全部未沖銷應收</strong>（現金／月結）合計 − <strong>預收錢包</strong>；實收後後台依<strong>到期日先後 FIFO</strong>沖帳。
+                          建議收款＝客戶名下<strong>本單＋可催收舊欠 AR</strong>合計 − <strong>預收錢包</strong>；核銷時<strong>本單優先</strong>，再依到期日沖帳，溢收轉預收。
                         </div>
                         <div style={{ marginTop: "0.2rem" }}>
                           <strong>差額</strong> 由「實收 − 本趟請收」計算（後台核銷時入帳）

@@ -266,11 +266,11 @@ export default function OrderCompletePage() {
           <br />
           <strong>司機更正：</strong>任務為「待辦公室核銷」時，司機可於司機端再次送出以<strong>修改</strong>空桶／收款／是否送達（辦公室核銷後即鎖定）；系統會記錄修正事件供查核。
           <br />
-          <strong>現金客戶：</strong>應收現金＝<strong>前期未清現金欠款＋本單訂單總額</strong>；核銷時先為本單<strong>立帳</strong>，再將<strong>回報現金＋回報支票</strong>合計依<strong>FIFO</strong>沖最舊未結清應收（分開入帳）。司機回報時請分開填寫現金與支票欄位。
+          <strong>現金客戶：</strong>建議收款＝本單未清 AR＋可催收舊欠 − 預收錢包；核銷時將<strong>回報現金／支票</strong>分開入收款單，並<strong>本單優先</strong>再依到期日沖 AR。溢收轉預收錢包。
           <br />
           首次部署請執行 <code>database/migrations/006_office_settlement_gate.sql</code> 後重啟 API。
           <br />
-          <strong>辦公室核銷時間</strong>可於下方自訂（預設為現在），用於測試或補登；月結之 <code>office_settled_at</code>、現金入帳時間與部分流水時間會與之一致。
+          <strong>辦公室核銷時間</strong>可於下方自訂（預設為現在），用於測試或補登；月結之 <code>office_settled_at</code>、收款入帳時間與部分紀錄時間會與之一致。
           <br />
           <strong>搬運獎金／客戶搬運費：</strong>司機回報上樓桶數後，系統會依「客戶搬運費」單價自動加入訂單（月結併入月結；現金／預付收現金），並重算應收。核銷後不可再改搬運費。司機獎金另計，請至{" "}
           <Link to="/orders/floor-bonus">搬運獎金／費率</Link>。

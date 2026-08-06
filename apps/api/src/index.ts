@@ -588,15 +588,6 @@ const billingPeriodKeyFromDate = (d: Date): string => {
   return `${y}-${m}`;
 };
 
-/** 現金應收／沖銷相關分錄（用於加總「現金欠款」與 FIFO；不含月結／預付） */
-const CASH_AR_ENTRY_TYPES: readonly string[] = [
-  "cash_ar_accrual",
-  "cash_receipt_alloc",
-  "cash_variance_short",
-  "cash_variance_over",
-  "cash_offset_order",
-];
-
 const decMin = (a: Prisma.Decimal, b: Prisma.Decimal): Prisma.Decimal => (a.lessThan(b) ? a : b);
 const decMax = (a: Prisma.Decimal, b: Prisma.Decimal): Prisma.Decimal => (a.greaterThan(b) ? a : b);
 
@@ -1134,13 +1125,74 @@ async function syncBillingStatementsAfterAllocations(tx: Prisma.TransactionClien
     include: { arDocument: true },
   });
   const stmtIds = new Set<bigint>();
+  const monthlySalesOrderIds = new Set<bigint>();
   for (const i of items) {
     const sid = i.arDocument.billingStatementId;
     if (sid != null) stmtIds.add(sid);
+    if (i.salesOrderId != null && i.arDocument.billingType === "monthly") {
+      monthlySalesOrderIds.add(i.salesOrderId);
+    }
   }
   for (const sid of stmtIds) {
     await syncOneBillingStatementPaidFields(tx, sid);
   }
+  for (const soId of monthlySalesOrderIds) {
+    await syncMonthlyOrderReceivedFromAr(tx, soId);
+  }
+}
+
+/** 依該單月結 AR open items 回填 monthly_received_amount / monthly_period_paid */
+async function syncMonthlyOrderReceivedFromAr(tx: Prisma.TransactionClient, salesOrderId: bigint): Promise<void> {
+  const order = await tx.salesOrder.findUnique({
+    where: { id: salesOrderId },
+    select: {
+      id: true,
+      totalAmount: true,
+      monthlySubtotal: true,
+      billingTypeAtOrder: true,
+      billingStatementOrder: { select: { monthlyUntaxedAmount: true } },
+    },
+  });
+  if (!order) return;
+
+  const monthlyOpens = await tx.arOpenItem.findMany({
+    where: {
+      salesOrderId,
+      arDocument: { billingType: "monthly", status: { not: "voided" } },
+    },
+    select: { originalAmount: true, allocatedAmount: true, outstandingAmount: true },
+  });
+  if (monthlyOpens.length === 0) return;
+
+  let original = new Prisma.Decimal(0);
+  let allocated = new Prisma.Decimal(0);
+  let outstanding = new Prisma.Decimal(0);
+  for (const oi of monthlyOpens) {
+    original = original.plus(oi.originalAmount);
+    allocated = allocated.plus(oi.allocatedAmount);
+    outstanding = outstanding.plus(oi.outstandingAmount);
+  }
+
+  const capFromJunction = order.billingStatementOrder?.monthlyUntaxedAmount;
+  const cap =
+    capFromJunction != null
+      ? new Prisma.Decimal(capFromJunction)
+      : orderMonthlyCap({
+          monthlySubtotal: order.monthlySubtotal,
+          totalAmount: order.totalAmount,
+          billingTypeAtOrder: order.billingTypeAtOrder,
+        });
+
+  /** 已清金額含收款沖帳與折讓（original − outstanding） */
+  const cleared = original.minus(outstanding);
+  const received = decMin(cleared.greaterThan(0) ? cleared : allocated, cap);
+  await tx.salesOrder.update({
+    where: { id: salesOrderId },
+    data: {
+      monthlyReceivedAmount: received,
+      monthlyPeriodPaid: outstanding.lessThanOrEqualTo(0) && cap.greaterThan(0),
+    },
+  });
 }
 
 async function applyAllocations(
@@ -1571,211 +1623,6 @@ function actualDeliveryInstant(so: {
   return d ? new Date(d) : null;
 }
 
-type MonthlyFifoOrderRow = {
-  id: bigint;
-  orderNo: string;
-  monthlyCap: Prisma.Decimal;
-  monthlyReceivedAmount: Prisma.Decimal;
-};
-
-/** 月結收款：依訂單列 FIFO 沖銷；須在交易內呼叫。若實收大於待沖合計則拋錯 */
-async function allocateMonthlyFifoToOrders(
-  tx: Prisma.TransactionClient,
-  params: {
-    customerId: bigint;
-    orders: MonthlyFifoOrderRow[];
-    payDec: Prisma.Decimal;
-    paymentId: bigint;
-    paymentNoteBase: string;
-    createdByUserId: bigint;
-  },
-): Promise<{
-  allocations: Array<{
-    orderId: string;
-    orderNo: string;
-    allocated: string;
-    newMonthlyReceived: string;
-    fullyPaid: boolean;
-  }>;
-  openItemAmounts: Array<{ openItemId: bigint; amount: Prisma.Decimal }>;
-}> {
-  const { customerId, orders, payDec, paymentId, createdByUserId, paymentNoteBase } = params;
-  let remaining = payDec;
-  const out: Array<{
-    orderId: string;
-    orderNo: string;
-    allocated: string;
-    newMonthlyReceived: string;
-    fullyPaid: boolean;
-  }> = [];
-  const openItemAmounts: Array<{ openItemId: bigint; amount: Prisma.Decimal }> = [];
-
-  for (const o of orders) {
-    if (remaining.lessThanOrEqualTo(0)) break;
-    const outstanding = o.monthlyCap.minus(o.monthlyReceivedAmount);
-    if (outstanding.lessThanOrEqualTo(0)) continue;
-    const take = decMin(remaining, outstanding);
-    if (take.lessThanOrEqualTo(0)) continue;
-    const newReceived = o.monthlyReceivedAmount.plus(take);
-    const fullyPaid = newReceived.greaterThanOrEqualTo(o.monthlyCap);
-    let orderRemain = take;
-    const orderOpenItems = await tx.arOpenItem.findMany({
-      where: {
-        customerId,
-        salesOrderId: o.id,
-        outstandingAmount: { gt: new Prisma.Decimal(0) },
-        arDocument: { billingType: "monthly" },
-      },
-      orderBy: [{ dueDate: "asc" }, { id: "asc" }],
-    });
-    for (const open of orderOpenItems) {
-      if (orderRemain.lessThanOrEqualTo(0)) break;
-      const use = decMin(orderRemain, new Prisma.Decimal(open.outstandingAmount));
-      if (use.lessThanOrEqualTo(0)) continue;
-      openItemAmounts.push({ openItemId: open.id, amount: use });
-      orderRemain = orderRemain.minus(use);
-    }
-    if (orderRemain.greaterThan(0)) throw new Error(`MONTHLY_AR_MISMATCH:${o.orderNo}`);
-
-    await tx.customerLedgerEntry.create({
-      data: {
-        customerId,
-        entryType: "monthly_receipt_alloc",
-        amount: take.negated(),
-        salesOrderId: o.id,
-        paymentId,
-        note: `${paymentNoteBase}｜FIFO 沖銷 ${o.orderNo}`,
-        createdByUserId,
-      },
-    });
-    await tx.salesOrder.update({
-      where: { id: o.id },
-      data: {
-        monthlyReceivedAmount: newReceived,
-        monthlyPeriodPaid: fullyPaid,
-      },
-    });
-    remaining = remaining.minus(take);
-    out.push({
-      orderId: o.id.toString(),
-      orderNo: o.orderNo,
-      allocated: take.toString(),
-      newMonthlyReceived: newReceived.toString(),
-      fullyPaid,
-    });
-  }
-
-  if (remaining.greaterThan(0)) {
-    throw new Error("MONTHLY_OVERPAY");
-  }
-  return { allocations: out, openItemAmounts };
-}
-
-async function sumCashArBalanceForCustomer(
-  tx: Pick<PrismaClient, "customerLedgerEntry">,
-  customerId: bigint,
-): Promise<Prisma.Decimal> {
-  const agg = await tx.customerLedgerEntry.aggregate({
-    where: { customerId, entryType: { in: [...CASH_AR_ENTRY_TYPES] } },
-    _sum: { amount: true },
-  });
-  return new Prisma.Decimal(agg._sum.amount ?? 0);
-}
-
-/** 依 sales_order_id 由小到大（先進先出）回傳仍有未沖銷餘額之訂單 */
-async function getOpenCashArByOrderOldestFirst(
-  tx: Pick<PrismaClient, "customerLedgerEntry">,
-  customerId: bigint,
-): Promise<Array<{ salesOrderId: bigint; balance: Prisma.Decimal }>> {
-  const rows = await tx.customerLedgerEntry.groupBy({
-    by: ["salesOrderId"],
-    where: {
-      customerId,
-      salesOrderId: { not: null },
-      entryType: { in: [...CASH_AR_ENTRY_TYPES] },
-    },
-    _sum: { amount: true },
-  });
-  const list: Array<{ salesOrderId: bigint; balance: Prisma.Decimal }> = [];
-  for (const r of rows) {
-    if (r.salesOrderId == null) continue;
-    const bal = new Prisma.Decimal(r._sum.amount ?? 0);
-    if (bal.greaterThan(0)) {
-      list.push({ salesOrderId: r.salesOrderId, balance: bal });
-    }
-  }
-  list.sort((a, b) => (a.salesOrderId < b.salesOrderId ? -1 : a.salesOrderId > b.salesOrderId ? 1 : 0));
-  return list;
-}
-
-/**
- * 現金核銷：本單立帳（應收）後，將實收依 FIFO 沖最舊未結清應收；沖完仍有剩餘則為多收。
- * 須在交易內呼叫；呼叫前勿已寫入本單之 cash_ar_accrual。
- */
-async function postCashArAccrualAndFifoReceipt(
-  tx: Pick<PrismaClient, "customerLedgerEntry">,
-  params: {
-    customerId: bigint;
-    salesOrderId: bigint;
-    orderNo: string;
-    orderTotal: Prisma.Decimal;
-    receivedDec: Prisma.Decimal;
-    createdByUserId: bigint;
-    /** 與辦公室核銷時間一致（略過則用 DB 預設 now） */
-    bookedAt?: Date;
-  },
-): Promise<void> {
-  const { customerId, salesOrderId, orderNo, orderTotal, receivedDec, createdByUserId, bookedAt } = params;
-  const ledgerTime = bookedAt ? { createdAt: bookedAt } : {};
-
-  await tx.customerLedgerEntry.create({
-    data: {
-      customerId,
-      entryType: "cash_ar_accrual",
-      amount: orderTotal,
-      salesOrderId,
-      note: `現金應收立帳（訂單 ${orderNo}）`,
-      createdByUserId,
-      ...ledgerTime,
-    },
-  });
-
-  let remaining = receivedDec;
-  while (remaining.greaterThan(0)) {
-    const open = await getOpenCashArByOrderOldestFirst(tx, customerId);
-    if (open.length === 0) break;
-    const oldest = open[0]!;
-    const take = decMin(remaining, oldest.balance);
-    if (take.lessThanOrEqualTo(0)) break;
-    await tx.customerLedgerEntry.create({
-      data: {
-        customerId,
-        entryType: "cash_receipt_alloc",
-        amount: take.negated(),
-        salesOrderId: oldest.salesOrderId,
-        note: `FIFO 沖銷現金收款（核銷訂單 ${orderNo}）`,
-        createdByUserId,
-        ...ledgerTime,
-      },
-    });
-    remaining = remaining.minus(take);
-  }
-
-  if (remaining.greaterThan(0)) {
-    await tx.customerLedgerEntry.create({
-      data: {
-        customerId,
-        entryType: "cash_variance_over",
-        amount: remaining.negated(),
-        salesOrderId,
-        note: `多收（FIFO 沖銷後剩餘）訂單 ${orderNo}`,
-        createdByUserId,
-        ...ledgerTime,
-      },
-    });
-  }
-}
-
 /** 核銷／建議收款時，他單 AR 是否可視為「可催收舊欠」 */
 function isCollectiblePriorSalesOrderAr(salesOrder: {
   status: string;
@@ -2017,12 +1864,6 @@ const buildDriverBillingHints = async (params: {
     cashSubtotal: params.order.cashSubtotal ?? null,
     totalAmount: orderTotal,
     billingTypeAtOrder: params.order.billingTypeAtOrder ?? null,
-  });
-  const cashReceivablePortion = orderCashReceivablePortion({
-    cashSubtotal: params.order.cashSubtotal ?? null,
-    totalAmount: orderTotal,
-    billingTypeAtOrder: params.order.billingTypeAtOrder ?? null,
-    cashInvoiceMode: params.order.cashInvoiceMode ?? null,
   });
   const monthlyPortion = orderMonthlyCap({
     monthlySubtotal: params.order.monthlySubtotal ?? null,
@@ -4162,9 +4003,8 @@ app.get("/api/customers/:customerId", async (req, res) => {
       return;
     }
 
-    // 同步修正：UI 顯示「月結已付」使用 sales_orders.monthlyPeriodPaid，
-    // 但若沖帳走的是一般 receipt-voucher 路徑，DB 的 monthlyPeriodPaid 可能未更新。
-    // 此處用 AR（月結）是否仍有 outstandingAmount>0 做計算回填，確保「月結期別已付：是/否」一致。
+    // 月結已付：applyAllocations 會回填 monthlyPeriodPaid／monthlyReceivedAmount；
+    // 此處仍以 AR outstanding 做防禦性覆蓋，避免舊資料或未同步狀態顯示錯誤。
     const salesOrders = row.salesOrders ?? [];
     const idsWithMonthlyPortion = salesOrders.filter((o) => orderHasMonthlyPortion(o)).map((o) => o.id);
 
@@ -6379,7 +6219,6 @@ app.post("/api/settlements/approve", async (req, res) => {
     const outcome = assignment.settlementOutcome;
     const order = assignment.salesOrder;
     const customerRow = order.customer;
-    const cashReceivablePortion = orderCashReceivablePortion(order);
     const monthlyPortion = orderMonthlyCap(order);
 
     if (outcome === "not_delivered") {
@@ -6654,18 +6493,7 @@ app.post("/api/settlements/approve", async (req, res) => {
       const cashPaymentNote = cashReceived > 0 ? paymentNoteBase.replace("司機收款", "司機現金收款") : "";
       const checkPaymentNote = checkReceived > 0 ? paymentNoteBase.replace("司機收款", "司機支票收款") : "";
 
-      if (cashReceivablePortion.greaterThan(0)) {
-        await postCashArAccrualAndFifoReceipt(tx, {
-          customerId,
-          salesOrderId: assignment.salesOrderId,
-          orderNo: order.orderNo,
-          orderTotal: cashReceivablePortion,
-          receivedDec,
-          createdByUserId: DEFAULT_CREATOR_USER_ID,
-          bookedAt: settledAt,
-        });
-      }
-
+      /** 現金應收以 AR 為唯一來源：開單／回報已立 AR；此處只入收款單並沖帳（本單優先，再舊欠） */
       if (cashReceived > 0) {
         await postSettlementReceiptByMethod(tx, {
           customerId,
@@ -6725,7 +6553,7 @@ app.post("/api/settlements/approve", async (req, res) => {
             collectedTotal: cashReceived + checkReceived,
             orderTotal: expected.toString(),
             orderCashAdjustment: String(order.orderCashAdjustment ?? 0),
-            cashSettlementMode: effective === "cash" ? "fifo_cash_ar" : undefined,
+            cashSettlementMode: cashReceived + checkReceived > 0 ? "ar_receipt_fifo" : undefined,
             cashDue: cashDueResolved.toString(),
             expectedAmount: cashDueResolved.toString(),
             cashVariance: varianceDisplayResolved.toString(),
@@ -9947,6 +9775,7 @@ app.post("/api/ar/credit-notes", async (req, res) => {
         include: { arDocument: true },
       });
       const creditNoteCashOrderIds = new Set<bigint>();
+      const touchedOpenItemIds: bigint[] = [];
       for (const open of opens) {
         if (remain.lessThanOrEqualTo(0)) break;
         const take = decMin(remain, new Prisma.Decimal(open.outstandingAmount));
@@ -9968,11 +9797,20 @@ app.post("/api/ar/credit-notes", async (req, res) => {
             status: outstandingAmount.lessThanOrEqualTo(0) ? "paid" : "partially_paid",
           },
         });
+        touchedOpenItemIds.push(open.id);
+        const related = await tx.arOpenItem.count({
+          where: { arDocumentId: open.arDocumentId, outstandingAmount: { gt: new Prisma.Decimal(0) } },
+        });
+        await tx.arDocument.update({
+          where: { id: open.arDocumentId },
+          data: { status: related === 0 ? "paid" : "open" },
+        });
         if (open.salesOrderId && open.arDocument.billingType === "cash") {
           creditNoteCashOrderIds.add(open.salesOrderId);
         }
         remain = remain.minus(take);
       }
+      await syncBillingStatementsAfterAllocations(tx, touchedOpenItemIds);
       for (const oid of creditNoteCashOrderIds) {
         await tryFulfillPendingPrepaidTopup(tx, oid);
       }

@@ -2727,7 +2727,7 @@ export default function DataCustomersPage() {
                   <div>
                     <h4 className="customer-edit-section__title">帳務流水</h4>
                     <p className="customer-edit-section__desc">
-                      會計分錄（現金／月結／預付等）；「本筆後餘額」為該筆入帳後之往來餘額。
+                      由 AR 立帳／收款沖帳合成（與往來餘額同一口徑）；「本筆後餘額」為該筆入帳後之往來餘額。
                     </p>
                   </div>
                 </header>

@@ -308,11 +308,11 @@ export type CustomerPaymentRow = {
 
 export function ledgerEntryTypeLabel(entryType: string): string {
   const map: Record<string, string> = {
-    cash_ar_accrual: "現金·應收立帳",
-    cash_receipt_alloc: "現金·收款沖銷（FIFO）",
-    cash_variance_short: "現金·少收（舊）",
-    cash_variance_over: "現金·多收",
-    cash_offset_order: "現金·沖銷（舊）",
+    cash_ar_accrual: "現金·應收立帳（歷史）",
+    cash_receipt_alloc: "現金·收款沖銷（歷史）",
+    cash_variance_short: "現金·少收（歷史）",
+    cash_variance_over: "現金·多收（歷史）",
+    cash_offset_order: "現金·沖銷（歷史）",
     monthly_accrual: "月結·應收",
     statement_monthly_ar: "月結·批次立帳（未稅 AR）",
     monthly_payment: "月結·收款（整期一筆，舊）",

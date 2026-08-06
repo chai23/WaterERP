@@ -129,6 +129,20 @@ const MIGRATION_PROBES: Record<string, MigrationProbe> = {
   "046_drop_floor_bonus_wage.sql": async (p) =>
     !(await columnExists(p, "payroll_settings", "floor_bonus_wage")),
   "047_customer_lifecycle.sql": (p) => tableExists(p, "customer_lifecycle_events"),
+  "048_drop_legacy_cash_ledger_entries.sql": async (p) => {
+    if (!(await tableExists(p, "customer_ledger_entries"))) return false;
+    const rows = await p.$queryRaw<{ cnt: bigint }[]>`
+      SELECT COUNT(*) AS cnt FROM customer_ledger_entries
+      WHERE entry_type IN (
+        'cash_ar_accrual',
+        'cash_receipt_alloc',
+        'cash_variance_over',
+        'cash_variance_short',
+        'cash_offset_order'
+      )
+    `;
+    return Number(rows[0]?.cnt ?? 0) === 0;
+  },
 };
 
 async function bootstrapFromExistingDb(prisma: PrismaClient): Promise<void> {
