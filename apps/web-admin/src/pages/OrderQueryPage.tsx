@@ -94,7 +94,7 @@ export default function OrderQueryPage() {
         結果 <span className="card__title-count">{filtered.length} 筆</span>
       </h3>
       <div className="table-wrap">
-        <table className="data-table">
+        <table className="data-table data-table--orders-query">
           <thead>
             <tr>
               <th>單號</th>

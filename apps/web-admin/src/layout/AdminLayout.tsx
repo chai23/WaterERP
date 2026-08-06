@@ -92,6 +92,10 @@ const navGroups: { id: string; title: string; items: { to: string; label: string
 
 const PRINT_SETTING_PATHS = ["/settings/order-print", "/settings/print-slogans", "/settings/order-announcements"];
 
+const pageMeta = navGroups.flatMap((group) =>
+  group.items.map((item) => ({ ...item, groupTitle: group.title })),
+);
+
 function groupIdFromPath(pathname: string): string | null {
   if (pathname.startsWith("/orders/barrel-pickup")) return "barrel-pickup";
   if (pathname.startsWith("/orders/service-tickets")) return "service-tickets";
@@ -131,6 +135,13 @@ export default function AdminLayout() {
   );
 
   const showOverview = canAccessOverview(user?.role);
+  const currentPage = useMemo(() => {
+    if (location.pathname === "/overview") return { label: "營運總覽", groupTitle: "首頁" };
+    return pageMeta.find((item) => location.pathname.startsWith(item.to)) ?? {
+      label: "後台管理",
+      groupTitle: "營運系統",
+    };
+  }, [location.pathname]);
 
   useEffect(() => {
     const activeId = groupIdFromPath(location.pathname);
@@ -287,6 +298,20 @@ export default function AdminLayout() {
 
         <main className="admin-main" ref={mainRef}>
           {error ? <div className="alert alert--error">{error}</div> : null}
+          <div className="admin-page-heading">
+            <div>
+              <div className="admin-page-heading__crumb">
+                <span>超好企業</span>
+                <span aria-hidden="true">/</span>
+                <span>{currentPage.groupTitle}</span>
+              </div>
+              <h2>{currentPage.label}</h2>
+            </div>
+            <div className="admin-page-heading__date" aria-label="今天日期">
+              <span>今天</span>
+              <strong>{new Intl.DateTimeFormat("zh-TW", { year: "numeric", month: "2-digit", day: "2-digit", weekday: "short" }).format(new Date())}</strong>
+            </div>
+          </div>
           <Outlet />
         </main>
       </div>

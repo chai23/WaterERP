@@ -424,7 +424,7 @@ export default function OrderCompletePage() {
         ) : null}
         {err ? <div className="alert alert--error" style={{ marginTop: "0.75rem" }}>{err}</div> : null}
         <div className="table-wrap" style={{ marginTop: "0.75rem" }}>
-          <table className="data-table">
+          <table className="data-table data-table--order-complete">
             <thead>
               <tr>
                 <th>
