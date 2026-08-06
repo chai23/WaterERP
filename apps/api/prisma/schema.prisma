@@ -40,6 +40,9 @@ model User {
   serviceTicketsReturnAssigned ServiceTicket[]    @relation("ServiceTicketReturnAssigner")
   serviceTicketEventsCreated ServiceTicketEvent[] @relation("ServiceTicketEventCreator")
   customerLifecycleEventsRecorded CustomerLifecycleEvent[] @relation("CustomerLifecycleRecorder")
+  operationAuditLogs              OperationAuditLog[]      @relation("OperationAuditActor")
+  dayCloseLocksLocked             DayCloseLock[]           @relation("DayCloseLocker")
+  dayCloseLocksUnlocked           DayCloseLock[]           @relation("DayCloseUnlocker")
 
   @@map("users")
 }
@@ -432,6 +435,10 @@ model SalesOrder {
   cashInvoiceMode        String?   @map("cash_invoice_mode") @db.VarChar(32)
   /// admin | liff
   source                 String    @default("admin") @db.VarChar(16)
+  /// 測試資料標記；帳務報表預設排除
+  isTest                 Boolean   @default(false) @map("is_test")
+  /// 測試批次 ID（可選；清除測試批次用）
+  testBatchId            String?   @map("test_batch_id") @db.VarChar(64)
   createdByUserId        BigInt?   @map("created_by_user_id") @db.UnsignedBigInt
   createdAt              DateTime  @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt              DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
@@ -454,6 +461,8 @@ model SalesOrder {
   serviceTickets       ServiceTicket[]
 
   @@index([customerId, officeSettledAt])
+  @@index([isTest])
+  @@index([testBatchId, isTest])
   @@map("sales_orders")
 }
 
@@ -1245,4 +1254,38 @@ model ServiceTicketEvent {
 
   @@index([serviceTicketId])
   @@map("service_ticket_events")
+}
+
+/// 操作稽核：開單／改數量／司機回報／核銷等（誰／何時／前後 JSON）
+model OperationAuditLog {
+  id           BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  actorUserId  BigInt?  @map("actor_user_id") @db.UnsignedBigInt
+  action       String   @db.VarChar(64)
+  entityType   String?  @map("entity_type") @db.VarChar(64)
+  entityId     String?  @map("entity_id") @db.VarChar(64)
+  beforeJson   Json?    @map("before_json")
+  afterJson    Json?    @map("after_json")
+  createdAt    DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  actor User? @relation("OperationAuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([action, createdAt])
+  @@index([entityType, entityId])
+  @@index([actorUserId])
+  @@map("operation_audit_logs")
+}
+
+/// 每日關帳鎖定（P5）：unlocked_at IS NULL 表示該營業日目前鎖定
+model DayCloseLock {
+  businessDate     DateTime  @id @map("business_date") @db.Date
+  lockedAt         DateTime  @map("locked_at") @db.DateTime(3)
+  lockedByUserId   BigInt    @map("locked_by_user_id") @db.UnsignedBigInt
+  unlockedAt       DateTime? @map("unlocked_at") @db.DateTime(3)
+  unlockedByUserId BigInt?   @map("unlocked_by_user_id") @db.UnsignedBigInt
+  note             String?   @db.VarChar(500)
+
+  lockedBy   User  @relation("DayCloseLocker", fields: [lockedByUserId], references: [id])
+  unlockedBy User? @relation("DayCloseUnlocker", fields: [unlockedByUserId], references: [id], onDelete: SetNull)
+
+  @@map("day_close_locks")
 }

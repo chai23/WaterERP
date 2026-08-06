@@ -1,4 +1,5 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { lazy, Suspense } from "react";
 import "./admin-ui.css";
 import "./admin-mobile.css";
 import { AuthProvider, useAuth } from "./AuthContext";
@@ -21,32 +22,44 @@ import DataDriversPage from "./pages/DataDriversPage";
 import DataProductsPage from "./pages/DataProductsPage";
 import DataVehiclesPage from "./pages/DataVehiclesPage";
 import DataUsersPage from "./pages/DataUsersPage";
-import ReportDailyPage from "./pages/ReportDailyPage";
-import ReportMonthlyPage from "./pages/ReportMonthlyPage";
-import ReportCustomerLifecyclePage from "./pages/ReportCustomerLifecyclePage";
-import DriverDailyCollectionReportPage from "./pages/DriverDailyCollectionReportPage";
-import BillingArPage from "./pages/BillingArPage";
-import SettingsPromotionsPage from "./pages/SettingsPromotionsPage";
-import SettingsPermissionsPage from "./pages/SettingsPermissionsPage";
-import SettingsOrderPrintPage from "./pages/SettingsOrderPrintPage";
-import SettingsCustomerMastersPage from "./pages/SettingsCustomerMastersPage";
-import SettingsPrintSlogansPage from "./pages/SettingsPrintSlogansPage";
-import SettingsOrderAnnouncementsPage from "./pages/SettingsOrderAnnouncementsPage";
-import ExpenseNewPage from "./pages/ExpenseNewPage";
-import ExpenseQueryPage from "./pages/ExpenseQueryPage";
-import ExpenseAnalyticsPage from "./pages/ExpenseAnalyticsPage";
-import ExpenseVerifyPage from "./pages/ExpenseVerifyPage";
 import SettingsExpenseCategoriesPage from "./pages/SettingsExpenseCategoriesPage";
 import FloorDeliveryBonusQueryPage from "./pages/FloorDeliveryBonusQueryPage";
-import TaxInvoiceQueryPage from "./pages/TaxInvoiceQueryPage";
 
+const ReportDailyPage = lazy(() => import("./pages/ReportDailyPage"));
+const ReportMonthlyPage = lazy(() => import("./pages/ReportMonthlyPage"));
+const ReportExceptionCenterPage = lazy(() => import("./pages/ReportExceptionCenterPage"));
+const ReportCustomerLifecyclePage = lazy(() => import("./pages/ReportCustomerLifecyclePage"));
+const DriverDailyCollectionReportPage = lazy(() => import("./pages/DriverDailyCollectionReportPage"));
+const BillingArPage = lazy(() => import("./pages/BillingArPage"));
+const TaxInvoiceQueryPage = lazy(() => import("./pages/TaxInvoiceQueryPage"));
+const SettingsPromotionsPage = lazy(() => import("./pages/SettingsPromotionsPage"));
+const SettingsPermissionsPage = lazy(() => import("./pages/SettingsPermissionsPage"));
+const SettingsOrderPrintPage = lazy(() => import("./pages/SettingsOrderPrintPage"));
+const SettingsCustomerMastersPage = lazy(() => import("./pages/SettingsCustomerMastersPage"));
+const SettingsPrintSlogansPage = lazy(() => import("./pages/SettingsPrintSlogansPage"));
+const SettingsOrderAnnouncementsPage = lazy(() => import("./pages/SettingsOrderAnnouncementsPage"));
+const SettingsOpsPage = lazy(() => import("./pages/SettingsOpsPage"));
+const ExpenseNewPage = lazy(() => import("./pages/ExpenseNewPage"));
+const ExpenseQueryPage = lazy(() => import("./pages/ExpenseQueryPage"));
+const ExpenseAnalyticsPage = lazy(() => import("./pages/ExpenseAnalyticsPage"));
+const ExpenseVerifyPage = lazy(() => import("./pages/ExpenseVerifyPage"));
+
+function LazyFallback() {
+  return (
+    <div className="card">
+      <p className="card__hint">載入頁面中…</p>
+    </div>
+  );
+}
 function ProtectedShell() {
   const { user, loading } = useAuth();
   if (loading) return <div className="login-shell"><div className="login-panel">登入狀態確認中…</div></div>;
   if (!user) return <Navigate to="/login" replace />;
   return (
     <DashboardProvider>
-      <AdminLayout />
+      <Suspense fallback={<LazyFallback />}>
+        <AdminLayout />
+      </Suspense>
     </DashboardProvider>
   );
 }
@@ -95,6 +108,7 @@ export default function App() {
               <Route path="reports" element={<Navigate to="/reports/daily" replace />} />
               <Route path="reports/daily" element={<ReportDailyPage />} />
               <Route path="reports/monthly" element={<ReportMonthlyPage />} />
+              <Route path="reports/exceptions" element={<ReportExceptionCenterPage />} />
               <Route path="reports/customer-lifecycle" element={<ReportCustomerLifecyclePage />} />
               <Route path="reports/driver-daily" element={<DriverDailyCollectionReportPage />} />
               <Route path="reports/billing-ar" element={<BillingArPage />} />
@@ -109,6 +123,7 @@ export default function App() {
               <Route path="settings/order-announcements" element={<SettingsOrderAnnouncementsPage />} />
               <Route path="settings/customer-masters" element={<SettingsCustomerMastersPage />} />
               <Route path="settings/expense-categories" element={<SettingsExpenseCategoriesPage />} />
+              <Route path="settings/ops" element={<SettingsOpsPage />} />
 
               {/* 舊路徑導向新結構 */}
               <Route path="masters" element={<Navigate to="/data/customers" replace />} />

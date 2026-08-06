@@ -1,7 +1,7 @@
 import { paymentMethodLabel } from "./expenseUtils";
 import { moneyText, settlementOutcomeLabel } from "./adminUtils";
 
-export type ReportPeriodRange = "today" | "month";
+export type ReportPeriodRange = "today" | "day" | "month" | "custom";
 
 export type ReportPeriodSummary = {
   periodRevenue: number;
@@ -11,20 +11,41 @@ export type ReportPeriodSummary = {
   periodCollectedOther: number;
   todayCompletedCount: number;
   periodOrderOutstanding: number;
+  periodPendingMonthly?: number;
+  periodPendingMonthlyCount?: number;
+  periodReceivableTotal?: number;
+  revenueCash?: number;
+  revenueMonthly?: number;
+  revenuePrepaidTopup?: number;
+  revenuePrepaidConsume?: number;
+  prepaidConsumeBarrels?: number;
+  arOpening?: number;
+  arPeriodAccrual?: number;
+  arPeriodCollected?: number;
+  arClosing?: number;
   driverCashCollected: number;
   deliveryRevenue?: number;
   serviceRevenue?: number;
+};
+
+export type ReportFilters = {
+  customerId: string;
+  driverId: string;
+  billingType: "" | "cash" | "monthly" | "prepaid";
 };
 
 export type ReportDeliveryRow = {
   id: string | number | bigint;
   completedAt?: string | null;
   cashReceived?: string | number | null;
+  checkReceived?: string | number | null;
+  expectedAmount?: string | number | null;
   settlementOutcome?: string | null;
   salesOrder?: {
     orderNo?: string | null;
     totalAmount?: string | number | null;
     orderBillableAmount?: string | number | null;
+    billingTypeAtOrder?: string | null;
     customer?: { name?: string | null } | null;
   } | null;
   driver?: { user?: { name?: string | null; employeeCode?: string | null } | null; employeeCode?: string | null } | null;
@@ -78,22 +99,35 @@ export function orderBillableDisplay(order: ReportDeliveryRow["salesOrder"]): st
   return moneyText(order?.orderBillableAmount ?? order?.totalAmount);
 }
 
+export function deliverySettlementLabel(row: ReportDeliveryRow): string {
+  return settlementOutcomeLabel(row.settlementOutcome, {
+    billingTypeAtOrder: row.salesOrder?.billingTypeAtOrder,
+    expectedAmount: row.expectedAmount != null ? Number(row.expectedAmount) : null,
+    cashReceived: row.cashReceived != null ? Number(row.cashReceived) : 0,
+    checkReceived: row.checkReceived != null ? Number(row.checkReceived) : 0,
+  });
+}
+
+export function appendReportFilterParams(qs: URLSearchParams, filters: ReportFilters): void {
+  if (filters.customerId) qs.set("customerId", filters.customerId);
+  if (filters.driverId) qs.set("driverId", filters.driverId);
+  if (filters.billingType) qs.set("billingType", filters.billingType);
+}
+
 export { paymentMethodLabel, moneyText, settlementOutcomeLabel };
 
-export function downloadReportCsv(filename: string, headers: string[], rows: (string | number)[][]) {
-  const toCell = (value: unknown): string => {
-    const text = String(value ?? "");
-    return `"${text.replace(/"/g, '""')}"`;
+export function downloadReportCsv(filename: string, headers: string[], rows: Array<Array<string | number | null | undefined>>) {
+  const escape = (v: string | number | null | undefined) => {
+    const s = v == null ? "" : String(v);
+    if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
   };
-  const lines = [headers.map(toCell).join(","), ...rows.map((r) => r.map(toCell).join(","))];
-  const csv = `\uFEFF${lines.join("\r\n")}`;
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const lines = [headers.map(escape).join(","), ...rows.map((r) => r.map(escape).join(","))];
+  const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
   a.download = filename;
-  document.body.appendChild(a);
   a.click();
-  a.remove();
   URL.revokeObjectURL(url);
 }

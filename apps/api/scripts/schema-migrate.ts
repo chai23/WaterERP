@@ -143,6 +143,9 @@ const MIGRATION_PROBES: Record<string, MigrationProbe> = {
     `;
     return Number(rows[0]?.cnt ?? 0) === 0;
   },
+  "049_test_orders_and_audit.sql": async (p) =>
+    (await columnExists(p, "sales_orders", "is_test")) && (await tableExists(p, "operation_audit_logs")),
+  "050_day_close.sql": (p) => tableExists(p, "day_close_locks"),
 };
 
 async function bootstrapFromExistingDb(prisma: PrismaClient): Promise<void> {

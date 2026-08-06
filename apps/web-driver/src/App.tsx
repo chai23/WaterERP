@@ -78,7 +78,14 @@ function billingTypeLabel(code: string | undefined): string {
   }
 }
 
-function settlementOutcomeShort(code: string | null | undefined): string {
+function settlementOutcomeShort(
+  code: string | null | undefined,
+  opts?: { expectedAmount?: string | number | null },
+): string {
+  const expected = Number(opts?.expectedAmount ?? NaN);
+  if (Number.isFinite(expected) && expected <= 0 && (code === "delivered_cash_exact" || code === "delivered_no_cash")) {
+    return "無需收款";
+  }
   switch (code) {
     case "delivered_cash_exact":
       return "足額";
@@ -831,7 +838,9 @@ export default function App() {
                       應收現金 {job.driverBillingHints.lastCompletedDelivery.expectedAmount ?? "—"} · 實收{" "}
                       {job.driverBillingHints.lastCompletedDelivery.cashReceived} · 差額{" "}
                       {job.driverBillingHints.lastCompletedDelivery.cashVariance ?? "—"} ·
-                      {settlementOutcomeShort(job.driverBillingHints.lastCompletedDelivery.settlementOutcome)}
+                      {settlementOutcomeShort(job.driverBillingHints.lastCompletedDelivery.settlementOutcome, {
+                        expectedAmount: job.driverBillingHints.lastCompletedDelivery.expectedAmount,
+                      })}
                     </div>
                   ) : (
                     <div style={{ marginTop: "0.25rem", fontSize: "0.78rem", color: "var(--d-muted)" }}>尚無更早的同客戶已結案配送紀錄。</div>

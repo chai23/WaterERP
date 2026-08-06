@@ -629,7 +629,14 @@ export default function OrderProxyReportPage() {
                       {deliveryAssignmentStatusLabel(job.status)}
                     </span>
                     {job.settlementOutcome ? (
-                      <span className="pill pill--subtle">{settlementOutcomeLabel(job.settlementOutcome)}</span>
+                      <span className="pill pill--subtle">
+                        {settlementOutcomeLabel(job.settlementOutcome, {
+                          billingTypeAtOrder: job.salesOrder?.billingTypeAtOrder,
+                          expectedAmount: job.expectedAmount != null ? Number(job.expectedAmount) : job.driverBillingHints?.cashDue != null ? Number(job.driverBillingHints.cashDue) : null,
+                          cashReceived: job.cashReceived != null ? Number(job.cashReceived) : 0,
+                          checkReceived: job.checkReceived != null ? Number(job.checkReceived) : 0,
+                        })}
+                      </span>
                     ) : null}
                   </div>
                   <p className="proxy-report-card__meta">

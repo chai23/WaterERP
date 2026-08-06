@@ -395,7 +395,28 @@ export function deliveryAssignmentStatusLabel(code: string | null | undefined): 
 }
 
 /** 配送核銷結果（delivery_assignments.settlement_outcome） */
-export function settlementOutcomeLabel(code: string | null | undefined): string {
+export function settlementOutcomeLabel(
+  code: string | null | undefined,
+  opts?: {
+    billingTypeAtOrder?: string | null;
+    expectedAmount?: number | null;
+    cashReceived?: number | null;
+    checkReceived?: number | null;
+  },
+): string {
+  const expected = Number(opts?.expectedAmount ?? NaN);
+  const collected = Number(opts?.cashReceived ?? 0) + Number(opts?.checkReceived ?? 0);
+  const noFieldCash =
+    Number.isFinite(expected) && expected <= 0 && collected <= 0 &&
+    (code === "delivered_cash_exact" || code === "delivered_no_cash" || !code);
+
+  if (noFieldCash) {
+    const bt = (opts?.billingTypeAtOrder ?? "").trim();
+    if (bt === "monthly") return "月結・無需現場收款";
+    if (bt === "prepaid") return "預付扣桶";
+    if (code === "delivered_cash_exact" || code === "delivered_no_cash") return "已送達・無需現場收款";
+  }
+
   switch (code) {
     case "not_delivered":
       return "未送達";

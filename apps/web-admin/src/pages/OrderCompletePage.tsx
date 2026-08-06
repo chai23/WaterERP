@@ -43,6 +43,7 @@ type SettlementRow = {
   orderBillableAmount?: unknown;
   salesOrder?: {
     orderNo?: string;
+    billingTypeAtOrder?: string | null;
     customer?: { name?: string };
     totalAmount?: unknown;
     cashSubtotal?: unknown;
@@ -94,6 +95,8 @@ export default function OrderCompletePage() {
   const [approveMsg, setApproveMsg] = useState("");
   /** 辦公室核銷入帳時間（可改為測試日／補登） */
   const [officeSettledAtLocal, setOfficeSettledAtLocal] = useState(() => toDatetimeLocalValue(new Date()));
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [batchBusy, setBatchBusy] = useState(false);
 
   const activeDrivers = useMemo(
     () =>
@@ -222,7 +225,12 @@ export default function OrderCompletePage() {
       row.salesOrder?.customer?.name ?? "",
       [row.driver?.user?.employeeCode, row.driver?.user?.name].filter(Boolean).join(" / ") || "",
       row.vehicle?.plateNo ?? "",
-      settlementOutcomeLabel(row.settlementOutcome),
+      settlementOutcomeLabel(row.settlementOutcome, {
+        billingTypeAtOrder: row.salesOrder?.billingTypeAtOrder,
+        expectedAmount: row.expectedAmount != null ? Number(row.expectedAmount) : null,
+        cashReceived: row.cashReceived != null ? Number(row.cashReceived) : 0,
+        checkReceived: row.checkReceived != null ? Number(row.checkReceived) : 0,
+      }),
       row.expectedAmount != null ? String(row.expectedAmount) : "",
       row.cashReceived != null ? String(row.cashReceived) : "",
       row.checkReceived != null ? String(row.checkReceived) : "",
@@ -251,6 +259,59 @@ export default function OrderCompletePage() {
   };
 
   const pendingCount = useMemo(() => rows.filter((r) => r.status === "pending_settlement").length, [rows]);
+  const batchEligible = useMemo(
+    () =>
+      filtered.filter(
+        (r) => r.status === "pending_settlement" && r.settlementOutcome === "delivered_cash_exact",
+      ),
+    [filtered],
+  );
+
+  const toggleSelected = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const selectAllExact = () => {
+    setSelectedIds(new Set(batchEligible.map((r) => String(r.id))));
+  };
+
+  const runBatchComplete = async () => {
+    const ids = [...selectedIds].filter((id) => batchEligible.some((r) => String(r.id) === id));
+    if (ids.length === 0) {
+      setApproveMsg("請勾選足額（無異常）待核銷單");
+      return;
+    }
+    if (!window.confirm(`確定批次核銷 ${ids.length} 筆足額單？短收／溢收／未收款會略過。`)) return;
+    setBatchBusy(true);
+    setApproveMsg("");
+    try {
+      const officeSettledAt = new Date(officeSettledAtLocal).toISOString();
+      const res = await fetch("/api/settlements/batch-complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ assignmentIds: ids, officeSettledAt }),
+      });
+      const payload = await res.json();
+      if (!res.ok || !payload?.ok) {
+        setApproveMsg(payload?.message ?? "批次核銷失敗");
+        return;
+      }
+      const succeeded = Array.isArray(payload.data?.succeeded) ? payload.data.succeeded : [];
+      const skipped = Array.isArray(payload.data?.skipped) ? payload.data.skipped : [];
+      setApproveMsg(`批次核銷完成：成功 ${succeeded.length}、略過 ${skipped.length}`);
+      setSelectedIds(new Set());
+      await load();
+    } catch {
+      setApproveMsg("批次核銷時發生錯誤");
+    } finally {
+      setBatchBusy(false);
+    }
+  };
 
   return (
     <>
@@ -338,6 +399,17 @@ export default function OrderCompletePage() {
           >
             核銷時間設為現在
           </button>
+          <button type="button" className="btn btn--secondary btn--sm" onClick={selectAllExact} disabled={!batchEligible.length}>
+            全選足額單（{batchEligible.length}）
+          </button>
+          <button
+            type="button"
+            className="btn btn--primary btn--sm"
+            disabled={batchBusy || selectedIds.size === 0}
+            onClick={() => void runBatchComplete()}
+          >
+            {batchBusy ? "批次核銷中…" : `批次核銷（${selectedIds.size}）`}
+          </button>
         </div>
         <p className="card__hint" style={{ marginTop: "0.35rem" }}>
           按下「確認核銷」時會傳送上方時間；與司機回報日不同時，以本欄為準（例如月結截止日篩選）。
@@ -355,6 +427,9 @@ export default function OrderCompletePage() {
           <table className="data-table">
             <thead>
               <tr>
+                <th>
+                  <span className="sr-only">選取</span>
+                </th>
                 <th>流程狀態</th>
                 <th className="col-datetime">司機回報時間</th>
                 <th className="col-datetime">辦公室核銷時間</th>
@@ -375,6 +450,16 @@ export default function OrderCompletePage() {
             <tbody>
               {filtered.map((row) => (
                 <tr key={String(row.id)}>
+                  <td>
+                    {row.status === "pending_settlement" && row.settlementOutcome === "delivered_cash_exact" ? (
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(String(row.id))}
+                        onChange={() => toggleSelected(String(row.id))}
+                        aria-label={`選取核銷 ${row.salesOrder?.orderNo ?? row.id}`}
+                      />
+                    ) : null}
+                  </td>
                   <td>
                     <span className={deliveryAssignmentStatusBadgeClass(row.status)}>{deliveryAssignmentStatusLabel(row.status)}</span>
                   </td>
@@ -406,7 +491,14 @@ export default function OrderCompletePage() {
                   </td>
                   <td className="cell-nowrap">{row.driver?.user?.name ?? "—"}</td>
                   <td>
-                    <span className={settlementBadgeClass(row.settlementOutcome)}>{settlementOutcomeLabel(row.settlementOutcome)}</span>
+                    <span className={settlementBadgeClass(row.settlementOutcome)}>
+                      {settlementOutcomeLabel(row.settlementOutcome, {
+                        billingTypeAtOrder: row.salesOrder?.billingTypeAtOrder,
+                        expectedAmount: row.expectedAmount != null ? Number(row.expectedAmount) : null,
+                        cashReceived: row.cashReceived != null ? Number(row.cashReceived) : 0,
+                        checkReceived: row.checkReceived != null ? Number(row.checkReceived) : 0,
+                      })}
+                    </span>
                     {row.status === "pending_settlement" ? (
                       <div className="text-muted" style={{ fontSize: "0.75rem", marginTop: "0.2rem" }}>
                         待辦公室確認

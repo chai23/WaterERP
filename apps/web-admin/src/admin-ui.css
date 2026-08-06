@@ -1168,6 +1168,17 @@
   border-radius: var(--radius);
   border: 1px solid var(--border);
   background: var(--bg-subtle, #f8fafc);
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+
+button.report-flow__step {
+  cursor: pointer;
+}
+
+button.report-flow__step:hover {
+  filter: brightness(0.98);
 }
 
 .report-flow__step--revenue {

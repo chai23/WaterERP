@@ -85,6 +85,37 @@ function requireRole(req: express.Request, res: express.Response, roles: readonl
   return user;
 }
 
+/** Prisma Json 可接受的值：bigint → string */
+function toAuditJson(value: unknown): Prisma.InputJsonValue | typeof Prisma.JsonNull {
+  if (value === null || value === undefined) return Prisma.JsonNull;
+  return JSON.parse(
+    JSON.stringify(value, (_key, v) => (typeof v === "bigint" ? v.toString() : v)),
+  ) as Prisma.InputJsonValue;
+}
+
+async function writeOperationAuditLog(
+  client: Prisma.TransactionClient | PrismaClient,
+  args: {
+    actorUserId?: bigint | null;
+    action: string;
+    entityType?: string | null;
+    entityId?: string | null;
+    before?: unknown;
+    after?: unknown;
+  },
+): Promise<void> {
+  await client.operationAuditLog.create({
+    data: {
+      actorUserId: args.actorUserId ?? null,
+      action: args.action,
+      entityType: args.entityType ?? null,
+      entityId: args.entityId ?? null,
+      beforeJson: args.before === undefined ? undefined : toAuditJson(args.before),
+      afterJson: args.after === undefined ? undefined : toAuditJson(args.after),
+    },
+  });
+}
+
 const hashPassword = (plain: string) => bcrypt.hash(plain, 10);
 
 const toBigInt = (value: unknown): bigint | null => {
@@ -6226,42 +6257,29 @@ app.get("/api/settlements", async (_req, res) => {
   }
 });
 
-/** 辦公室確認核銷：執行訂單結案、出庫、收款入帳（或未送達退回） */
-app.post("/api/settlements/approve", async (req, res) => {
-  try {
-    const body = req.body as {
-      assignmentId?: unknown;
-      /** YYYY-MM-DD：本地該日 00:00（未傳 officeSettledAt 時使用） */
-      officeSettledAtYmd?: unknown;
-      /** ISO 8601：辦公室核銷完成時間（優先於 officeSettledAtYmd） */
-      officeSettledAt?: unknown;
-    };
-    const assignmentId = toBigInt(body.assignmentId);
-    if (!assignmentId) {
-      res.status(400).json({ ok: false, message: "參數錯誤：assignmentId 必填" });
-      return;
+/** 辦公室確認核銷核心（單筆／批次共用） */
+type OfficeSettlementApproveResult =
+  | {
+      ok: true;
+      data: Awaited<ReturnType<typeof prisma.deliveryAssignment.findUnique>>;
+      notify: {
+        kind: "not_delivered" | "delivered";
+        customerId: bigint;
+        salesOrderId: bigint;
+        assignmentId: bigint;
+        orderNo: string;
+        settlementOutcome?: string;
+        failureReason?: string | null;
+      };
     }
-    let settledAt = new Date();
-    const officeIso = typeof body.officeSettledAt === "string" ? body.officeSettledAt.trim() : "";
-    if (officeIso) {
-      const parsedIso = new Date(officeIso);
-      if (Number.isNaN(parsedIso.getTime())) {
-        res.status(400).json({ ok: false, message: "officeSettledAt 須為有效 ISO 日期時間" });
-        return;
-      }
-      settledAt = parsedIso;
-    } else {
-      const ymd = typeof body.officeSettledAtYmd === "string" ? body.officeSettledAtYmd.trim() : "";
-      if (ymd) {
-        const parsed = parseLocalYmdRange(ymd);
-        if (!parsed) {
-          res.status(400).json({ ok: false, message: "officeSettledAtYmd 須為 YYYY-MM-DD" });
-          return;
-        }
-        settledAt = parsed.start;
-      }
-    }
+  | { ok: false; httpStatus: number; message: string };
 
+async function runOfficeSettlementApprove(
+  assignmentId: bigint,
+  settledAt: Date,
+  actorUserId: bigint = DEFAULT_CREATOR_USER_ID,
+): Promise<OfficeSettlementApproveResult> {
+  try {
     const assignment = await prisma.deliveryAssignment.findUnique({
       where: { id: assignmentId },
       include: {
@@ -6275,12 +6293,10 @@ app.post("/api/settlements/approve", async (req, res) => {
       },
     });
     if (!assignment) {
-      res.status(404).json({ ok: false, message: "找不到配送任務" });
-      return;
+      return { ok: false as const, httpStatus: 404, message: "找不到配送任務" };
     }
     if (assignment.status !== "pending_settlement") {
-      res.status(400).json({ ok: false, message: "此任務不在「待辦公室核銷」狀態" });
-      return;
+      return { ok: false as const, httpStatus: 400, message: "此任務不在「待辦公室核銷」狀態" };
     }
 
     const outcome = assignment.settlementOutcome;
@@ -6336,6 +6352,26 @@ app.post("/api/settlements/approve", async (req, res) => {
           },
         });
 
+        await writeOperationAuditLog(tx, {
+          actorUserId,
+          action: "office_settlement",
+          entityType: "delivery_assignment",
+          entityId: assignmentId.toString(),
+          before: {
+            assignmentStatus: assignment.status,
+            settlementOutcome: assignment.settlementOutcome,
+            salesOrderStatus: order.status,
+          },
+          after: {
+            outcome: "not_delivered",
+            assignmentStatus: "not_delivered",
+            salesOrderStatus: "confirmed",
+            orderNo: order.orderNo,
+            salesOrderId: order.id.toString(),
+            officeSettledAt: settledAt.toISOString(),
+          },
+        });
+
         return tx.deliveryAssignment.findUnique({
           where: { id: assignmentId },
           include: {
@@ -6348,8 +6384,18 @@ app.post("/api/settlements/approve", async (req, res) => {
         });
       });
 
-      res.json({ ok: true, data: result });
-      return;
+      return {
+        ok: true as const,
+        data: result,
+        notify: {
+          kind: "not_delivered" as const,
+          customerId: assignment.salesOrder.customerId,
+          salesOrderId: assignment.salesOrderId,
+          assignmentId,
+          orderNo: assignment.salesOrder.orderNo,
+          failureReason: assignment.failureReason,
+        },
+      };
     }
 
     if (
@@ -6358,8 +6404,7 @@ app.post("/api/settlements/approve", async (req, res) => {
       outcome !== "delivered_cash_short" &&
       outcome !== "delivered_cash_over"
     ) {
-      res.status(400).json({ ok: false, message: "無效的核銷結果，無法確認" });
-      return;
+      return { ok: false as const, httpStatus: 400, message: "無效的核銷結果，無法確認" };
     }
 
     const cashReceived = Number(assignment.cashReceived);
@@ -6641,6 +6686,30 @@ app.post("/api/settlements/approve", async (req, res) => {
         },
       });
 
+      await writeOperationAuditLog(tx, {
+        actorUserId,
+        action: "office_settlement",
+        entityType: "delivery_assignment",
+        entityId: assignmentId.toString(),
+        before: {
+          assignmentStatus: assignment.status,
+          settlementOutcome: assignment.settlementOutcome,
+          salesOrderStatus: order.status,
+          cashReceived: assignment.cashReceived.toString(),
+          checkReceived: String(assignment.checkReceived ?? 0),
+        },
+        after: {
+          outcome: assignment.settlementOutcome,
+          assignmentStatus: "completed",
+          salesOrderStatus: "completed",
+          orderNo: order.orderNo,
+          salesOrderId: order.id.toString(),
+          officeSettledAt: settledAt.toISOString(),
+          cashReceived,
+          checkReceived,
+        },
+      });
+
       return tx.deliveryAssignment.findUnique({
         where: { id: assignmentId },
         include: {
@@ -6653,54 +6722,207 @@ app.post("/api/settlements/approve", async (req, res) => {
       });
     });
 
-    res.json({ ok: true, data: result });
-
-    if (result) {
-      const orderNo = assignment.salesOrder.orderNo;
-      const customerId = assignment.salesOrder.customerId;
-      const settlementOutcome = String(assignment.settlementOutcome ?? outcome ?? "");
-      if (settlementOutcome === "not_delivered") {
-        void notifyCustomerViaLine(prisma, {
-          customerId,
-          eventType: "order_not_delivered",
-          salesOrderId: assignment.salesOrderId,
-          deliveryAssignmentId: assignmentId,
-          text: formatNotDeliveredMessage({
-            orderNo,
-            reason: assignment.failureReason,
-          }),
-        }).catch((err) => console.error("[line-notify] order_not_delivered", err));
-      } else {
-        void notifyCustomerViaLine(prisma, {
-          customerId,
-          eventType: "order_delivered",
-          salesOrderId: assignment.salesOrderId,
-          deliveryAssignmentId: assignmentId,
-          text: formatDeliveredMessage({ orderNo }),
-        }).catch((err) => console.error("[line-notify] order_delivered", err));
-      }
-    }
+    return {
+      ok: true as const,
+      data: result,
+      notify: {
+        kind: "delivered" as const,
+        customerId: assignment.salesOrder.customerId,
+        salesOrderId: assignment.salesOrderId,
+        assignmentId,
+        orderNo: assignment.salesOrder.orderNo,
+        settlementOutcome: String(assignment.settlementOutcome ?? outcome ?? ""),
+        failureReason: assignment.failureReason,
+      },
+    };
   } catch (e) {
     const msg = String(e);
     if (msg.includes("PREPAID_INSUFFICIENT:")) {
       const [, pName, need, avail] = msg.split(":");
-      res.status(400).json({
+      return {
         ok: false,
+        httpStatus: 400,
         message: `預付桶商品額度不足：${pName} 需 ${need} 桶、可用 ${avail} 桶。請先儲值同商品桶數後再核銷。`,
-      });
-      return;
+      };
     }
     if (msg.includes("INSUFFICIENT_STOCK:")) {
       const [, pName, need, avail] = msg.split(":");
-      res.status(400).json({
+      return {
         ok: false,
+        httpStatus: 400,
         message: `庫存不足，無法核銷出庫：${pName} 需 ${need}、庫存 ${avail}。請先入庫或調整庫存後再核銷。`,
-      });
+      };
+    }
+    return { ok: false, httpStatus: 500, message: msg };
+  }
+}
+
+function fireSettlementApproveNotify(result: Extract<OfficeSettlementApproveResult, { ok: true }>) {
+  const n = result.notify;
+  if (n.kind === "not_delivered" || n.settlementOutcome === "not_delivered") {
+    void notifyCustomerViaLine(prisma, {
+      customerId: n.customerId,
+      eventType: "order_not_delivered",
+      salesOrderId: n.salesOrderId,
+      deliveryAssignmentId: n.assignmentId,
+      text: formatNotDeliveredMessage({
+        orderNo: n.orderNo,
+        reason: n.failureReason,
+      }),
+    }).catch((err) => console.error("[line-notify] order_not_delivered", err));
+  } else {
+    void notifyCustomerViaLine(prisma, {
+      customerId: n.customerId,
+      eventType: "order_delivered",
+      salesOrderId: n.salesOrderId,
+      deliveryAssignmentId: n.assignmentId,
+      text: formatDeliveredMessage({ orderNo: n.orderNo }),
+    }).catch((err) => console.error("[line-notify] order_delivered", err));
+  }
+}
+
+async function assertDayNotClosedForSettlement(settledAt: Date): Promise<string | null> {
+  try {
+    const ymd = toLocalYmd(settledAt);
+    const businessDate = parseLocalYmdToDbDate(ymd);
+    if (!businessDate) return null;
+    const lock = await prisma.dayCloseLock.findUnique({ where: { businessDate } });
+    if (lock && lock.unlockedAt == null) {
+      return `營業日 ${ymd} 已關帳，無法核銷（請管理員先解鎖）`;
+    }
+  } catch {
+    /* table may not exist yet before migration */
+  }
+  return null;
+}
+
+/** 辦公室確認核銷：執行訂單結案、出庫、收款入帳（或未送達退回） */
+app.post("/api/settlements/approve", async (req, res) => {
+  try {
+    const body = req.body as {
+      assignmentId?: unknown;
+      /** YYYY-MM-DD：本地該日 00:00（未傳 officeSettledAt 時使用） */
+      officeSettledAtYmd?: unknown;
+      /** ISO 8601：辦公室核銷完成時間（優先於 officeSettledAtYmd） */
+      officeSettledAt?: unknown;
+    };
+    const assignmentId = toBigInt(body.assignmentId);
+    if (!assignmentId) {
+      res.status(400).json({ ok: false, message: "參數錯誤：assignmentId 必填" });
       return;
     }
-    res.status(500).json({ ok: false, message: msg });
+    let settledAt = new Date();
+    const officeIso = typeof body.officeSettledAt === "string" ? body.officeSettledAt.trim() : "";
+    if (officeIso) {
+      const parsedIso = new Date(officeIso);
+      if (Number.isNaN(parsedIso.getTime())) {
+        res.status(400).json({ ok: false, message: "officeSettledAt 須為有效 ISO 日期時間" });
+        return;
+      }
+      settledAt = parsedIso;
+    } else {
+      const ymd = typeof body.officeSettledAtYmd === "string" ? body.officeSettledAtYmd.trim() : "";
+      if (ymd) {
+        const parsed = parseLocalYmdRange(ymd);
+        if (!parsed) {
+          res.status(400).json({ ok: false, message: "officeSettledAtYmd 須為 YYYY-MM-DD" });
+          return;
+        }
+        settledAt = parsed.start;
+      }
+    }
+
+    const dayLockMsg = await assertDayNotClosedForSettlement(settledAt);
+    if (dayLockMsg) {
+      res.status(423).json({ ok: false, message: dayLockMsg });
+      return;
+    }
+
+    const actorUserId = getAuthUser(req)?.id ?? DEFAULT_CREATOR_USER_ID;
+    const result = await runOfficeSettlementApprove(assignmentId, settledAt, actorUserId);
+    if (!result.ok) {
+      res.status(result.httpStatus).json({ ok: false, message: result.message });
+      return;
+    }
+    res.json({ ok: true, data: result.data });
+    fireSettlementApproveNotify(result);
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
   }
 });
+
+/** 批次核銷：僅 pending_settlement 且 delivered_cash_exact（含零應收足額） */
+app.post("/api/settlements/batch-complete", async (req, res) => {
+  try {
+    const body = req.body as { assignmentIds?: unknown; officeSettledAt?: unknown };
+    if (!Array.isArray(body.assignmentIds) || body.assignmentIds.length === 0) {
+      res.status(400).json({ ok: false, message: "參數錯誤：assignmentIds 必填" });
+      return;
+    }
+    const ids = body.assignmentIds
+      .map((x) => toBigInt(x))
+      .filter((x): x is bigint => x != null);
+    if (ids.length === 0) {
+      res.status(400).json({ ok: false, message: "assignmentIds 無效" });
+      return;
+    }
+    let settledAt = new Date();
+    const officeIso = typeof body.officeSettledAt === "string" ? body.officeSettledAt.trim() : "";
+    if (officeIso) {
+      const parsedIso = new Date(officeIso);
+      if (Number.isNaN(parsedIso.getTime())) {
+        res.status(400).json({ ok: false, message: "officeSettledAt 須為有效 ISO 日期時間" });
+        return;
+      }
+      settledAt = parsedIso;
+    }
+
+    const dayLockMsg = await assertDayNotClosedForSettlement(settledAt);
+    if (dayLockMsg) {
+      res.status(423).json({ ok: false, message: dayLockMsg });
+      return;
+    }
+
+    const actorUserId = getAuthUser(req)?.id ?? DEFAULT_CREATOR_USER_ID;
+    const succeeded: string[] = [];
+    const skipped: Array<{ id: string; reason: string }> = [];
+
+    for (const assignmentId of ids) {
+      const idStr = assignmentId.toString();
+      const row = await prisma.deliveryAssignment.findUnique({
+        where: { id: assignmentId },
+        select: { id: true, status: true, settlementOutcome: true },
+      });
+      if (!row) {
+        skipped.push({ id: idStr, reason: "找不到配送任務" });
+        continue;
+      }
+      if (row.status !== "pending_settlement") {
+        skipped.push({ id: idStr, reason: "非待辦公室核銷狀態" });
+        continue;
+      }
+      if (row.settlementOutcome !== "delivered_cash_exact") {
+        skipped.push({
+          id: idStr,
+          reason: `異常或需人工核銷（${row.settlementOutcome ?? "無結果"}）`,
+        });
+        continue;
+      }
+      const result = await runOfficeSettlementApprove(assignmentId, settledAt, actorUserId);
+      if (!result.ok) {
+        skipped.push({ id: idStr, reason: result.message });
+        continue;
+      }
+      succeeded.push(idStr);
+      fireSettlementApproveNotify(result);
+    }
+
+    res.json({ ok: true, data: { succeeded, skipped } });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
 
 /** 二樓以上搬運獎金紀錄查詢 */
 app.get("/api/floor-delivery-bonuses", async (req, res) => {
@@ -7341,10 +7563,20 @@ function resolveAccountingPeriodRange(
   startDate: string,
   endDate: string,
   now = new Date(),
+  opts?: { date?: string; ym?: string },
 ): { start: Date; end: Date } | { error: string } {
   if (range === "month") {
-    const y = now.getFullYear();
-    const m = now.getMonth() + 1;
+    const ymRaw = (opts?.ym ?? "").trim() || (startDate.trim().length >= 7 ? startDate.trim().slice(0, 7) : "");
+    let y: number;
+    let m: number;
+    if (/^\d{4}-\d{2}$/.test(ymRaw)) {
+      y = Number(ymRaw.slice(0, 4));
+      m = Number(ymRaw.slice(5, 7));
+    } else {
+      y = now.getFullYear();
+      m = now.getMonth() + 1;
+    }
+    if (!Number.isFinite(y) || !Number.isFinite(m) || m < 1 || m > 12) return { error: "月份無效（須 YYYY-MM）" };
     const monthStart = parseLocalYmdRange(`${y}-${String(m).padStart(2, "0")}-01`);
     const nextM = m === 12 ? 1 : m + 1;
     const nextY = m === 12 ? y + 1 : y;
@@ -7359,53 +7591,232 @@ function resolveAccountingPeriodRange(
     if (customStart.start >= customEnd.end) return { error: "日期區間錯誤：startDate 必須小於等於 endDate" };
     return { start: customStart.start, end: customEnd.end };
   }
-  const todayRange = parseLocalYmdRange(toLocalYmd(now));
-  if (!todayRange) return { error: "本日區間解析失敗" };
+  // today / day：單日（可指定 date 或 startDate）
+  const dayYmd = (opts?.date ?? "").trim() || startDate.trim() || toLocalYmd(now);
+  const todayRange = parseLocalYmdRange(dayYmd);
+  if (!todayRange) return { error: "日期須為 YYYY-MM-DD" };
   return { start: todayRange.start, end: todayRange.end };
 }
 
-async function buildAccountingPeriodSummary(start: Date, end: Date) {
-  const [todayCompleted, periodPayments, serviceTicketsClosed] = await Promise.all([
+/** 區間完成訂單中，尚未開立月結批次的月結應收合計／筆數 */
+function sumPendingMonthlyStatementAmount(
+  orders: Array<{
+    monthlySubtotal?: Prisma.Decimal | { toString(): string } | null;
+    totalAmount: Prisma.Decimal | { toString(): string };
+    billingTypeAtOrder: string | null;
+    billingStatementOrder?: { id: bigint } | null;
+  }>,
+): { amount: number; count: number } {
+  let amount = 0;
+  let count = 0;
+  for (const o of orders) {
+    if (o.billingStatementOrder != null) continue;
+    const cap = orderMonthlyCap(o);
+    if (cap.greaterThan(0)) {
+      amount += Number(cap);
+      count += 1;
+    }
+  }
+  return { amount, count };
+}
+
+type AccountingPeriodFilters = {
+  customerId?: bigint | null;
+  driverId?: bigint | null;
+  billingType?: string | null;
+  /** 預設 true：排除 is_test 訂單；傳 excludeTest=0 可包含 */
+  excludeTest?: boolean;
+};
+
+function salesOrderWhereFromAccountingFilters(filters: AccountingPeriodFilters): Prisma.SalesOrderWhereInput {
+  const where: Prisma.SalesOrderWhereInput = {};
+  if (filters.customerId) where.customerId = filters.customerId;
+  if (filters.excludeTest !== false) where.isTest = false;
+  return where;
+}
+
+function orderMatchesBillingTypeFilter(
+  o: {
+    billingTypeAtOrder: string | null;
+    totalAmount?: Prisma.Decimal | { toString(): string } | null;
+    cashSubtotal?: Prisma.Decimal | { toString(): string } | null;
+    monthlySubtotal?: Prisma.Decimal | { toString(): string } | null;
+    cashInvoiceMode?: string | null;
+    lines?: Array<{ billingTypeAtLine?: string | null; linePurpose?: string | null }>;
+  },
+  billingType: string | null | undefined,
+): boolean {
+  if (!billingType) return true;
+  const withTotal = {
+    ...o,
+    totalAmount: o.totalAmount ?? new Prisma.Decimal(0),
+  };
+  if (billingType === "cash") {
+    return orderCashReceivablePortion(withTotal).greaterThan(0) || (o.billingTypeAtOrder ?? "") === "cash";
+  }
+  if (billingType === "monthly") {
+    return orderMonthlyCap(withTotal).greaterThan(0) || (o.billingTypeAtOrder ?? "") === "monthly";
+  }
+  if (billingType === "prepaid") {
+    if ((o.billingTypeAtOrder ?? "") === "prepaid") return true;
+    return (o.lines ?? []).some(
+      (l) =>
+        (l.billingTypeAtLine ?? "") === "prepaid" ||
+        (l.linePurpose ?? "delivery") === "prepaid_barrel_topup",
+    );
+  }
+  return true;
+}
+
+function sumPrepaidTopupAndConsume(
+  orders: Array<{
+    lines?: Array<{
+      billingTypeAtLine?: string | null;
+      linePurpose?: string | null;
+      lineAmount: Prisma.Decimal | { toString(): string };
+      qtyOrdered: number;
+      qtyDelivered: number;
+    }>;
+  }>,
+): { topupAmount: number; consumeAmount: number; consumeBarrels: number } {
+  let topupAmount = 0;
+  let consumeAmount = 0;
+  let consumeBarrels = 0;
+  for (const o of orders) {
+    for (const l of o.lines ?? []) {
+      const purpose = l.linePurpose ?? "delivery";
+      if (purpose === "prepaid_barrel_topup") {
+        topupAmount += Number(l.lineAmount);
+        continue;
+      }
+      if ((l.billingTypeAtLine ?? "") === "prepaid") {
+        consumeAmount += Number(l.lineAmount);
+        const qty = l.qtyDelivered > 0 ? l.qtyDelivered : l.qtyOrdered;
+        consumeBarrels += Math.max(0, qty);
+      }
+    }
+  }
+  return { topupAmount, consumeAmount, consumeBarrels };
+}
+
+async function buildAccountingPeriodSummary(start: Date, end: Date, filters: AccountingPeriodFilters = {}) {
+  const customerId = filters.customerId ?? null;
+  const driverId = filters.driverId ?? null;
+  const billingType = filters.billingType?.trim() || null;
+  const salesOrderWhere = salesOrderWhereFromAccountingFilters(filters);
+  const hasSalesOrderFilter = Object.keys(salesOrderWhere).length > 0;
+
+  const assignmentWhere: Prisma.DeliveryAssignmentWhereInput = {
+    status: "completed",
+    completedAt: { gte: start, lt: end },
+    ...(driverId ? { driverId } : {}),
+    ...(hasSalesOrderFilter ? { salesOrder: salesOrderWhere } : {}),
+  };
+
+  const lineSelect = {
+    billingTypeAtLine: true,
+    linePurpose: true,
+    lineAmount: true,
+    qtyOrdered: true,
+    qtyDelivered: true,
+  } as const;
+
+  const orderWithLinesInclude = {
+    billingStatementOrder: { select: { id: true } },
+    lines: { select: lineSelect },
+  } as const;
+
+  type PeriodSalesOrder = Awaited<
+    ReturnType<
+      typeof prisma.salesOrder.findFirst<{
+        include: typeof orderWithLinesInclude;
+      }>
+    >
+  >;
+
+  const [todayCompleted, periodPaymentsRaw, serviceTicketsClosed] = await Promise.all([
     prisma.deliveryAssignment.findMany({
-      where: {
-        status: "completed",
-        completedAt: { gte: start, lt: end },
-      },
+      where: assignmentWhere,
       include: {
-        salesOrder: true,
+        salesOrder: {
+          include: orderWithLinesInclude,
+        },
       },
     }),
     prisma.payment.findMany({
       where: {
         paidAt: { gte: start, lt: end },
         paymentMethod: { not: "prepayment" },
-      },
-    }),
-    prisma.serviceTicket.findMany({
-      where: {
-        status: "closed",
-        closedAt: { gte: start, lt: end },
-        salesOrderId: { not: null },
+        ...(customerId ? { customerId } : {}),
+        ...(filters.excludeTest !== false
+          ? { OR: [{ salesOrderId: null }, { salesOrder: { isTest: false } }] }
+          : {}),
       },
       include: {
-        salesOrder: true,
-        customer: { select: { id: true, name: true, customerCode: true } },
+        salesOrder: {
+          include: {
+            lines: { select: lineSelect },
+            billingStatementOrder: { select: { id: true } },
+          },
+        },
       },
-      orderBy: { closedAt: "desc" },
     }),
+    driverId
+      ? Promise.resolve(
+          [] as Array<{
+            id: bigint;
+            ticketNo: string;
+            closedAt: Date | null;
+            billingType: string | null;
+            chargeAmount: Prisma.Decimal | null;
+            customer: { id: bigint; name: string; customerCode: string | null } | null;
+            salesOrder: NonNullable<PeriodSalesOrder>;
+          }>,
+        )
+      : prisma.serviceTicket.findMany({
+          where: {
+            status: "closed",
+            closedAt: { gte: start, lt: end },
+            salesOrderId: { not: null },
+            ...(customerId ? { customerId } : {}),
+            ...(hasSalesOrderFilter ? { salesOrder: salesOrderWhere } : {}),
+          },
+          include: {
+            salesOrder: {
+              include: orderWithLinesInclude,
+            },
+            customer: { select: { id: true, name: true, customerCode: true } },
+          },
+          orderBy: { closedAt: "desc" },
+        }),
   ]);
 
-  // 服務單訂單不會有配送完成紀錄，與配送營收互斥，不會重複加總
-  const serviceOrders = serviceTicketsClosed
+  const serviceOrdersRaw = serviceTicketsClosed
     .map((t) => t.salesOrder)
-    .filter((o): o is NonNullable<typeof o> => o != null && o.status !== "cancelled");
+    .filter((o): o is NonNullable<PeriodSalesOrder> => !!o && o.status !== "cancelled");
 
-  const orderIds = [
-    ...new Set([
-      ...todayCompleted.map((row) => row.salesOrderId),
-      ...serviceOrders.map((o) => o.id),
-    ]),
-  ];
+  let deliveryRows = todayCompleted;
+  let serviceOrders = serviceOrdersRaw;
+  if (billingType) {
+    deliveryRows = deliveryRows.filter((row) => orderMatchesBillingTypeFilter(row.salesOrder, billingType));
+    serviceOrders = serviceOrders.filter((o) => orderMatchesBillingTypeFilter(o, billingType));
+  }
+
+  const periodOrders = [...deliveryRows.map((row) => row.salesOrder), ...serviceOrders];
+  const orderIds = [...new Set(periodOrders.map((o) => o.id))];
+  const orderIdSet = new Set(orderIds.map((id) => id.toString()));
+
+  /**
+   * 有司機／結帳篩選時：實收僅計「本區間篩選後完成單」關聯之收款，與營收口徑對齊。
+   * 無此類篩選時：維持區間內全部收款（仍套用客戶／excludeTest）。
+   */
+  let periodPayments = periodPaymentsRaw;
+  if (driverId || billingType) {
+    periodPayments = periodPaymentsRaw.filter(
+      (p) => p.salesOrderId != null && orderIdSet.has(p.salesOrderId.toString()),
+    );
+  }
+
   const periodOrderOutstandingAgg =
     orderIds.length > 0
       ? await prisma.arOpenItem.aggregate({
@@ -7414,15 +7825,18 @@ async function buildAccountingPeriodSummary(start: Date, end: Date) {
         })
       : { _sum: { outstandingAmount: null } };
 
-  const deliveryRevenue = todayCompleted.reduce(
-    (sum, row) => sum + Number(orderBillableAmount(row.salesOrder)),
-    0,
-  );
-  const serviceRevenue = serviceOrders.reduce(
-    (sum, o) => sum + Number(orderBillableAmount(o)),
-    0,
-  );
+  const deliveryRevenue = deliveryRows.reduce((sum, row) => sum + Number(orderBillableAmount(row.salesOrder)), 0);
+  const serviceRevenue = serviceOrders.reduce((sum, o) => sum + Number(orderBillableAmount(o)), 0);
   const periodRevenue = deliveryRevenue + serviceRevenue;
+
+  let revenueCash = 0;
+  let revenueMonthly = 0;
+  for (const o of periodOrders) {
+    revenueCash += Number(orderCashReceivablePortion(o));
+    revenueMonthly += Number(orderMonthlyCap(o));
+  }
+  const prepaid = sumPrepaidTopupAndConsume(periodOrders);
+
   const periodCollectedCash = periodPayments
     .filter((row) => row.paymentMethod === "cash")
     .reduce((sum, row) => sum + Number(row.amount), 0);
@@ -7433,9 +7847,45 @@ async function buildAccountingPeriodSummary(start: Date, end: Date) {
     .filter((row) => row.paymentMethod !== "cash" && row.paymentMethod !== "transfer")
     .reduce((sum, row) => sum + Number(row.amount), 0);
   const periodCollected = periodCollectedCash + periodCollectedTransfer + periodCollectedOther;
-  const todayCompletedCount = todayCompleted.length + serviceOrders.length;
+  const todayCompletedCount = deliveryRows.length + serviceOrders.length;
   const periodOrderOutstanding = Number(periodOrderOutstandingAgg._sum.outstandingAmount ?? 0);
-  const driverCashCollected = todayCompleted.reduce((sum, row) => sum + Number(row.cashReceived ?? 0), 0);
+  const pendingMonthly = sumPendingMonthlyStatementAmount(periodOrders);
+  const periodPendingMonthly = pendingMonthly.amount;
+  const periodPendingMonthlyCount = pendingMonthly.count;
+  const periodReceivableTotal = periodOrderOutstanding + periodPendingMonthly;
+  const driverCashCollected = deliveryRows.reduce((sum, row) => sum + Number(row.cashReceived ?? 0), 0);
+
+  const arCustomerFilter = customerId ? { customerId } : {};
+  const [arClosingAgg, arAccrualAgg, arAllocAgg] = await Promise.all([
+    prisma.arOpenItem.aggregate({
+      where: activeArOpenItemWhere(arCustomerFilter),
+      _sum: { outstandingAmount: true },
+    }),
+    prisma.arDocument.aggregate({
+      where: {
+        status: { not: "voided" },
+        postedAt: { gte: start, lt: end },
+        ...(customerId ? { customerId } : {}),
+      },
+      _sum: { documentAmount: true },
+    }),
+    prisma.arAllocationMap.aggregate({
+      where: {
+        allocatedAt: { gte: start, lt: end },
+        ...(customerId ? { arOpenItem: { customerId } } : {}),
+      },
+      _sum: { allocatedAmount: true },
+    }),
+  ]);
+
+  const arClosing = Number(arClosingAgg._sum.outstandingAmount ?? 0);
+  const arPeriodAccrual = Number(arAccrualAgg._sum.documentAmount ?? 0);
+  const arPeriodCollected = Number(arAllocAgg._sum.allocatedAmount ?? 0);
+  /** 前期欠款＝期末 − 本期立帳 ＋ 本期沖帳（含折讓外之收款沖帳） */
+  const arOpening = arClosing - arPeriodAccrual + arPeriodCollected;
+  /** 司機／結帳篩選時 AR 滾動仍僅套用客戶條件（AR 為客戶維度） */
+  const arRollScope: "all" | "customer" | "customer_only_ignore_driver_billing" =
+    driverId || billingType ? "customer_only_ignore_driver_billing" : customerId ? "customer" : "all";
 
   return {
     periodRevenue,
@@ -7445,12 +7895,85 @@ async function buildAccountingPeriodSummary(start: Date, end: Date) {
     periodCollectedOther,
     todayCompletedCount,
     periodOrderOutstanding,
+    periodPendingMonthly,
+    periodPendingMonthlyCount,
+    periodReceivableTotal,
+    revenueCash,
+    revenueMonthly,
+    revenuePrepaidTopup: prepaid.topupAmount,
+    revenuePrepaidConsume: prepaid.consumeAmount,
+    prepaidConsumeBarrels: prepaid.consumeBarrels,
+    arOpening,
+    arPeriodAccrual,
+    arPeriodCollected,
+    arClosing,
+    arRollScope,
     driverCashCollected,
-    todayCompleted,
+    todayCompleted: deliveryRows,
     periodPayments,
-    serviceTicketsClosed,
+    serviceTicketsClosed: driverId ? [] : serviceTicketsClosed,
     deliveryRevenue,
     serviceRevenue,
+  };
+}
+
+function parseExcludeTestFlag(raw: unknown): boolean {
+  if (raw === undefined || raw === null || raw === "") return true;
+  if (typeof raw === "boolean") return raw;
+  const s = String(raw).trim().toLowerCase();
+  if (s === "0" || s === "false" || s === "no") return false;
+  if (s === "1" || s === "true" || s === "yes") return true;
+  return true;
+}
+
+function parseAccountingFiltersFromQuery(query: Record<string, unknown>): AccountingPeriodFilters {
+  const customerId = toBigInt(query.customerId);
+  const driverId = toBigInt(query.driverId);
+  const billingTypeRaw = typeof query.billingType === "string" ? query.billingType.trim() : "";
+  const billingType =
+    billingTypeRaw === "cash" || billingTypeRaw === "monthly" || billingTypeRaw === "prepaid"
+      ? billingTypeRaw
+      : null;
+  const excludeTest = parseExcludeTestFlag(query.excludeTest);
+  return { customerId, driverId, billingType, excludeTest };
+}
+
+function accountingSummaryJson(
+  range: string,
+  start: Date,
+  end: Date,
+  summary: Awaited<ReturnType<typeof buildAccountingPeriodSummary>>,
+) {
+  return {
+    range,
+    startDate: toLocalYmd(start),
+    endDate: toLocalYmd(new Date(end.getTime() - 1)),
+    periodRevenue: summary.periodRevenue,
+    periodCollected: summary.periodCollected,
+    periodCollectedCash: summary.periodCollectedCash,
+    periodCollectedTransfer: summary.periodCollectedTransfer,
+    periodCollectedOther: summary.periodCollectedOther,
+    todayCompletedCount: summary.todayCompletedCount,
+    periodOrderOutstanding: summary.periodOrderOutstanding,
+    periodPendingMonthly: summary.periodPendingMonthly,
+    periodPendingMonthlyCount: summary.periodPendingMonthlyCount,
+    periodReceivableTotal: summary.periodReceivableTotal,
+    revenueCash: summary.revenueCash,
+    revenueMonthly: summary.revenueMonthly,
+    revenuePrepaidTopup: summary.revenuePrepaidTopup,
+    revenuePrepaidConsume: summary.revenuePrepaidConsume,
+    prepaidConsumeBarrels: summary.prepaidConsumeBarrels,
+    arOpening: summary.arOpening,
+    arPeriodAccrual: summary.arPeriodAccrual,
+    arPeriodCollected: summary.arPeriodCollected,
+    arClosing: summary.arClosing,
+    arRollScope: summary.arRollScope,
+    driverCashCollected: summary.driverCashCollected,
+    deliveryRevenue: summary.deliveryRevenue,
+    serviceRevenue: summary.serviceRevenue,
+    todayRevenue: summary.periodRevenue,
+    todayCashReceived: summary.periodCollectedCash,
+    unpaidAmount: summary.periodReceivableTotal,
   };
 }
 
@@ -7460,32 +7983,18 @@ app.get("/api/accounting/summary", async (req, res) => {
     const range = String(req.query.range ?? "today");
     const startDate = typeof req.query.startDate === "string" ? req.query.startDate : "";
     const endDate = typeof req.query.endDate === "string" ? req.query.endDate : "";
+    const date = typeof req.query.date === "string" ? req.query.date : "";
+    const ym = typeof req.query.ym === "string" ? req.query.ym : "";
+    const filters = parseAccountingFiltersFromQuery(req.query as Record<string, unknown>);
 
-    const resolved = resolveAccountingPeriodRange(range, startDate, endDate, now);
+    const resolved = resolveAccountingPeriodRange(range, startDate, endDate, now, { date, ym });
     if ("error" in resolved) {
       res.status(400).json({ ok: false, message: resolved.error });
       return;
     }
     const { start, end } = resolved;
-
-    const summary = await buildAccountingPeriodSummary(start, end);
-
-    res.json({
-      range,
-      startDate: toLocalYmd(start),
-      endDate: toLocalYmd(new Date(end.getTime() - 1)),
-      periodRevenue: summary.periodRevenue,
-      periodCollected: summary.periodCollected,
-      periodCollectedCash: summary.periodCollectedCash,
-      periodCollectedTransfer: summary.periodCollectedTransfer,
-      periodCollectedOther: summary.periodCollectedOther,
-      todayCompletedCount: summary.todayCompletedCount,
-      periodOrderOutstanding: summary.periodOrderOutstanding,
-      // 相容舊欄位名稱
-      todayRevenue: summary.periodRevenue,
-      todayCashReceived: summary.periodCollectedCash,
-      unpaidAmount: summary.periodOrderOutstanding,
-    });
+    const summary = await buildAccountingPeriodSummary(start, end, filters);
+    res.json(accountingSummaryJson(range, start, end, summary));
   } catch (e) {
     res.status(500).json({ ok: false, message: String(e) });
   }
@@ -7495,43 +8004,78 @@ app.get("/api/accounting/summary", async (req, res) => {
 app.get("/api/reports/period-detail", async (req, res) => {
   try {
     const range = String(req.query.range ?? "today");
-    if (range !== "today" && range !== "month") {
-      res.status(400).json({ ok: false, message: "range 須為 today 或 month" });
+    if (range !== "today" && range !== "day" && range !== "month" && range !== "custom") {
+      res.status(400).json({ ok: false, message: "range 須為 today、day、month 或 custom" });
       return;
     }
-    const resolved = resolveAccountingPeriodRange(range, "", "", new Date());
+    const startDate = typeof req.query.startDate === "string" ? req.query.startDate : "";
+    const endDate = typeof req.query.endDate === "string" ? req.query.endDate : "";
+    const date = typeof req.query.date === "string" ? req.query.date : "";
+    const ym = typeof req.query.ym === "string" ? req.query.ym : "";
+    const filters = parseAccountingFiltersFromQuery(req.query as Record<string, unknown>);
+    const resolved = resolveAccountingPeriodRange(range === "day" ? "today" : range, startDate, endDate, new Date(), {
+      date,
+      ym,
+    });
     if ("error" in resolved) {
       res.status(400).json({ ok: false, message: resolved.error });
       return;
     }
     const { start, end } = resolved;
+    const summary = await buildAccountingPeriodSummary(start, end, filters);
 
-    const summary = await buildAccountingPeriodSummary(start, end);
+    const salesOrderWhere = salesOrderWhereFromAccountingFilters(filters);
+    const hasSalesOrderFilter = Object.keys(salesOrderWhere).length > 0;
+    const deliveryWhere: Prisma.DeliveryAssignmentWhereInput = {
+      status: "completed",
+      completedAt: { gte: start, lt: end },
+      ...(filters.driverId ? { driverId: filters.driverId } : {}),
+      ...(hasSalesOrderFilter ? { salesOrder: salesOrderWhere } : {}),
+    };
 
-    const deliveries = await prisma.deliveryAssignment.findMany({
-      where: {
-        status: "completed",
-        completedAt: { gte: start, lt: end },
-      },
+    const deliveriesRaw = await prisma.deliveryAssignment.findMany({
+      where: deliveryWhere,
       include: {
-        salesOrder: { include: { customer: true } },
+        salesOrder: {
+          include: {
+            customer: true,
+            lines: true,
+            billingStatementOrder: { select: { id: true } },
+          },
+        },
         driver: { include: { user: true } },
         vehicle: true,
       },
       orderBy: { completedAt: "desc" },
     });
+    const deliveries = filters.billingType
+      ? deliveriesRaw.filter((row) => orderMatchesBillingTypeFilter(row.salesOrder, filters.billingType))
+      : deliveriesRaw;
 
-    const payments = await prisma.payment.findMany({
+    const periodOrderIdSet = new Set(deliveries.map((d) => d.salesOrderId.toString()));
+    for (const t of summary.serviceTicketsClosed) {
+      if (t.salesOrder?.id) periodOrderIdSet.add(t.salesOrder.id.toString());
+    }
+
+    const paymentsRaw = await prisma.payment.findMany({
       where: {
         paidAt: { gte: start, lt: end },
         paymentMethod: { not: "prepayment" },
+        ...(filters.customerId ? { customerId: filters.customerId } : {}),
+        ...(filters.excludeTest !== false
+          ? { OR: [{ salesOrderId: null }, { salesOrder: { isTest: false } }] }
+          : {}),
       },
       include: {
         customer: true,
-        salesOrder: true,
+        salesOrder: { include: { lines: true } },
       },
       orderBy: { paidAt: "desc" },
     });
+    const payments =
+      filters.driverId || filters.billingType
+        ? paymentsRaw.filter((p) => p.salesOrderId != null && periodOrderIdSet.has(p.salesOrderId.toString()))
+        : paymentsRaw;
 
     const enrichedDeliveries = deliveries.map((row) => ({
       ...row,
@@ -7543,44 +8087,183 @@ app.get("/api/reports/period-detail", async (req, res) => {
         : null,
     }));
 
-    const serviceTickets = summary.serviceTicketsClosed.map((t) => ({
-      id: t.id.toString(),
-      ticketNo: t.ticketNo,
-      closedAt: t.closedAt?.toISOString() ?? null,
-      billingType: t.billingType,
-      chargeAmount: t.chargeAmount?.toString() ?? null,
-      customer: t.customer
-        ? { id: t.customer.id.toString(), name: t.customer.name, customerCode: t.customer.customerCode }
-        : null,
-      salesOrder: t.salesOrder
-        ? {
-            id: t.salesOrder.id.toString(),
-            orderNo: t.salesOrder.orderNo,
-            totalAmount: t.salesOrder.totalAmount.toString(),
-            billingTypeAtOrder: t.salesOrder.billingTypeAtOrder,
-            orderBillableAmount: orderBillableAmount(t.salesOrder).toString(),
-          }
-        : null,
-    }));
+    const serviceTickets = summary.serviceTicketsClosed
+      .filter((t) => {
+        if (!t.salesOrder || t.salesOrder.status === "cancelled") return false;
+        if (filters.billingType && !orderMatchesBillingTypeFilter(t.salesOrder, filters.billingType)) return false;
+        return true;
+      })
+      .map((t) => ({
+        id: t.id.toString(),
+        ticketNo: t.ticketNo,
+        closedAt: t.closedAt?.toISOString() ?? null,
+        billingType: t.billingType,
+        chargeAmount: t.chargeAmount?.toString() ?? null,
+        customer: t.customer
+          ? { id: t.customer.id.toString(), name: t.customer.name, customerCode: t.customer.customerCode }
+          : null,
+        salesOrder: t.salesOrder
+          ? {
+              id: t.salesOrder.id.toString(),
+              orderNo: t.salesOrder.orderNo,
+              totalAmount: t.salesOrder.totalAmount.toString(),
+              billingTypeAtOrder: t.salesOrder.billingTypeAtOrder,
+              orderBillableAmount: orderBillableAmount(t.salesOrder).toString(),
+            }
+          : null,
+      }));
+
+    const breakdownRaw = typeof req.query.breakdown === "string" ? req.query.breakdown.trim() : "";
+    if (breakdownRaw) {
+      if (!["revenue", "ar", "pendingMonthly", "payments"].includes(breakdownRaw)) {
+        res.status(400).json({
+          ok: false,
+          message: "breakdown 須為 revenue、ar、pendingMonthly 或 payments",
+        });
+        return;
+      }
+      const summaryJson = accountingSummaryJson(range, start, end, summary);
+      if (breakdownRaw === "payments") {
+        res.json({
+          ok: true,
+          data: {
+            ...summaryJson,
+            summary: summaryJson,
+            breakdown: "payments",
+            rows: payments.map((p) => ({
+              id: p.id.toString(),
+              paidAt: p.paidAt?.toISOString() ?? null,
+              amount: p.amount.toString(),
+              paymentMethod: p.paymentMethod,
+              note: p.note,
+              customerName: p.customer?.name ?? null,
+              orderNo: p.salesOrder?.orderNo ?? null,
+            })),
+            deliveries: [],
+            serviceTickets: [],
+            payments: [],
+          },
+        });
+        return;
+      }
+      if (breakdownRaw === "revenue") {
+        const rows = [
+          ...enrichedDeliveries.map((row) => ({
+            kind: "delivery" as const,
+            id: row.id.toString(),
+            at: row.completedAt?.toISOString?.() ?? (row.completedAt ? String(row.completedAt) : null),
+            orderNo: row.salesOrder?.orderNo ?? null,
+            customerName: row.salesOrder?.customer?.name ?? null,
+            amount: row.salesOrder?.orderBillableAmount ?? "0",
+            driverName: row.driver?.user?.name ?? row.driver?.employeeCode ?? null,
+          })),
+          ...serviceTickets.map((t) => ({
+            kind: "service" as const,
+            id: t.id,
+            at: t.closedAt,
+            orderNo: t.salesOrder?.orderNo ?? t.ticketNo,
+            customerName: t.customer?.name ?? null,
+            amount: t.salesOrder?.orderBillableAmount ?? t.chargeAmount ?? "0",
+            driverName: null as string | null,
+          })),
+        ];
+        res.json({
+          ok: true,
+          data: {
+            ...summaryJson,
+            summary: summaryJson,
+            breakdown: "revenue",
+            rows,
+            deliveries: [],
+            serviceTickets: [],
+            payments: [],
+          },
+        });
+        return;
+      }
+      if (breakdownRaw === "pendingMonthly") {
+        const periodOrders = [
+          ...deliveries.map((d) => d.salesOrder).filter(Boolean),
+          ...summary.serviceTicketsClosed.map((t) => t.salesOrder).filter(Boolean),
+        ] as Array<{
+          id: bigint;
+          orderNo: string;
+          customerId: bigint;
+          monthlySubtotal?: Prisma.Decimal | null;
+          totalAmount: Prisma.Decimal;
+          billingTypeAtOrder: string | null;
+          billingStatementOrder?: { id: bigint } | null;
+          customer?: { name: string } | null;
+        }>;
+        const rows = periodOrders
+          .filter((o) => o && o.billingStatementOrder == null && orderMonthlyCap(o).greaterThan(0))
+          .map((o) => ({
+            id: o.id.toString(),
+            orderNo: o.orderNo,
+            customerId: o.customerId.toString(),
+            customerName: o.customer?.name ?? null,
+            amount: orderMonthlyCap(o).toString(),
+          }));
+        res.json({
+          ok: true,
+          data: {
+            ...summaryJson,
+            summary: summaryJson,
+            breakdown: "pendingMonthly",
+            rows,
+            deliveries: [],
+            serviceTickets: [],
+            payments: [],
+          },
+        });
+        return;
+      }
+      // breakdown === "ar"
+      const orderIds = [
+        ...new Set([
+          ...deliveries.map((d) => d.salesOrderId),
+          ...summary.serviceTicketsClosed
+            .map((t) => t.salesOrder?.id)
+            .filter((id): id is bigint => id != null),
+        ]),
+      ];
+      const arItems =
+        orderIds.length > 0
+          ? await prisma.arOpenItem.findMany({
+              where: activeArOpenItemWhere({ salesOrderId: { in: orderIds } }),
+              include: { customer: true, salesOrder: true, arDocument: true },
+              orderBy: { id: "asc" },
+            })
+          : [];
+      res.json({
+        ok: true,
+        data: {
+          ...summaryJson,
+          summary: summaryJson,
+          breakdown: "ar",
+          rows: arItems.map((i) => ({
+            id: i.id.toString(),
+            arNo: i.arDocument.arNo,
+            orderNo: i.salesOrder?.orderNo ?? null,
+            customerId: i.customerId.toString(),
+            customerName: i.customer.name,
+            outstandingAmount: i.outstandingAmount.toString(),
+            dueDate: i.dueDate ? toLocalYmd(new Date(i.dueDate)) : null,
+            status: i.status,
+          })),
+          deliveries: [],
+          serviceTickets: [],
+          payments: [],
+        },
+      });
+      return;
+    }
 
     res.json({
       ok: true,
       data: {
-        range,
-        startDate: toLocalYmd(start),
-        endDate: toLocalYmd(new Date(end.getTime() - 1)),
-        summary: {
-          periodRevenue: summary.periodRevenue,
-          periodCollected: summary.periodCollected,
-          periodCollectedCash: summary.periodCollectedCash,
-          periodCollectedTransfer: summary.periodCollectedTransfer,
-          periodCollectedOther: summary.periodCollectedOther,
-          todayCompletedCount: summary.todayCompletedCount,
-          periodOrderOutstanding: summary.periodOrderOutstanding,
-          driverCashCollected: summary.driverCashCollected,
-          deliveryRevenue: summary.deliveryRevenue,
-          serviceRevenue: summary.serviceRevenue,
-        },
+        ...accountingSummaryJson(range, start, end, summary),
+        summary: accountingSummaryJson(range, start, end, summary),
         deliveries: enrichedDeliveries,
         serviceTickets,
         payments,
@@ -8079,6 +8762,140 @@ app.post("/api/delivery-assignments", async (req, res) => {
   }
 });
 
+/** 批次分派：失敗單略過並回報原因 */
+app.post("/api/orders/batch-assign", async (req, res) => {
+  try {
+    const body = req.body as {
+      salesOrderIds?: unknown;
+      driverId?: unknown;
+      vehicleId?: unknown;
+      assignmentDate?: unknown;
+    };
+    if (!Array.isArray(body.salesOrderIds) || body.salesOrderIds.length === 0) {
+      res.status(400).json({ ok: false, message: "參數錯誤：salesOrderIds 必填" });
+      return;
+    }
+    const salesOrderIds = body.salesOrderIds
+      .map((x) => toBigInt(x))
+      .filter((x): x is bigint => x != null);
+    const driverId = toBigInt(body.driverId);
+    const vehicleId =
+      body.vehicleId != null && String(body.vehicleId).trim() !== "" ? toBigInt(body.vehicleId) : null;
+    const assignmentDate = body.assignmentDate ? new Date(String(body.assignmentDate)) : new Date();
+    if (!driverId || Number.isNaN(assignmentDate.getTime()) || salesOrderIds.length === 0) {
+      res.status(400).json({ ok: false, message: "參數錯誤：salesOrderIds / driverId 必填" });
+      return;
+    }
+
+    const driver = await prisma.driver.findUnique({ where: { id: driverId } });
+    if (!driver || !driver.isActive) {
+      res.status(400).json({ ok: false, message: "司機不存在或未啟用" });
+      return;
+    }
+    if (vehicleId) {
+      const vehicle = await prisma.vehicle.findUnique({ where: { id: vehicleId } });
+      if (!vehicle || !vehicle.isActive) {
+        res.status(400).json({ ok: false, message: "車輛不存在或未啟用" });
+        return;
+      }
+    }
+
+    const actorUserId = getAuthUser(req)?.id ?? DEFAULT_CREATOR_USER_ID;
+    const assignmentDateLabel =
+      typeof body.assignmentDate === "string" && body.assignmentDate.trim()
+        ? body.assignmentDate.trim().slice(0, 10)
+        : assignmentDate.toISOString().slice(0, 10);
+
+    const succeeded: string[] = [];
+    const skipped: Array<{ id: string; reason: string }> = [];
+
+    for (const salesOrderId of salesOrderIds) {
+      const idStr = salesOrderId.toString();
+      try {
+        const order = await prisma.salesOrder.findUnique({ where: { id: salesOrderId } });
+        if (!order) {
+          skipped.push({ id: idStr, reason: "找不到訂單" });
+          continue;
+        }
+        if (["completed", "cancelled", "pending_review"].includes(order.status)) {
+          skipped.push({
+            id: idStr,
+            reason:
+              order.status === "pending_review"
+                ? "尚未經辦公室確認，不可分派"
+                : "此訂單狀態不可分派",
+          });
+          continue;
+        }
+        const customer = await prisma.customer.findUnique({ where: { id: order.customerId } });
+        if (!customer) {
+          skipped.push({ id: idStr, reason: "客戶不存在" });
+          continue;
+        }
+        const arOutstanding = await prisma.arOpenItem.aggregate({
+          where: activeArOpenItemWhere({ customerId: order.customerId }),
+          _sum: { outstandingAmount: true },
+        });
+        const outstanding = new Prisma.Decimal(arOutstanding._sum.outstandingAmount ?? 0);
+        if (
+          new Prisma.Decimal(customer.creditLimit).greaterThan(0) &&
+          outstanding.greaterThan(new Prisma.Decimal(customer.creditLimit))
+        ) {
+          skipped.push({ id: idStr, reason: "客戶欠款超過信用額度，已鎖定分派" });
+          continue;
+        }
+        const existing = await prisma.deliveryAssignment.findFirst({
+          where: {
+            salesOrderId,
+            status: { in: ["assigned", "delivering", "pending_settlement"] },
+          },
+          orderBy: { id: "desc" },
+        });
+        if (existing) {
+          skipped.push({ id: idStr, reason: "此訂單已有進行中的分派" });
+          continue;
+        }
+
+        const created = await prisma.$transaction(async (tx) => {
+          await tx.salesOrder.update({
+            where: { id: salesOrderId },
+            data: { status: "assigned", lockVersion: { increment: 1 } },
+          });
+          return tx.deliveryAssignment.create({
+            data: {
+              salesOrderId,
+              driverId,
+              vehicleId,
+              assignmentDate,
+              status: "assigned",
+              assignedByUserId: actorUserId,
+            },
+          });
+        });
+
+        succeeded.push(idStr);
+        void notifyCustomerViaLine(prisma, {
+          customerId: order.customerId,
+          eventType: "order_assigned",
+          salesOrderId,
+          deliveryAssignmentId: created.id,
+          text: formatOrderAssignedMessage({
+            orderNo: order.orderNo,
+            assignmentDate: assignmentDateLabel,
+            estimatedSlot: null,
+          }),
+        }).catch((err) => console.error("[line-notify] order_assigned", err));
+      } catch (e) {
+        skipped.push({ id: idStr, reason: String(e) });
+      }
+    }
+
+    res.json({ ok: true, data: { succeeded, skipped } });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
 type CreateSalesOrderResult = { status: number; payload: Record<string, unknown> };
 
 async function createConfirmedSalesOrder(
@@ -8092,14 +8909,30 @@ async function createConfirmedSalesOrder(
     remark?: unknown;
     orderCashAdjustment?: unknown;
     cashInvoiceMode?: unknown;
+    isTest?: unknown;
+    testBatchId?: unknown;
   },
-  opts: { source?: string; createdByUserId?: bigint | null; initialStatus?: string } = {},
+  opts: {
+    source?: string;
+    createdByUserId?: bigint | null;
+    initialStatus?: string;
+    /** admin 來源才接受 isTest／testBatchId */
+    allowTestFlags?: boolean;
+    actorUserId?: bigint | null;
+  } = {},
 ): Promise<CreateSalesOrderResult> {
   try {
     const orderSource = opts.source === "liff" ? "liff" : "admin";
     const creatorUserId = opts.createdByUserId === null ? null : (opts.createdByUserId ?? DEFAULT_CREATOR_USER_ID);
     const arCreatorUserId = creatorUserId ?? DEFAULT_CREATOR_USER_ID;
     const initialStatus = opts.initialStatus === "pending_review" ? "pending_review" : "confirmed";
+    const allowTestFlags = opts.allowTestFlags === true && orderSource === "admin";
+    const isTest = allowTestFlags && (body.isTest === true || body.isTest === 1 || body.isTest === "1" || body.isTest === "true");
+    const testBatchRaw = allowTestFlags && typeof body.testBatchId === "string" ? body.testBatchId.trim() : "";
+    const testBatchId = testBatchRaw ? testBatchRaw.slice(0, 64) : null;
+    if (isTest === false && testBatchId) {
+      return { status: 400, payload: { ok: false, message: "testBatchId 僅能搭配 isTest=true" } };
+    }
 
     const customerId = toBigInt(body.customerId);
     const deliveryAddressId = toBigInt(body.deliveryAddressId);
@@ -8361,6 +9194,8 @@ async function createConfirmedSalesOrder(
           cashInvoiceMode: cashInvoiceMode === "none" ? null : cashInvoiceMode,
           pendingPrepaidTopupBarrels,
           source: orderSource,
+          isTest,
+          testBatchId: isTest ? testBatchId : null,
           createdByUserId: creatorUserId,
           lines: {
             create: lineCreates,
@@ -8391,7 +9226,7 @@ async function createConfirmedSalesOrder(
         note: `自動預收抵扣（立帳 ${so.orderNo}）`,
       });
 
-      return tx.salesOrder.findUnique({
+      const full = await tx.salesOrder.findUnique({
         where: { id: so.id },
         include: {
           customer: true,
@@ -8399,6 +9234,36 @@ async function createConfirmedSalesOrder(
           lines: { include: { product: true } },
         },
       });
+
+      await writeOperationAuditLog(tx, {
+        actorUserId: opts.actorUserId ?? creatorUserId,
+        action: "order_create",
+        entityType: "sales_order",
+        entityId: so.id.toString(),
+        before: null,
+        after: {
+          id: so.id.toString(),
+          orderNo: so.orderNo,
+          customerId: customerId.toString(),
+          deliveryAddressId: deliveryAddressId.toString(),
+          status: so.status,
+          totalAmount: so.totalAmount.toString(),
+          isTest: so.isTest,
+          testBatchId: so.testBatchId,
+          source: so.source,
+          lines: (full?.lines ?? []).map((l) => ({
+            id: l.id.toString(),
+            productId: l.productId.toString(),
+            qtyOrdered: l.qtyOrdered,
+            unitPrice: l.unitPrice.toString(),
+            lineAmount: l.lineAmount.toString(),
+            billingTypeAtLine: l.billingTypeAtLine,
+            linePurpose: l.linePurpose,
+          })),
+        },
+      });
+
+      return full;
     });
 
     return { status: 201, payload: { ok: true, data: created } };
@@ -8408,9 +9273,12 @@ async function createConfirmedSalesOrder(
 }
 
 app.post("/api/sales-orders", async (req, res) => {
+  const auth = getAuthUser(req);
   const result = await createConfirmedSalesOrder(req.body ?? {}, {
     source: "admin",
-    createdByUserId: DEFAULT_CREATOR_USER_ID,
+    createdByUserId: auth?.id ?? DEFAULT_CREATOR_USER_ID,
+    allowTestFlags: !auth || auth.role === "admin",
+    actorUserId: auth?.id ?? DEFAULT_CREATOR_USER_ID,
   });
   res.status(result.status).json(result.payload);
 });
@@ -8769,6 +9637,13 @@ app.post("/api/driver/confirm-line-deliveries", async (req, res) => {
           : { source: "unknown" as const };
 
     const result = await prisma.$transaction(async (tx) => {
+      const beforeLines = order.lines.map((l) => ({
+        lineId: l.id.toString(),
+        qtyOrdered: l.qtyOrdered,
+        qtyDelivered: l.qtyDelivered,
+        lineAmount: l.lineAmount.toString(),
+      }));
+
       await applyLineDeliveriesAtReport(tx, order, parsed.lines);
 
       const orderAfter = await tx.salesOrder.findUniqueOrThrow({
@@ -8822,6 +9697,32 @@ app.post("/api/driver/confirm-line-deliveries", async (req, res) => {
             cashDue: cashDue.toString(),
             ...reportSourcePayload,
           },
+        },
+      });
+
+      await writeOperationAuditLog(tx, {
+        actorUserId: auth?.id ?? null,
+        action: "line_qty_change",
+        entityType: "sales_order",
+        entityId: order.id.toString(),
+        before: {
+          assignmentId: assignmentId.toString(),
+          orderNo: order.orderNo,
+          totalAmount: order.totalAmount.toString(),
+          lines: beforeLines,
+        },
+        after: {
+          assignmentId: assignmentId.toString(),
+          orderNo: orderAfter.orderNo,
+          totalAmount: orderAfter.totalAmount.toString(),
+          cashDue: cashDue.toString(),
+          lines: orderAfter.lines.map((l) => ({
+            lineId: l.id.toString(),
+            qtyOrdered: l.qtyOrdered,
+            qtyDelivered: l.qtyDelivered,
+            lineAmount: l.lineAmount.toString(),
+          })),
+          ...reportSourcePayload,
         },
       });
 
@@ -9107,6 +10008,27 @@ app.post("/api/driver/complete", async (req, res) => {
           },
         });
 
+        await writeOperationAuditLog(tx, {
+          actorUserId: auth?.id ?? null,
+          action: "driver_report",
+          entityType: "delivery_assignment",
+          entityId: assignmentId.toString(),
+          before: {
+            assignmentStatus: assignment.status,
+            settlementOutcome: assignment.settlementOutcome,
+            ...(amendPrev ?? {}),
+          },
+          after: {
+            outcome: "not_delivered",
+            failureReason,
+            note: note || null,
+            orderNo: order.orderNo,
+            salesOrderId: order.id.toString(),
+            amendment: isAmendPending,
+            ...reportSourcePayload,
+          },
+        });
+
         return tx.deliveryAssignment.findUnique({
           where: { id: assignmentId },
           include: {
@@ -9220,6 +10142,33 @@ app.post("/api/driver/complete", async (req, res) => {
                 }
               : {}),
           },
+        },
+      });
+
+      await writeOperationAuditLog(tx, {
+        actorUserId: auth?.id ?? null,
+        action: "driver_report",
+        entityType: "delivery_assignment",
+        entityId: assignmentId.toString(),
+        before: {
+          assignmentStatus: assignment.status,
+          settlementOutcome: assignment.settlementOutcome,
+          ...(amendPrev ?? {}),
+        },
+        after: {
+          outcome: settlementOutcome,
+          cashReceived,
+          checkReceived,
+          emptyBarrelsReturned: Math.floor(emptyBarrelsReturned),
+          cashDue: cashDue.toString(),
+          orderNo: order.orderNo,
+          salesOrderId: order.id.toString(),
+          lineDeliveries: parsedLineDeliveries?.map((l) => ({
+            lineId: l.lineId.toString(),
+            qtyDelivered: l.qtyDelivered,
+          })),
+          amendment: isAmendPending,
+          ...reportSourcePayload,
         },
       });
 
@@ -10026,6 +10975,598 @@ app.get("/api/reports/inventory-exceptions", async (_req, res) => {
       qtyOnHand: r.qtyOnHand,
     }));
     res.json({ ok: true, data, totalCount: data.length });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+type ExceptionCenterType =
+  | "ar_past_due"
+  | "cash_short"
+  | "cash_over"
+  | "delivered_unpaid"
+  | "pending_settlement_stale"
+  | "assigned_unreported"
+  | "monthly_delivered_unbilled"
+  | "prepaid_low"
+  | "inventory_negative"
+  | "deposit_barrels_stale"
+  | "credit_over_limit";
+
+type ExceptionCenterItem = {
+  type: ExceptionCenterType;
+  severity: "info" | "warn" | "critical";
+  title: string;
+  customerId?: string;
+  customerName?: string;
+  salesOrderId?: string;
+  orderNo?: string;
+  assignmentId?: string;
+  productId?: string;
+  productName?: string;
+  driverId?: string;
+  driverName?: string;
+  amount?: string;
+  expectedAmount?: string;
+  collectedAmount?: string;
+  variance?: string;
+  qty?: number;
+  qtyOnHand?: number;
+  threshold?: number;
+  dueDate?: string | null;
+  overdueDays?: number;
+  reportedAt?: string | null;
+  assignmentDate?: string | null;
+  deepLink?: string;
+};
+
+/** 異常中心：聚合 AR／庫存／配送／月結／預付／押桶等異常 */
+app.get("/api/reports/exception-center", async (req, res) => {
+  try {
+    const prepaidLowThreshold = Math.max(
+      0,
+      Number(typeof req.query.prepaidLowThreshold === "string" ? req.query.prepaidLowThreshold : 2) || 2,
+    );
+    const depositStaleDays = Math.max(
+      1,
+      Number(typeof req.query.depositStaleDays === "string" ? req.query.depositStaleDays : 90) || 90,
+    );
+    const summaryOnly =
+      req.query.summaryOnly === "1" ||
+      req.query.summaryOnly === "true" ||
+      req.query.summaryOnly === "yes";
+    const now = new Date();
+    const dayStart = new Date(now);
+    dayStart.setHours(0, 0, 0, 0);
+    const staleSettlementBefore = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const depositStaleBefore = new Date(dayStart.getTime() - depositStaleDays * 24 * 60 * 60 * 1000);
+
+    if (summaryOnly) {
+      const [
+        arPastDue,
+        cashShort,
+        cashOver,
+        deliveredUnpaid,
+        pendingSettlementStale,
+        assignedUnreported,
+        monthlyUnbilled,
+        prepaidLowCust,
+        prepaidLowProd,
+        inventoryNegative,
+        creditCustomers,
+      ] = await Promise.all([
+        prisma.arOpenItem.count({
+          where: activeArOpenItemWhere({ dueDate: { lt: dayStart } }),
+        }),
+        prisma.deliveryAssignment.count({
+          where: {
+            OR: [
+              { status: "pending_settlement", settlementOutcome: "delivered_cash_short" },
+              {
+                status: "completed",
+                settlementOutcome: "delivered_cash_short",
+                officeSettledAt: { gte: new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000) },
+              },
+            ],
+          },
+        }),
+        prisma.deliveryAssignment.count({
+          where: {
+            OR: [
+              { status: "pending_settlement", settlementOutcome: "delivered_cash_over" },
+              {
+                status: "completed",
+                settlementOutcome: "delivered_cash_over",
+                officeSettledAt: { gte: new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000) },
+              },
+            ],
+          },
+        }),
+        prisma.deliveryAssignment.count({
+          where: {
+            OR: [
+              { status: "pending_settlement", settlementOutcome: "delivered_no_cash" },
+              {
+                status: "completed",
+                settlementOutcome: "delivered_no_cash",
+                officeSettledAt: { gte: new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000) },
+              },
+            ],
+          },
+        }),
+        prisma.deliveryAssignment.count({
+          where: {
+            status: "pending_settlement",
+            driverReportedAt: { lt: staleSettlementBefore },
+          },
+        }),
+        prisma.deliveryAssignment.count({
+          where: {
+            status: { in: ["assigned", "delivering"] },
+            driverReportedAt: null,
+            assignmentDate: { lt: dayStart },
+          },
+        }),
+        prisma.salesOrder.count({
+          where: {
+            status: "completed",
+            officeSettledAt: { not: null },
+            billingStatementOrder: { is: null },
+            OR: [
+              { monthlySubtotal: { gt: 0 } },
+              { billingTypeAtOrder: "monthly" },
+              { lines: { some: { billingTypeAtLine: "monthly" } } },
+            ],
+          },
+        }),
+        prisma.customer.count({
+          where: {
+            billingType: "prepaid",
+            prepaidBarrelBalance: { lte: prepaidLowThreshold },
+            lifecycleStatus: "active",
+          },
+        }),
+        prisma.customerPrepaidProductBalance.count({
+          where: {
+            balanceBarrels: { lte: prepaidLowThreshold },
+            customer: { lifecycleStatus: "active" },
+          },
+        }),
+        prisma.inventoryBalance.count({ where: { qtyOnHand: { lt: 0 } } }),
+        prisma.customer.findMany({
+          where: {
+            creditLimit: { gt: new Prisma.Decimal(0) },
+            arOpenItems: { some: { outstandingAmount: { gt: new Prisma.Decimal(0) } } },
+          },
+          include: {
+            arOpenItems: {
+              where: {
+                outstandingAmount: { gt: new Prisma.Decimal(0) },
+                arDocument: { status: { not: "voided" } },
+                OR: [{ salesOrderId: null }, { salesOrder: { status: { not: "cancelled" } } }],
+              },
+              select: { outstandingAmount: true },
+            },
+          },
+          take: 500,
+        }),
+      ]);
+
+      const creditOverLimit = creditCustomers.filter((c) => {
+        const outstanding = c.arOpenItems.reduce((s, i) => s + Number(i.outstandingAmount), 0);
+        return outstanding > Number(c.creditLimit);
+      }).length;
+
+      // 押桶「長期未收」需逐址對最後配送日，summaryOnly 不估算（避免上界膨脹）；詳見完整清單
+      const summary = {
+        ar_past_due: arPastDue,
+        cash_short: cashShort,
+        cash_over: cashOver,
+        delivered_unpaid: deliveredUnpaid,
+        pending_settlement_stale: pendingSettlementStale,
+        assigned_unreported: assignedUnreported,
+        monthly_delivered_unbilled: monthlyUnbilled,
+        prepaid_low: prepaidLowCust + prepaidLowProd,
+        inventory_negative: inventoryNegative,
+        deposit_barrels_stale: 0,
+        credit_over_limit: creditOverLimit,
+      } as Record<ExceptionCenterType, number>;
+      const totalCount = Object.values(summary).reduce((a, b) => a + b, 0);
+      res.json({
+        ok: true,
+        data: {
+          generatedAt: now.toISOString(),
+          prepaidLowThreshold,
+          depositStaleDays,
+          totalCount,
+          summary,
+          items: [],
+          summaryOnly: true,
+        },
+      });
+      return;
+    }
+
+    const items: ExceptionCenterItem[] = [];
+
+    const [
+      pastDueAr,
+      cashVarianceAssignments,
+      stalePending,
+      assignedUnreported,
+      monthlyUnbilled,
+      prepaidCustomers,
+      prepaidProductBalances,
+      negativeInventory,
+      depositAddresses,
+      creditCustomers,
+    ] = await Promise.all([
+      prisma.arOpenItem.findMany({
+        where: activeArOpenItemWhere({
+          dueDate: { lt: dayStart },
+        }),
+        include: { customer: true, salesOrder: true, arDocument: true },
+        orderBy: [{ dueDate: "asc" }, { id: "asc" }],
+        take: 300,
+      }),
+      prisma.deliveryAssignment.findMany({
+        where: {
+          OR: [
+            {
+              status: "pending_settlement",
+              settlementOutcome: { in: ["delivered_no_cash", "delivered_cash_short", "delivered_cash_over"] },
+            },
+            {
+              status: "completed",
+              settlementOutcome: { in: ["delivered_cash_short", "delivered_cash_over", "delivered_no_cash"] },
+              officeSettledAt: { gte: new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000) },
+            },
+          ],
+        },
+        include: {
+          salesOrder: { include: { customer: true } },
+          driver: { include: { user: true } },
+        },
+        orderBy: { id: "desc" },
+        take: 300,
+      }),
+      prisma.deliveryAssignment.findMany({
+        where: {
+          status: "pending_settlement",
+          driverReportedAt: { lt: staleSettlementBefore },
+        },
+        include: {
+          salesOrder: { include: { customer: true } },
+          driver: { include: { user: true } },
+        },
+        orderBy: { driverReportedAt: "asc" },
+        take: 200,
+      }),
+      prisma.deliveryAssignment.findMany({
+        where: {
+          status: { in: ["assigned", "delivering"] },
+          driverReportedAt: null,
+          assignmentDate: { lt: dayStart },
+        },
+        include: {
+          salesOrder: { include: { customer: true } },
+          driver: { include: { user: true } },
+        },
+        orderBy: { assignmentDate: "asc" },
+        take: 200,
+      }),
+      prisma.salesOrder.findMany({
+        where: {
+          status: "completed",
+          officeSettledAt: { not: null },
+          billingStatementOrder: { is: null },
+          OR: [
+            { monthlySubtotal: { gt: 0 } },
+            { billingTypeAtOrder: "monthly" },
+            { lines: { some: { billingTypeAtLine: "monthly" } } },
+          ],
+        },
+        include: {
+          customer: true,
+          lines: { select: { billingTypeAtLine: true, lineAmount: true, linePurpose: true } },
+          assignments: {
+            where: { status: { in: ["completed", "not_delivered"] } },
+            orderBy: [{ officeSettledAt: "desc" }, { completedAt: "desc" }, { id: "desc" }],
+            take: 1,
+          },
+        },
+        orderBy: { officeSettledAt: "asc" },
+        take: 300,
+      }),
+      prisma.customer.findMany({
+        where: {
+          billingType: "prepaid",
+          prepaidBarrelBalance: { lte: prepaidLowThreshold },
+          lifecycleStatus: "active",
+        },
+        select: {
+          id: true,
+          name: true,
+          prepaidBarrelBalance: true,
+          allowPrepaidOverdraft: true,
+        },
+        take: 200,
+      }),
+      prisma.customerPrepaidProductBalance.findMany({
+        where: { balanceBarrels: { lte: prepaidLowThreshold } },
+        include: {
+          customer: { select: { id: true, name: true, lifecycleStatus: true, billingType: true } },
+          product: { select: { id: true, name: true, productCode: true } },
+        },
+        take: 200,
+      }),
+      prisma.inventoryBalance.findMany({
+        where: { qtyOnHand: { lt: 0 } },
+        include: {
+          product: { select: { id: true, name: true, productCode: true } },
+        },
+        orderBy: { qtyOnHand: "asc" },
+        take: 100,
+      }),
+      prisma.deliveryAddress.findMany({
+        where: { barrelsOnSite: { gt: 0 } },
+        include: {
+          customer: { select: { id: true, name: true, lifecycleStatus: true } },
+        },
+        take: 400,
+      }),
+      prisma.customer.findMany({
+        where: {
+          creditLimit: { gt: new Prisma.Decimal(0) },
+          arOpenItems: { some: { outstandingAmount: { gt: new Prisma.Decimal(0) } } },
+        },
+        include: {
+          arOpenItems: {
+            where: {
+              outstandingAmount: { gt: new Prisma.Decimal(0) },
+              arDocument: { status: { not: "voided" } },
+              OR: [{ salesOrderId: null }, { salesOrder: { status: { not: "cancelled" } } }],
+            },
+            select: { outstandingAmount: true },
+          },
+        },
+        take: 300,
+      }),
+    ]);
+
+    for (const i of pastDueAr) {
+      const due = i.dueDate ? new Date(i.dueDate) : null;
+      const overdueDays = due
+        ? Math.max(0, Math.floor((dayStart.getTime() - due.getTime()) / (1000 * 60 * 60 * 24)))
+        : 0;
+      items.push({
+        type: "ar_past_due",
+        severity: overdueDays >= 60 ? "critical" : "warn",
+        title: `AR 逾期 ${overdueDays} 天`,
+        customerId: i.customerId.toString(),
+        customerName: i.customer.name,
+        salesOrderId: i.salesOrderId?.toString(),
+        orderNo: i.salesOrder?.orderNo ?? i.arDocument.arNo,
+        amount: i.outstandingAmount.toString(),
+        dueDate: i.dueDate ? toLocalYmd(new Date(i.dueDate)) : null,
+        overdueDays,
+        deepLink: `/reports/billing-ar?customerId=${i.customerId.toString()}`,
+      });
+    }
+
+    for (const a of cashVarianceAssignments) {
+      const outcome = a.settlementOutcome ?? "";
+      const expected = Number(a.expectedAmount ?? 0);
+      const collected = Number(a.cashReceived ?? 0) + Number(a.checkReceived ?? 0);
+      const variance = collected - expected;
+      const driverName = a.driver.user?.name ?? a.driver.employeeCode ?? undefined;
+      const base = {
+        customerId: a.salesOrder.customerId.toString(),
+        customerName: a.salesOrder.customer.name,
+        salesOrderId: a.salesOrderId.toString(),
+        orderNo: a.salesOrder.orderNo,
+        assignmentId: a.id.toString(),
+        driverId: a.driverId.toString(),
+        driverName,
+        expectedAmount: String(a.expectedAmount ?? 0),
+        collectedAmount: String(collected),
+        variance: String(variance),
+        reportedAt: a.driverReportedAt?.toISOString() ?? null,
+        assignmentDate: a.assignmentDate ? toLocalYmd(new Date(a.assignmentDate)) : null,
+        deepLink: a.status === "pending_settlement"
+          ? `/orders/complete?orderNo=${encodeURIComponent(a.salesOrder.orderNo)}`
+          : `/orders/query?orderNo=${encodeURIComponent(a.salesOrder.orderNo)}`,
+      };
+      if (outcome === "delivered_cash_short") {
+        items.push({ ...base, type: "cash_short", severity: "warn", title: "配送短收" });
+      } else if (outcome === "delivered_cash_over") {
+        items.push({ ...base, type: "cash_over", severity: "info", title: "配送溢收" });
+      } else if (outcome === "delivered_no_cash" && expected > 0) {
+        items.push({ ...base, type: "delivered_unpaid", severity: "critical", title: "已送達未收款" });
+      }
+    }
+
+    for (const a of stalePending) {
+      items.push({
+        type: "pending_settlement_stale",
+        severity: "warn",
+        title: "待核銷超過 1 天",
+        customerId: a.salesOrder.customerId.toString(),
+        customerName: a.salesOrder.customer.name,
+        salesOrderId: a.salesOrderId.toString(),
+        orderNo: a.salesOrder.orderNo,
+        assignmentId: a.id.toString(),
+        driverId: a.driverId.toString(),
+        driverName: a.driver.user?.name ?? a.driver.employeeCode ?? undefined,
+        reportedAt: a.driverReportedAt?.toISOString() ?? null,
+        assignmentDate: a.assignmentDate ? toLocalYmd(new Date(a.assignmentDate)) : null,
+        deepLink: `/orders/complete?orderNo=${encodeURIComponent(a.salesOrder.orderNo)}`,
+      });
+    }
+
+    for (const a of assignedUnreported) {
+      items.push({
+        type: "assigned_unreported",
+        severity: "warn",
+        title: "已分派未回報（逾配送日）",
+        customerId: a.salesOrder.customerId.toString(),
+        customerName: a.salesOrder.customer.name,
+        salesOrderId: a.salesOrderId.toString(),
+        orderNo: a.salesOrder.orderNo,
+        assignmentId: a.id.toString(),
+        driverId: a.driverId.toString(),
+        driverName: a.driver.user?.name ?? a.driver.employeeCode ?? undefined,
+        assignmentDate: a.assignmentDate ? toLocalYmd(new Date(a.assignmentDate)) : null,
+        deepLink: `/orders/assign?orderNo=${encodeURIComponent(a.salesOrder.orderNo)}`,
+      });
+    }
+
+    for (const o of monthlyUnbilled) {
+      if (!orderHasMonthlyPortion(o)) continue;
+      const cap = orderMonthlyCap(o);
+      const received = new Prisma.Decimal(String(o.monthlyReceivedAmount ?? 0));
+      const outstanding = cap.minus(received);
+      if (outstanding.lessThanOrEqualTo(0)) continue;
+      const a = o.assignments?.[0];
+      items.push({
+        type: "monthly_delivered_unbilled",
+        severity: "info",
+        title: "月結已送達尚未開帳單",
+        customerId: o.customerId.toString(),
+        customerName: o.customer.name,
+        salesOrderId: o.id.toString(),
+        orderNo: o.orderNo,
+        amount: outstanding.toString(),
+        assignmentDate: a?.driverReportedAt
+          ? toLocalYmd(new Date(a.driverReportedAt))
+          : a?.assignmentDate
+            ? toLocalYmd(new Date(a.assignmentDate))
+            : null,
+        deepLink: `/reports/billing-ar?customerId=${o.customerId.toString()}`,
+      });
+    }
+
+    for (const c of prepaidCustomers) {
+      items.push({
+        type: "prepaid_low",
+        severity: c.prepaidBarrelBalance <= 0 && !c.allowPrepaidOverdraft ? "critical" : "warn",
+        title: "預付桶低水位（客戶總餘額）",
+        customerId: c.id.toString(),
+        customerName: c.name,
+        qty: c.prepaidBarrelBalance,
+        threshold: prepaidLowThreshold,
+        deepLink: `/data/customers?customerId=${c.id.toString()}`,
+      });
+    }
+    for (const row of prepaidProductBalances) {
+      if (row.customer.lifecycleStatus !== "active") continue;
+      items.push({
+        type: "prepaid_low",
+        severity: row.balanceBarrels <= 0 ? "critical" : "warn",
+        title: `預付桶低水位（${row.product.name}）`,
+        customerId: row.customer.id.toString(),
+        customerName: row.customer.name,
+        productId: row.product.id.toString(),
+        productName: row.product.name,
+        qty: row.balanceBarrels,
+        threshold: prepaidLowThreshold,
+        deepLink: `/data/customers?customerId=${row.customer.id.toString()}`,
+      });
+    }
+
+    for (const r of negativeInventory) {
+      items.push({
+        type: "inventory_negative",
+        severity: "critical",
+        title: "負庫存",
+        productId: r.productId.toString(),
+        productName: r.product.name,
+        qtyOnHand: r.qtyOnHand,
+        deepLink: "/data/products",
+      });
+    }
+
+    const depositAddressIds = depositAddresses.map((a) => a.id);
+    const lastDeliveries =
+      depositAddressIds.length > 0
+        ? await prisma.deliveryAssignment.findMany({
+            where: {
+              status: "completed",
+              salesOrder: { deliveryAddressId: { in: depositAddressIds } },
+            },
+            include: { salesOrder: { select: { deliveryAddressId: true } } },
+            orderBy: { completedAt: "desc" },
+            take: 2000,
+          })
+        : [];
+    const lastDeliveryByAddress = new Map<string, Date>();
+    for (const d of lastDeliveries) {
+      const addrId = d.salesOrder.deliveryAddressId.toString();
+      if (lastDeliveryByAddress.has(addrId)) continue;
+      if (d.completedAt) lastDeliveryByAddress.set(addrId, d.completedAt);
+    }
+    for (const addr of depositAddresses) {
+      if (addr.customer.lifecycleStatus !== "active") continue;
+      const last = lastDeliveryByAddress.get(addr.id.toString());
+      if (last && last.getTime() >= depositStaleBefore.getTime()) continue;
+      items.push({
+        type: "deposit_barrels_stale",
+        severity: "info",
+        title: `押桶長期未收（在場 ${addr.barrelsOnSite} 桶）`,
+        customerId: addr.customer.id.toString(),
+        customerName: addr.customer.name,
+        qty: addr.barrelsOnSite,
+        threshold: depositStaleDays,
+        assignmentDate: last ? toLocalYmd(last) : null,
+        deepLink: "/orders/barrel-pickup/new",
+      });
+    }
+
+    for (const c of creditCustomers) {
+      const outstanding = c.arOpenItems.reduce((s, i) => s + Number(i.outstandingAmount), 0);
+      const limit = Number(c.creditLimit);
+      if (outstanding <= limit) continue;
+      items.push({
+        type: "credit_over_limit",
+        severity: "critical",
+        title: "超過信用額度",
+        customerId: c.id.toString(),
+        customerName: c.name,
+        amount: String(outstanding),
+        expectedAmount: c.creditLimit.toString(),
+        variance: String(outstanding - limit),
+        deepLink: `/reports/billing-ar?customerId=${c.id.toString()}`,
+      });
+    }
+
+    const summary = {} as Record<ExceptionCenterType, number>;
+    const allTypes: ExceptionCenterType[] = [
+      "ar_past_due",
+      "cash_short",
+      "cash_over",
+      "delivered_unpaid",
+      "pending_settlement_stale",
+      "assigned_unreported",
+      "monthly_delivered_unbilled",
+      "prepaid_low",
+      "inventory_negative",
+      "deposit_barrels_stale",
+      "credit_over_limit",
+    ];
+    for (const t of allTypes) summary[t] = 0;
+    for (const it of items) summary[it.type] += 1;
+
+    res.json({
+      ok: true,
+      data: {
+        generatedAt: now.toISOString(),
+        prepaidLowThreshold,
+        depositStaleDays,
+        totalCount: items.length,
+        summary,
+        items,
+      },
+    });
   } catch (e) {
     res.status(500).json({ ok: false, message: String(e) });
   }
@@ -13779,6 +15320,276 @@ app.get("/api/notification-logs", async (req, res) => {
       take: 100,
     });
     res.json({ ok: true, data: rows });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+/** P5：查詢營業日關帳狀態 */
+app.get("/api/admin/day-close", async (req, res) => {
+  if (!requireRole(req, res, ["admin"])) return;
+  try {
+    const dateRaw = typeof req.query.date === "string" ? req.query.date.trim() : toLocalYmd(new Date());
+    const businessDate = parseLocalYmdToDbDate(dateRaw);
+    if (!businessDate) {
+      res.status(400).json({ ok: false, message: "date 須為 YYYY-MM-DD" });
+      return;
+    }
+    const row = await prisma.dayCloseLock.findUnique({
+      where: { businessDate },
+      include: {
+        lockedBy: { select: { id: true, name: true, employeeCode: true } },
+        unlockedBy: { select: { id: true, name: true, employeeCode: true } },
+      },
+    });
+    const locked = Boolean(row && row.unlockedAt == null);
+
+    // 關帳前檢查清單（與核銷／異常中心對齊）
+    const dayRange = parseLocalYmdRange(dateRaw);
+    let checklist: {
+      pendingSettlement: number;
+      cashShort: number;
+      deliveredUnpaid: number;
+      assignedUnreported: number;
+    } | null = null;
+    if (dayRange) {
+      const [pendingSettlement, cashShort, deliveredUnpaid, assignedUnreported] = await Promise.all([
+        prisma.deliveryAssignment.count({
+          where: {
+            status: "pending_settlement",
+            OR: [
+              { assignmentDate: businessDate },
+              { driverReportedAt: { gte: dayRange.start, lt: dayRange.end } },
+            ],
+          },
+        }),
+        prisma.deliveryAssignment.count({
+          where: {
+            status: "pending_settlement",
+            settlementOutcome: "delivered_cash_short",
+            OR: [
+              { assignmentDate: businessDate },
+              { driverReportedAt: { gte: dayRange.start, lt: dayRange.end } },
+            ],
+          },
+        }),
+        prisma.deliveryAssignment.count({
+          where: {
+            status: "pending_settlement",
+            settlementOutcome: "delivered_no_cash",
+            OR: [
+              { assignmentDate: businessDate },
+              { driverReportedAt: { gte: dayRange.start, lt: dayRange.end } },
+            ],
+          },
+        }),
+        prisma.deliveryAssignment.count({
+          where: {
+            status: { in: ["assigned", "delivering"] },
+            driverReportedAt: null,
+            assignmentDate: businessDate,
+          },
+        }),
+      ]);
+      checklist = { pendingSettlement, cashShort, deliveredUnpaid, assignedUnreported };
+    }
+
+    res.json({
+      ok: true,
+      data: {
+        businessDate: dateRaw.slice(0, 10),
+        locked,
+        lock: row,
+        checklist,
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+/** P5：鎖定營業日（關帳） */
+app.post("/api/admin/day-close/lock", async (req, res) => {
+  const auth = requireRole(req, res, ["admin"]);
+  if (!auth) return;
+  try {
+    const body = req.body as { date?: unknown; note?: unknown; force?: unknown };
+    const dateRaw = typeof body.date === "string" ? body.date.trim() : toLocalYmd(new Date());
+    const businessDate = parseLocalYmdToDbDate(dateRaw);
+    if (!businessDate) {
+      res.status(400).json({ ok: false, message: "date 須為 YYYY-MM-DD" });
+      return;
+    }
+    const force = body.force === true || body.force === 1 || body.force === "1";
+    const note = typeof body.note === "string" ? body.note.trim().slice(0, 500) || null : null;
+    const now = new Date();
+    const existing = await prisma.dayCloseLock.findUnique({ where: { businessDate } });
+    if (existing && existing.unlockedAt == null) {
+      res.status(400).json({ ok: false, message: "此營業日已關帳" });
+      return;
+    }
+
+    const dayRange = parseLocalYmdRange(dateRaw);
+    if (dayRange && !force) {
+      const blockers = await prisma.deliveryAssignment.count({
+        where: {
+          OR: [
+            {
+              status: "pending_settlement",
+              OR: [
+                { assignmentDate: businessDate },
+                { driverReportedAt: { gte: dayRange.start, lt: dayRange.end } },
+              ],
+            },
+            {
+              status: { in: ["assigned", "delivering"] },
+              driverReportedAt: null,
+              assignmentDate: businessDate,
+            },
+          ],
+        },
+      });
+      if (blockers > 0) {
+        res.status(409).json({
+          ok: false,
+          message: `尚有 ${blockers} 筆未核銷／未回報任務，請確認後以 force=1 二次確認關帳`,
+          code: "DAY_CLOSE_HAS_EXCEPTIONS",
+          blockerCount: blockers,
+        });
+        return;
+      }
+    }
+
+    const row = existing
+      ? await prisma.dayCloseLock.update({
+          where: { businessDate },
+          data: {
+            lockedAt: now,
+            lockedByUserId: auth.id,
+            unlockedAt: null,
+            unlockedByUserId: null,
+            note,
+          },
+        })
+      : await prisma.dayCloseLock.create({
+          data: {
+            businessDate,
+            lockedAt: now,
+            lockedByUserId: auth.id,
+            note,
+          },
+        });
+    res.json({ ok: true, data: row });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+/** P5：解鎖營業日 */
+app.post("/api/admin/day-close/unlock", async (req, res) => {
+  const auth = requireRole(req, res, ["admin"]);
+  if (!auth) return;
+  try {
+    const body = req.body as { date?: unknown; note?: unknown };
+    const dateRaw = typeof body.date === "string" ? body.date.trim() : toLocalYmd(new Date());
+    const businessDate = parseLocalYmdToDbDate(dateRaw);
+    if (!businessDate) {
+      res.status(400).json({ ok: false, message: "date 須為 YYYY-MM-DD" });
+      return;
+    }
+    const note = typeof body.note === "string" ? body.note.trim().slice(0, 500) || null : null;
+    const existing = await prisma.dayCloseLock.findUnique({ where: { businessDate } });
+    if (!existing || existing.unlockedAt != null) {
+      res.status(400).json({ ok: false, message: "此營業日未關帳或已解鎖" });
+      return;
+    }
+    const row = await prisma.dayCloseLock.update({
+      where: { businessDate },
+      data: {
+        unlockedAt: new Date(),
+        unlockedByUserId: auth.id,
+        ...(note ? { note } : {}),
+      },
+    });
+    res.json({ ok: true, data: row });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+/** P5：簡易備份匯出（主檔計數＋近 30 日訂單 id，JSON 下載） */
+app.get("/api/admin/backup-export", async (req, res) => {
+  if (!requireRole(req, res, ["admin"])) return;
+  try {
+    const now = new Date();
+    const since = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const [
+      customers,
+      products,
+      drivers,
+      vehicles,
+      users,
+      recentOrders,
+      pendingSettlementCount,
+      openArCount,
+    ] = await Promise.all([
+      prisma.customer.count(),
+      prisma.product.count(),
+      prisma.driver.count(),
+      prisma.vehicle.count(),
+      prisma.user.count(),
+      prisma.salesOrder.findMany({
+        where: { createdAt: { gte: since } },
+        select: {
+          id: true,
+          orderNo: true,
+          status: true,
+          customerId: true,
+          totalAmount: true,
+          createdAt: true,
+          scheduledDeliveryDate: true,
+        },
+        orderBy: { id: "desc" },
+        take: 5000,
+      }),
+      prisma.deliveryAssignment.count({ where: { status: "pending_settlement" } }),
+      prisma.arOpenItem.count({ where: activeArOpenItemWhere({}) }),
+    ]);
+
+    const payload = {
+      exportedAt: now.toISOString(),
+      exportedByUserId: getAuthUser(req)?.id?.toString() ?? null,
+      kind: "watererp_backup_export_v1",
+      masters: {
+        customers,
+        products,
+        drivers,
+        vehicles,
+        users,
+      },
+      operational: {
+        pendingSettlementCount,
+        openArCount,
+      },
+      recentOrdersWindowDays: 30,
+      recentOrders: recentOrders.map((o) => ({
+        id: o.id.toString(),
+        orderNo: o.orderNo,
+        status: o.status,
+        customerId: o.customerId.toString(),
+        totalAmount: o.totalAmount.toString(),
+        createdAt: o.createdAt.toISOString(),
+        scheduledDeliveryDate: o.scheduledDeliveryDate
+          ? toLocalYmd(new Date(o.scheduledDeliveryDate))
+          : null,
+      })),
+    };
+
+    const ymd = toLocalYmd(now);
+    const body = JSON.stringify(payload, null, 2);
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="watererp-backup-${ymd}.json"`);
+    res.send(body);
   } catch (e) {
     res.status(500).json({ ok: false, message: String(e) });
   }

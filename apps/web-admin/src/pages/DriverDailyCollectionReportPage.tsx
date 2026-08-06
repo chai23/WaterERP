@@ -306,7 +306,13 @@ export default function DriverDailyCollectionReportPage() {
                         {row.sourceType === "service_ticket"
                           ? "來源：飲水機服務單"
                           : `流程：${deliveryAssignmentStatusLabel(row.assignmentStatus)}`}
-                        {row.settlementOutcome ? ` · ${settlementOutcomeLabel(row.settlementOutcome)}` : ""}
+                        {row.settlementOutcome
+                          ? ` · ${settlementOutcomeLabel(row.settlementOutcome, {
+                              expectedAmount: row.expectedAmount,
+                              cashReceived: row.cashReceived,
+                              checkReceived: row.checkReceived,
+                            })}`
+                          : ""}
                       </p>
                     </div>
 

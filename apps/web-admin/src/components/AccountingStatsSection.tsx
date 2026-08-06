@@ -1,3 +1,4 @@
+import { moneyText } from "../adminUtils";
 import { useDashboard } from "../DashboardContext";
 
 type Mode = "overview" | "daily" | "monthly";
@@ -6,6 +7,10 @@ export default function AccountingStatsSection({ mode }: { mode: Mode }) {
   const { summary, summaryFilter, setSummaryFilter, loadDashboard } = useDashboard();
 
   const showToolbar = mode === "overview";
+  const pendingMonthly = Number(summary.periodPendingMonthly ?? 0);
+  const pendingMonthlyCount = Number(summary.periodPendingMonthlyCount ?? 0);
+  const arOutstanding = Number(summary.periodOrderOutstanding ?? 0);
+  const receivableTotal = Number(summary.periodReceivableTotal ?? arOutstanding + pendingMonthly);
 
   return (
     <section className="card">
@@ -19,10 +24,10 @@ export default function AccountingStatsSection({ mode }: { mode: Mode }) {
       </h2>
 
       {mode === "daily" ? (
-        <p className="card__hint">固定統計<strong>本日</strong>資料（與總覽「本日」相同邏輯）。</p>
+        <p className="card__hint">統計所選日期／自訂區間資料（可於上方切換與篩選）。</p>
       ) : null}
       {mode === "monthly" ? (
-        <p className="card__hint">固定統計<strong>本月</strong>資料（與總覽「本月」相同邏輯）。</p>
+        <p className="card__hint">統計所選月份／自訂區間資料（可於上方切換與篩選）。</p>
       ) : null}
 
       {showToolbar ? (
@@ -68,11 +73,13 @@ export default function AccountingStatsSection({ mode }: { mode: Mode }) {
             onChange={(e) => setSummaryFilter((prev) => ({ ...prev, endDate: e.target.value }))}
             disabled={summaryFilter.range !== "custom"}
           />
-          <span className="stats-range-hint">前三張依區間統計；待收為本區間完成訂單之應收未清 · 變更後會自動重新載入</span>
+          <span className="stats-range-hint">
+            待收＝本區間完成訂單之 AR 未清＋尚未開立月結批次 · 變更後會自動重新載入
+          </span>
         </div>
       ) : (
         <div className="form-actions stats-refresh-actions">
-          <button type="button" className="btn btn--secondary btn--sm" onClick={() => loadDashboard()}>
+          <button type="button" className="btn btn--secondary btn--sm" onClick={() => void loadDashboard()}>
             重新整理數據
           </button>
         </div>
@@ -82,7 +89,10 @@ export default function AccountingStatsSection({ mode }: { mode: Mode }) {
         <article className="stat-card stat-card--revenue">
           <div className="stat-card__label">區間營收</div>
           <div className="stat-card__value">{summary.periodRevenue.toLocaleString()}</div>
-          <p className="stat-card__hint">本區間完成訂單應收合計（含稅現金＋月結）</p>
+          <p className="stat-card__hint">
+            現金 {moneyText(summary.revenueCash)} · 月結 {moneyText(summary.revenueMonthly)}
+            {summary.revenuePrepaidTopup > 0 ? ` · 預付儲值 ${moneyText(summary.revenuePrepaidTopup)}` : ""}
+          </p>
         </article>
         <article className="stat-card stat-card--cash">
           <div className="stat-card__label">區間收款</div>
@@ -106,14 +116,45 @@ export default function AccountingStatsSection({ mode }: { mode: Mode }) {
         <article className="stat-card stat-card--count">
           <div className="stat-card__label">已完成單數</div>
           <div className="stat-card__value">{summary.todayCompletedCount}</div>
-          <p className="stat-card__hint">本區間配送完成筆數</p>
+          <p className="stat-card__hint">本區間配送／服務完成筆數</p>
         </article>
         <article className="stat-card stat-card--unpaid">
-          <div className="stat-card__label">區間待收</div>
-          <div className="stat-card__value">{summary.periodOrderOutstanding.toLocaleString()}</div>
-          <p className="stat-card__hint">本區間完成訂單之應收未清（AR）</p>
+          <div className="stat-card__label">區間總待收</div>
+          <div className="stat-card__value">{receivableTotal.toLocaleString()}</div>
+          <p className="stat-card__hint">
+            AR 未清 {arOutstanding.toLocaleString()}
+            <br />
+            待開月結 {pendingMonthly.toLocaleString()}
+            {pendingMonthlyCount > 0 ? `（${pendingMonthlyCount} 筆）` : ""}
+          </p>
         </article>
       </div>
+
+      {(mode === "overview" || mode === "daily" || mode === "monthly") && (
+        <div className="stats-grid stats-grid--metrics" style={{ marginTop: "1rem" }}>
+          <article className="stat-card">
+            <div className="stat-card__label">前期欠款</div>
+            <div className="stat-card__value">{moneyText(summary.arOpening)}</div>
+          </article>
+          <article className="stat-card">
+            <div className="stat-card__label">本期新增 AR</div>
+            <div className="stat-card__value">{moneyText(summary.arPeriodAccrual)}</div>
+          </article>
+          <article className="stat-card">
+            <div className="stat-card__label">本期沖帳</div>
+            <div className="stat-card__value">{moneyText(summary.arPeriodCollected)}</div>
+          </article>
+          <article className="stat-card">
+            <div className="stat-card__label">期末 AR</div>
+            <div className="stat-card__value">{moneyText(summary.arClosing)}</div>
+          </article>
+        </div>
+      )}
+      {(summaryFilter.driverId || summaryFilter.billingType) && (
+        <p className="card__hint" style={{ marginTop: "0.75rem" }}>
+          AR 滾動僅套用客戶篩選；司機／結帳方式不影響上列 AR 數字（避免與營收口徑混淆）。
+        </p>
+      )}
     </section>
   );
 }

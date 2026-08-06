@@ -61,6 +61,7 @@ const PATH_PERMISSION: Record<string, PermModule> = {
   "/data/users": "users",
   "/reports/daily": "accounting",
   "/reports/monthly": "accounting",
+  "/reports/exceptions": "accounting",
   "/reports/customer-lifecycle": "accounting",
   "/reports/driver-daily": "accounting",
   "/reports/billing-ar": "accounting",
@@ -77,6 +78,7 @@ const PATH_PERMISSION: Record<string, PermModule> = {
   "/settings/promotions": "settings",
   "/settings/customer-masters": "settings",
   "/settings/expense-categories": "settings",
+  "/settings/ops": "settings",
   "/settings/permissions": "settings",
 };
 

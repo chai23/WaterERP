@@ -15,6 +15,18 @@ type SummaryState = {
   periodCollectedOther: number;
   todayCompletedCount: number;
   periodOrderOutstanding: number;
+  periodPendingMonthly: number;
+  periodPendingMonthlyCount: number;
+  periodReceivableTotal: number;
+  revenueCash: number;
+  revenueMonthly: number;
+  revenuePrepaidTopup: number;
+  revenuePrepaidConsume: number;
+  prepaidConsumeBarrels: number;
+  arOpening: number;
+  arPeriodAccrual: number;
+  arPeriodCollected: number;
+  arClosing: number;
 };
 
 const defaultSummaryState = (today = todayLocalYmd()): SummaryState => ({
@@ -28,6 +40,18 @@ const defaultSummaryState = (today = todayLocalYmd()): SummaryState => ({
   periodCollectedOther: 0,
   todayCompletedCount: 0,
   periodOrderOutstanding: 0,
+  periodPendingMonthly: 0,
+  periodPendingMonthlyCount: 0,
+  periodReceivableTotal: 0,
+  revenueCash: 0,
+  revenueMonthly: 0,
+  revenuePrepaidTopup: 0,
+  revenuePrepaidConsume: 0,
+  prepaidConsumeBarrels: 0,
+  arOpening: 0,
+  arPeriodAccrual: 0,
+  arPeriodCollected: 0,
+  arClosing: 0,
 });
 
 const asArray = <T,>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
@@ -45,6 +69,14 @@ const asSummaryState = (value: unknown, today: string): SummaryState => {
   const periodCollected = Number(
     row.periodCollected ?? periodCollectedCash + periodCollectedTransfer + periodCollectedOther,
   );
+  const periodOrderOutstanding = Number(row.periodOrderOutstanding ?? 0);
+  const periodPendingMonthly = Number(row.periodPendingMonthly ?? 0);
+  const periodReceivableTotal = Number(
+    row.periodReceivableTotal ??
+      (row.unpaidAmount != null && periodPendingMonthly === 0
+        ? row.unpaidAmount
+        : periodOrderOutstanding + periodPendingMonthly),
+  );
   return {
     ...defaultSummaryState(today),
     range: typeof row.range === "string" ? row.range : "today",
@@ -56,7 +88,19 @@ const asSummaryState = (value: unknown, today: string): SummaryState => {
     periodCollectedTransfer,
     periodCollectedOther,
     todayCompletedCount: Number(row.todayCompletedCount ?? 0),
-    periodOrderOutstanding: Number(row.periodOrderOutstanding ?? row.unpaidAmount ?? 0),
+    periodOrderOutstanding,
+    periodPendingMonthly,
+    periodPendingMonthlyCount: Number(row.periodPendingMonthlyCount ?? 0),
+    periodReceivableTotal,
+    revenueCash: Number(row.revenueCash ?? 0),
+    revenueMonthly: Number(row.revenueMonthly ?? 0),
+    revenuePrepaidTopup: Number(row.revenuePrepaidTopup ?? 0),
+    revenuePrepaidConsume: Number(row.revenuePrepaidConsume ?? 0),
+    prepaidConsumeBarrels: Number(row.prepaidConsumeBarrels ?? 0),
+    arOpening: Number(row.arOpening ?? 0),
+    arPeriodAccrual: Number(row.arPeriodAccrual ?? 0),
+    arPeriodCollected: Number(row.arPeriodCollected ?? 0),
+    arClosing: Number(row.arClosing ?? 0),
   };
 };
 
@@ -110,8 +154,24 @@ export type DashboardContextValue = {
   completedDeliveries: any[];
   payments: any[];
   summary: SummaryState;
-  summaryFilter: { range: string; startDate: string; endDate: string };
-  setSummaryFilter: React.Dispatch<React.SetStateAction<{ range: string; startDate: string; endDate: string }>>;
+  summaryFilter: {
+    range: string;
+    startDate: string;
+    endDate: string;
+    customerId: string;
+    driverId: string;
+    billingType: string;
+  };
+  setSummaryFilter: React.Dispatch<
+    React.SetStateAction<{
+      range: string;
+      startDate: string;
+      endDate: string;
+      customerId: string;
+      driverId: string;
+      billingType: string;
+    }>
+  >;
   error: string;
   loadDashboard: () => Promise<void>;
   selectedCustomer: Customer | undefined;
@@ -241,6 +301,9 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     range: "today",
     startDate: today,
     endDate: today,
+    customerId: "",
+    driverId: "",
+    billingType: "",
   });
   const [error, setError] = useState<string>("");
   const [saving, setSaving] = useState<boolean>(false);
@@ -300,7 +363,17 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     if (summaryFilter.range === "custom") {
       params.set("startDate", summaryFilter.startDate);
       params.set("endDate", summaryFilter.endDate);
+    } else if (summaryFilter.range === "today" || summaryFilter.range === "day") {
+      if (summaryFilter.startDate) params.set("startDate", summaryFilter.startDate);
+    } else if (summaryFilter.range === "month") {
+      if (summaryFilter.startDate) {
+        params.set("startDate", summaryFilter.startDate);
+        params.set("ym", summaryFilter.startDate.slice(0, 7));
+      }
     }
+    if (summaryFilter.customerId) params.set("customerId", summaryFilter.customerId);
+    if (summaryFilter.driverId) params.set("driverId", summaryFilter.driverId);
+    if (summaryFilter.billingType) params.set("billingType", summaryFilter.billingType);
     const summaryUrl = `/api/accounting/summary?${params.toString()}`;
 
     const normMasters = (arr: unknown[]): CustomerMasterOption[] =>
@@ -361,7 +434,14 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         setHealth("無法連線 API（請確認 apps/api 已啟動）");
         setError("資料讀取失敗，請檢查 API 是否正常或資料庫是否有資料。");
       });
-  }, [summaryFilter.range, summaryFilter.startDate, summaryFilter.endDate]);
+  }, [
+    summaryFilter.range,
+    summaryFilter.startDate,
+    summaryFilter.endDate,
+    summaryFilter.customerId,
+    summaryFilter.driverId,
+    summaryFilter.billingType,
+  ]);
 
   useEffect(() => {
     loadDashboard();

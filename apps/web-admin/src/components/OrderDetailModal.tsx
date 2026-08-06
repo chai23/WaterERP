@@ -318,7 +318,15 @@ export function OrderDetailModal({ order, onClose }: { order: OrderRecord; onClo
                   <DetailRow label="司機">{assignment.driver?.user?.name ?? "—"}</DetailRow>
                   <DetailRow label="車牌">{assignment.vehicle?.plateNo ?? "—"}</DetailRow>
                   <DetailRow label="司機回報">{fmtDateTimeShort(assignment.driverReportedAt)}</DetailRow>
-                  <DetailRow label="回報結果">{settlementOutcomeLabel(assignment.settlementOutcome)}</DetailRow>
+                  <DetailRow label="回報結果">
+                    {settlementOutcomeLabel(assignment.settlementOutcome, {
+                      billingTypeAtOrder:
+                        typeof order?.billingTypeAtOrder === "string" ? order.billingTypeAtOrder : null,
+                      expectedAmount: assignment.expectedAmount != null ? Number(assignment.expectedAmount) : null,
+                      cashReceived: assignment.cashReceived != null ? Number(assignment.cashReceived) : 0,
+                      checkReceived: 0,
+                    })}
+                  </DetailRow>
                   <DetailRow label="應收現金">{moneyText(assignment.expectedAmount)}</DetailRow>
                   <DetailRow label="實收現金">{moneyText(assignment.cashReceived)}</DetailRow>
                   <DetailRow label="差額">{moneyText(assignment.cashVariance)}</DetailRow>

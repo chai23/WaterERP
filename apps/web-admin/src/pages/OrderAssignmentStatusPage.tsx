@@ -1,13 +1,16 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   deliveryAssignmentStatusBadgeClass,
   deliveryAssignmentStatusLabel,
+  driverEmployeeCode,
+  driverIsActive,
   fmtLocalYmd,
   moneyText,
   orderStatusBadgeClass,
   orderStatusLabel,
 } from "../adminUtils";
 import { OrderDetailModal, type OrderRecord } from "../components/OrderDetailModal";
+import { useDashboard } from "../DashboardContext";
 
 type QueueScope = "unassigned" | "assigned";
 
@@ -77,6 +80,7 @@ type Props = {
 
 /** 分派狀態佇列（嵌於分配訂單頁之分頁） */
 export default function AssignmentStatusPanel({ onGoAssign }: Props) {
+  const { drivers, vehicles } = useDashboard();
   const [scope, setScope] = useState<QueueScope>("unassigned");
   const [q, setQ] = useState("");
   const [qDraft, setQDraft] = useState("");
@@ -84,6 +88,20 @@ export default function AssignmentStatusPanel({ onGoAssign }: Props) {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [detailOrder, setDetailOrder] = useState<QueueOrder | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [batchDriverId, setBatchDriverId] = useState("");
+  const [batchVehicleId, setBatchVehicleId] = useState("");
+  const [batchDate, setBatchDate] = useState(() => fmtLocalYmd(new Date()) || "");
+  const [batchBusy, setBatchBusy] = useState(false);
+
+  const activeDrivers = useMemo(
+    () =>
+      [...drivers]
+        .filter(driverIsActive)
+        .sort((a, b) => driverEmployeeCode(a).localeCompare(driverEmployeeCode(b), "zh-Hant")),
+    [drivers],
+  );
+  const activeVehicles = useMemo(() => vehicles, [vehicles]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -100,6 +118,7 @@ export default function AssignmentStatusPanel({ onGoAssign }: Props) {
       }
       const orders = Array.isArray(payload.data?.orders) ? (payload.data.orders as QueueOrder[]) : [];
       setRows(orders);
+      setSelectedIds(new Set());
     } catch {
       setMessage("載入分派狀態時發生錯誤");
       setRows([]);
@@ -113,7 +132,71 @@ export default function AssignmentStatusPanel({ onGoAssign }: Props) {
   }, [load]);
 
   const titleCount = loading ? "…" : `${rows.length} 筆`;
-  const colCount = scope === "assigned" ? 7 : 6;
+  const colCount = (scope === "assigned" ? 7 : 6) + (scope === "unassigned" ? 1 : 0);
+
+  const toggleSelected = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAll = () => {
+    if (selectedIds.size === rows.length) {
+      setSelectedIds(new Set());
+      return;
+    }
+    setSelectedIds(new Set(rows.map((o) => String(o.id))));
+  };
+
+  const runBatchAssign = async () => {
+    if (selectedIds.size === 0) {
+      setMessage("請先勾選要分派的訂單");
+      return;
+    }
+    if (!batchDriverId) {
+      setMessage("請選擇批次分派司機");
+      return;
+    }
+    if (!window.confirm(`確定將 ${selectedIds.size} 筆訂單批次分派給所選司機？失敗單會略過。`)) return;
+    setBatchBusy(true);
+    setMessage("");
+    try {
+      const res = await fetch("/api/orders/batch-assign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          salesOrderIds: [...selectedIds],
+          driverId: batchDriverId,
+          vehicleId: batchVehicleId || undefined,
+          assignmentDate: batchDate || undefined,
+        }),
+      });
+      const payload = await res.json();
+      if (!res.ok || !payload?.ok) {
+        setMessage(payload?.message ?? "批次分派失敗");
+        return;
+      }
+      const succeeded = Array.isArray(payload.data?.succeeded) ? payload.data.succeeded : [];
+      const skipped = Array.isArray(payload.data?.skipped) ? payload.data.skipped : [];
+      setMessage(
+        `批次分派完成：成功 ${succeeded.length}、略過 ${skipped.length}` +
+          (skipped.length
+            ? `（例：${skipped
+                .slice(0, 3)
+                .map((s: { id: string; reason: string }) => `${s.id}:${s.reason}`)
+                .join("；")}）`
+            : ""),
+      );
+      await load();
+    } catch {
+      setMessage("批次分派時發生錯誤");
+    } finally {
+      setBatchBusy(false);
+    }
+  };
 
   return (
     <div className="order-assign-status">
@@ -165,6 +248,49 @@ export default function AssignmentStatusPanel({ onGoAssign }: Props) {
         </div>
       </div>
 
+      {scope === "unassigned" ? (
+        <div className="toolbar toolbar--filters" style={{ flexWrap: "wrap", gap: "0.5rem", marginBottom: "0.75rem" }}>
+          <div className="field field--sm">
+            <span>批次司機</span>
+            <select value={batchDriverId} onChange={(e) => setBatchDriverId(e.target.value)}>
+              <option value="">選擇司機</option>
+              {activeDrivers.map((d) => {
+                const code = driverEmployeeCode(d);
+                const name = d.user?.name ?? "（未命名）";
+                return (
+                  <option key={String(d.id)} value={String(d.id)}>
+                    {code ? `${code} ${name}` : name}
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+          <div className="field field--sm">
+            <span>車輛（選填）</span>
+            <select value={batchVehicleId} onChange={(e) => setBatchVehicleId(e.target.value)}>
+              <option value="">不指定</option>
+              {activeVehicles.map((v) => (
+                <option key={String(v.id)} value={String(v.id)}>
+                  {v.plateNo}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field field--sm">
+            <span>配送日</span>
+            <input type="date" value={batchDate} onChange={(e) => setBatchDate(e.target.value)} />
+          </div>
+          <button
+            type="button"
+            className="btn btn--primary btn--sm"
+            disabled={batchBusy || selectedIds.size === 0}
+            onClick={() => void runBatchAssign()}
+          >
+            {batchBusy ? "分派中…" : `批次分派（${selectedIds.size}）`}
+          </button>
+        </div>
+      ) : null}
+
       {message ? (
         <p className={message.includes("失敗") || message.includes("錯誤") ? "feedback feedback--err" : "feedback"}>
           {message}
@@ -175,6 +301,16 @@ export default function AssignmentStatusPanel({ onGoAssign }: Props) {
         <table className="data-table data-table--compact order-assign-status__table">
           <thead>
             <tr>
+              {scope === "unassigned" ? (
+                <th>
+                  <input
+                    type="checkbox"
+                    checked={rows.length > 0 && selectedIds.size === rows.length}
+                    onChange={toggleAll}
+                    aria-label="全選"
+                  />
+                </th>
+              ) : null}
               <th>訂單</th>
               <th>客戶／地址</th>
               <th>品項</th>
@@ -206,6 +342,16 @@ export default function AssignmentStatusPanel({ onGoAssign }: Props) {
                 const phone = String(o.customer?.mobile || o.customer?.phone || "");
                 return (
                   <tr key={id}>
+                    {scope === "unassigned" ? (
+                      <td>
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(id)}
+                          onChange={() => toggleSelected(id)}
+                          aria-label={`選取 ${orderNo}`}
+                        />
+                      </td>
+                    ) : null}
                     <td className="order-assign-status__cell-order">
                       <code className="order-assign-status__order-no" title={orderNo}>
                         {orderNo}
@@ -272,12 +418,11 @@ export default function AssignmentStatusPanel({ onGoAssign }: Props) {
       </div>
       <p className="order-assign-status__footnote text-muted">
         {scope === "unassigned"
-          ? "按「去分派」會切到分配分頁，並帶入該客戶與訂單。"
+          ? "可勾選多筆後批次分派（信用鎖定等失敗單會略過）；或按「去分派」切到分配分頁。"
           : "僅列出尚有進行中配送任務的訂單（已分派／配送中／待核銷）。"}
       </p>
-
       {detailOrder ? (
-        <OrderDetailModal order={detailOrder as OrderRecord} onClose={() => setDetailOrder(null)} />
+        <OrderDetailModal order={detailOrder} onClose={() => setDetailOrder(null)} />
       ) : null}
     </div>
   );
