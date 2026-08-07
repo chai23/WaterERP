@@ -209,9 +209,13 @@ function lifecycleEventLabel(type: string): string {
 }
 
 export default function DataCustomersPage() {
-  const { customers, addressZones, affiliatedCompanies, products, loadDashboard } = useDashboard();
+  const { customers, addressZones, affiliatedCompanies, products, refreshMasters } = useDashboard();
   const activeProducts = useMemo(() => products.filter((p) => p.isActive !== false), [products]);
   const isMobile = useMediaQuery("(max-width: 768px)");
+
+  useEffect(() => {
+    void refreshMasters(["customers", "zones", "products"], false);
+  }, [refreshMasters]);
 
   const [pageMode, setPageMode] = useState<PageMode>("browse");
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("summary");
@@ -378,7 +382,7 @@ export default function DataCustomersPage() {
       setLifecycleActionMsg(
         warnings.length > 0 ? `已標記流失（提醒：${warnings.join("；")}）` : "已標記流失",
       );
-      await loadDashboard();
+      await refreshMasters(["customers"], true);
       await fetchDetail(detailId);
       await loadLifecycleEvents(detailId);
     } catch {
@@ -409,7 +413,7 @@ export default function DataCustomersPage() {
         return;
       }
       setLifecycleActionMsg("已標記回流，客戶恢復使用中");
-      await loadDashboard();
+      await refreshMasters(["customers"], true);
       await fetchDetail(detailId);
       await loadLifecycleEvents(detailId);
     } catch {
@@ -709,7 +713,7 @@ export default function DataCustomersPage() {
         salesOrders: prev.salesOrders,
       };
     });
-    loadDashboard();
+    void refreshMasters(["customers"], true);
   };
 
   const startEditAddress = (a: Address) => {
@@ -825,7 +829,7 @@ export default function DataCustomersPage() {
       setEditBasicCredit(String(updated.creditLimit ?? "0"));
       setEditBasicNotes(updated.notes ?? "");
       void fetchDetail(detailId);
-      loadDashboard();
+      void refreshMasters(["customers"], true);
     } catch {
       setPatchBasicMsg("無法連線 API");
     } finally {
@@ -1064,7 +1068,7 @@ export default function DataCustomersPage() {
       setBillingLedger(null);
       setCustomerPayments([]);
       setDetail(null);
-      await loadDashboard();
+      await refreshMasters(["customers"], true);
       if (payload.data?.id != null) {
         setDetailId(String(payload.data.id));
         setWorkspaceTab("summary");
@@ -1145,7 +1149,7 @@ export default function DataCustomersPage() {
       setNewAddrPatrolProductId("");
       setShowAddAddressForm(false);
       await fetchDetail(detailId);
-      loadDashboard();
+      void refreshMasters(["customers"], true);
     } catch {
       setAddAddrMsg("無法連線 API");
     } finally {

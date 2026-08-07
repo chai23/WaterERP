@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import "./driver-ui.css";
 import BarrelPickupTab from "./BarrelPickupTab";
@@ -442,6 +442,28 @@ export default function App() {
   useEffect(() => {
     void loadJobs();
   }, [loadJobs]);
+
+  const prevMainTabRef = useRef(mainTab);
+  useEffect(() => {
+    const prev = prevMainTabRef.current;
+    prevMainTabRef.current = mainTab;
+    if (!authUser || mainTab !== "delivery" || prev === "delivery") return;
+    void loadJobs();
+  }, [authUser, mainTab, loadJobs]);
+
+  useEffect(() => {
+    if (!authUser) return;
+    const onResume = () => {
+      if (document.visibilityState !== "visible") return;
+      if (mainTab === "delivery") void loadJobs();
+    };
+    document.addEventListener("visibilitychange", onResume);
+    window.addEventListener("focus", onResume);
+    return () => {
+      document.removeEventListener("visibilitychange", onResume);
+      window.removeEventListener("focus", onResume);
+    };
+  }, [authUser, mainTab, loadJobs]);
 
   useEffect(() => {
     setDriverReportDate(assignmentDate);

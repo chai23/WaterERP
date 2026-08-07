@@ -4,7 +4,7 @@ import { useDashboard } from "../DashboardContext";
 type Mode = "overview" | "daily" | "monthly";
 
 export default function AccountingStatsSection({ mode }: { mode: Mode }) {
-  const { summary, summaryFilter, setSummaryFilter, loadDashboard } = useDashboard();
+  const { summary, summaryFilter, setSummaryFilter, loadSummary } = useDashboard();
 
   const showToolbar = mode === "overview";
   const pendingMonthly = Number(summary.periodPendingMonthly ?? 0);
@@ -79,7 +79,11 @@ export default function AccountingStatsSection({ mode }: { mode: Mode }) {
         </div>
       ) : (
         <div className="form-actions stats-refresh-actions">
-          <button type="button" className="btn btn--secondary btn--sm" onClick={() => void loadDashboard()}>
+          <button
+            type="button"
+            className="btn btn--secondary btn--sm"
+            onClick={() => void loadSummary()}
+          >
             重新整理數據
           </button>
         </div>

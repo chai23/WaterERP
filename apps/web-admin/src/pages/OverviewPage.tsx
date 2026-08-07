@@ -5,12 +5,13 @@ import { useDashboard } from "../DashboardContext";
 import { formatHealthStatus, healthLedClass } from "../adminUtils";
 
 export default function OverviewPage() {
-  const { health } = useDashboard();
+  const { health, loadSummary } = useDashboard();
   const [exceptionTotal, setExceptionTotal] = useState<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
+      await loadSummary();
       try {
         const res = await fetch("/api/reports/exception-center?summaryOnly=1");
         const payload = await res.json();
@@ -24,7 +25,7 @@ export default function OverviewPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [loadSummary]);
 
   return (
     <>

@@ -54,7 +54,7 @@ function goodsSummary(o: PendingOrder): string {
 
 /** 確認 LINE 訂單內容區（供建立訂單分頁嵌入） */
 export function OrderLiffReviewPanel() {
-  const { loadDashboard } = useDashboard();
+  const { loadOrders } = useDashboard();
   const [rows, setRows] = useState<PendingOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
@@ -110,7 +110,7 @@ export function OrderLiffReviewPanel() {
             : `已確認：${payload.data?.orderNo ?? id}，可至分配訂單派車`,
       );
       await load();
-      loadDashboard();
+      await loadOrders();
     } catch {
       setMessage("確認時發生錯誤");
     } finally {
@@ -136,7 +136,7 @@ export function OrderLiffReviewPanel() {
       }
       setMessage(`已駁回：${orderNo}`);
       await load();
-      loadDashboard();
+      await loadOrders();
     } catch {
       setMessage("駁回時發生錯誤");
     } finally {

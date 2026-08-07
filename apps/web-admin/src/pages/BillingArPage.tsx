@@ -132,7 +132,11 @@ function fmtPaidAtDate(iso: string | null | undefined): string {
 }
 
 export default function BillingArPage() {
-  const { customers, loadDashboard } = useDashboard();
+  const { customers, refreshMasters, loadSummary } = useDashboard();
+
+  useEffect(() => {
+    void refreshMasters(["customers"], false);
+  }, [refreshMasters]);
 
   const [customerId, setCustomerId] = useState("");
   const [customerSearch, setCustomerSearch] = useState("");
@@ -350,7 +354,7 @@ export default function BillingArPage() {
       setMsg(`收款成功，收款單 ${payload.data?.voucherNo ?? ""}`);
       setAmount("");
       await loadCustomerWorkspace(customerId);
-      loadDashboard();
+      void loadSummary();
     } catch {
       setMsg("無法連線 API");
     } finally {
@@ -391,7 +395,7 @@ export default function BillingArPage() {
           : "預收儲值成功",
       );
       await loadCustomerWorkspace(customerId);
-      loadDashboard();
+      void loadSummary();
     } catch {
       setMsg("無法連線 API");
     } finally {
@@ -425,7 +429,7 @@ export default function BillingArPage() {
       setApplyAmount("");
       setMsg(`預收扣抵成功：${payload.data?.appliedAmount ?? v}`);
       await loadCustomerWorkspace(customerId);
-      loadDashboard();
+      void loadSummary();
     } catch {
       setMsg("無法連線 API");
     } finally {
@@ -494,7 +498,7 @@ export default function BillingArPage() {
       setMsg(`已開立月結批次：${stmtNo}`);
       await loadStatement();
       await loadCustomerWorkspace(customerId);
-      loadDashboard();
+      void loadSummary();
     } catch {
       setMsg("無法連線 API");
     } finally {

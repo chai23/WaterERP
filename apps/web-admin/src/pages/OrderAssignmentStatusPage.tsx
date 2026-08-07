@@ -249,7 +249,7 @@ export default function AssignmentStatusPanel({ onGoAssign }: Props) {
       </div>
 
       {scope === "unassigned" ? (
-        <div className="toolbar toolbar--filters" style={{ flexWrap: "wrap", gap: "0.5rem", marginBottom: "0.75rem" }}>
+        <div className="toolbar toolbar--filters order-assign-status__batch-bar">
           <div className="field field--sm">
             <span>批次司機</span>
             <select value={batchDriverId} onChange={(e) => setBatchDriverId(e.target.value)}>
@@ -280,14 +280,17 @@ export default function AssignmentStatusPanel({ onGoAssign }: Props) {
             <span>配送日</span>
             <input type="date" value={batchDate} onChange={(e) => setBatchDate(e.target.value)} />
           </div>
-          <button
-            type="button"
-            className="btn btn--primary btn--sm"
-            disabled={batchBusy || selectedIds.size === 0}
-            onClick={() => void runBatchAssign()}
-          >
-            {batchBusy ? "分派中…" : `批次分派（${selectedIds.size}）`}
-          </button>
+          <div className="field field--sm order-assign-status__batch-action">
+            <span aria-hidden="true">&nbsp;</span>
+            <button
+              type="button"
+              className="btn btn--primary btn--sm order-assign-status__batch-submit"
+              disabled={batchBusy || selectedIds.size === 0}
+              onClick={() => void runBatchAssign()}
+            >
+              {batchBusy ? "分派中…" : `批次分派（${selectedIds.size}）`}
+            </button>
+          </div>
         </div>
       ) : null}
 

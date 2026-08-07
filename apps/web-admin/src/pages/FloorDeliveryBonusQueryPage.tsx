@@ -94,7 +94,7 @@ function downloadCsv(filename: string, headers: string[], lines: unknown[][]) {
 }
 
 export default function FloorDeliveryBonusQueryPage() {
-  const { loadDashboard } = useDashboard();
+  const { drivers, refreshMasters } = useDashboard();
   const [tab, setTab] = useState<PageTab>("payroll");
   const [yearMonth, setYearMonth] = useState(currentYearMonth);
   const [payroll, setPayroll] = useState<PayrollData | null>(null);
@@ -109,7 +109,10 @@ export default function FloorDeliveryBonusQueryPage() {
   const [dateTo, setDateTo] = useState("");
   const [driverId, setDriverId] = useState("");
   const [q, setQ] = useState("");
-  const { drivers } = useDashboard();
+
+  useEffect(() => {
+    void refreshMasters(["drivers", "products"], false);
+  }, [refreshMasters]);
 
   const [emptyWage, setEmptyWage] = useState("0");
   const [floorRatesDraft, setFloorRatesDraft] = useState<FloorRateRow[]>([]);
@@ -274,7 +277,7 @@ export default function FloorDeliveryBonusQueryPage() {
       }
       setRatesMsg("已儲存底薪");
       await loadPayroll();
-      loadDashboard();
+      void refreshMasters(["drivers", "products"], true);
     } catch {
       setRatesMsg("儲存底薪失敗");
     } finally {
@@ -298,7 +301,7 @@ export default function FloorDeliveryBonusQueryPage() {
       }
       setRatesMsg("已儲存商品配送單價");
       await loadPayroll();
-      loadDashboard();
+      void refreshMasters(["drivers", "products"], true);
     } catch {
       setRatesMsg("儲存配送單價失敗");
     } finally {

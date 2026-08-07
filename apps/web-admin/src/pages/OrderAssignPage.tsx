@@ -251,6 +251,7 @@ export default function OrderAssignPage() {
   const [routeTotals, setRouteTotals] = useState<ProductTotalRow[]>([]);
   const [routeLoading, setRouteLoading] = useState(false);
   const [routeError, setRouteError] = useState("");
+  const [routeDetailsOpen, setRouteDetailsOpen] = useState(false);
   const appliedQueryKeyRef = useRef("");
   const pendingSalesOrderIdRef = useRef<string | null>(null);
   const skipAutoMatchRef = useRef(false);
@@ -441,6 +442,7 @@ export default function OrderAssignPage() {
   }, [assignForm.driverId, assignForm.assignmentDate]);
 
   useEffect(() => {
+    setRouteDetailsOpen(false);
     void loadRoute();
   }, [loadRoute]);
 
@@ -656,39 +658,6 @@ export default function OrderAssignPage() {
                 <p className="feedback feedback--err order-new__placeholder-sm">{routeError}</p>
               ) : (
                 <>
-                  <p className="order-new__subsection-label order-new__subsection-label--inline">當日配送訂單</p>
-                  {routeAssignments.length === 0 ? (
-                    <p className="text-muted order-new__placeholder-sm">此配送日尚無任務。</p>
-                  ) : (
-                    <div className="order-new__history-table order-assign__pick-scroll" role="list">
-                      {routeAssignments.map((row) => {
-                        const so = row.salesOrder;
-                        const cust = so?.customer;
-                        const code = cust?.customerCode ?? "------";
-                        const goods = goodsSummaryFromLines(so?.lines as IncompleteOrder["lines"] | undefined);
-                        return (
-                          <div key={String(row.id)} className="order-new__history-row" role="listitem">
-                            <span className="order-new__history-row__top">
-                              <span className="mono-text">{so?.orderNo ?? "—"}</span>
-                              {row.status ? (
-                                <span className={deliveryAssignmentStatusBadgeClass(row.status)}>
-                                  {deliveryAssignmentStatusLabel(row.status)}
-                                </span>
-                              ) : null}
-                            </span>
-                            <span className="text-muted">
-                              {code} · {cust?.name ?? "—"}
-                              {row.vehicle?.plateNo ? ` · ${row.vehicle.plateNo}` : ""}
-                            </span>
-                            {goods ? <span className="order-new__history-row__goods">{goods}</span> : null}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-
-                  <hr className="order-new__surface-rule" />
-
                   <p className="order-new__subsection-label order-new__subsection-label--inline">商品數量彙總</p>
                   {routeTotals.length === 0 ? (
                     <p className="text-muted order-new__placeholder-sm">無明細可彙總。</p>
@@ -705,6 +674,60 @@ export default function OrderAssignPage() {
                       ))}
                     </ul>
                   )}
+
+                  <div className="order-assign__route-details">
+                    <button
+                      type="button"
+                      className="order-assign__route-details-toggle"
+                      aria-expanded={routeDetailsOpen}
+                      onClick={() => setRouteDetailsOpen((v) => !v)}
+                      disabled={routeAssignments.length === 0}
+                    >
+                      <span>
+                        當日配送訂單
+                        <span className="order-assign__route-details-count">{routeAssignments.length} 筆</span>
+                      </span>
+                      <span className="order-assign__route-details-chevron" aria-hidden="true">
+                        {routeDetailsOpen ? "收合" : "展開"}
+                      </span>
+                    </button>
+
+                    {routeAssignments.length === 0 ? (
+                      <p className="text-muted order-new__placeholder-sm">此配送日尚無任務。</p>
+                    ) : routeDetailsOpen ? (
+                      <div className="order-assign__route-list" role="list">
+                        {routeAssignments.map((row) => {
+                          const so = row.salesOrder;
+                          const cust = so?.customer;
+                          const code = cust?.customerCode ?? "------";
+                          const goods = goodsSummaryFromLines(so?.lines as IncompleteOrder["lines"] | undefined);
+                          return (
+                            <div key={String(row.id)} className="order-assign__route-row" role="listitem">
+                              <div className="order-assign__route-row__main">
+                                <span className="order-assign__route-row__cust">
+                                  {code} · {cust?.name ?? "—"}
+                                </span>
+                                {row.status && row.status !== "assigned" ? (
+                                  <span className={deliveryAssignmentStatusBadgeClass(row.status)}>
+                                    {deliveryAssignmentStatusLabel(row.status)}
+                                  </span>
+                                ) : null}
+                              </div>
+                              <div className="order-assign__route-row__sub">
+                                <span className="order-assign__route-row__goods">{goods || "無明細"}</span>
+                                {row.vehicle?.plateNo ? (
+                                  <span className="text-muted">{row.vehicle.plateNo}</span>
+                                ) : null}
+                              </div>
+                              <span className="order-assign__route-row__no mono-text" title={so?.orderNo ?? undefined}>
+                                {so?.orderNo ?? "—"}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
                 </>
               )}
             </div>
@@ -780,24 +803,33 @@ export default function OrderAssignPage() {
               />
             </div>
 
-            <div className="order-assign__selected-order">
-              <p className="order-new__subsection-label order-new__subsection-label--inline">目前選擇的訂單</p>
+            <div className="order-assign__selected-order" aria-live="polite">
               {selectedOrderSummary ? (
-                <div className="order-assign__selected-inner">
-                  <p className="mono-text">
-                    <strong>{selectedOrderSummary.orderNo}</strong> ·{" "}
+                <>
+                  <div className="order-assign__selected-head">
+                    <span className="order-assign__selected-label">已選</span>
+                    <strong className="order-assign__selected-no mono-text">{selectedOrderSummary.orderNo}</strong>
                     <span className={orderStatusBadgeClass(String(selectedOrderSummary.status))}>
                       {orderStatusLabel(selectedOrderSummary.status)}
                     </span>
-                  </p>
-                  <p className="order-assign__pick-addr">
-                    {deliveryAddressText(selectedOrderSummary.deliveryAddress) || "（無送貨地址）"}
-                  </p>
-                  <p className="text-muted">{describeLatestAssignment(selectedOrderSummary)}</p>
-                  <p className="order-new__history-row__goods">{goodsSummary(selectedOrderSummary) || "無明細"}</p>
-                </div>
+                  </div>
+                  <dl className="order-assign__selected-meta">
+                    <div>
+                      <dt>地址</dt>
+                      <dd>{deliveryAddressText(selectedOrderSummary.deliveryAddress) || "（無送貨地址）"}</dd>
+                    </div>
+                    <div>
+                      <dt>任務</dt>
+                      <dd>{describeLatestAssignment(selectedOrderSummary)}</dd>
+                    </div>
+                    <div>
+                      <dt>商品</dt>
+                      <dd>{goodsSummary(selectedOrderSummary) || "無明細"}</dd>
+                    </div>
+                  </dl>
+                </>
               ) : (
-                <p className="text-muted order-new__placeholder-sm">請於區塊 ② 點選一筆未完成訂單。</p>
+                <p className="text-muted order-assign__selected-empty">請於區塊 ② 點選一筆未完成訂單。</p>
               )}
             </div>
 

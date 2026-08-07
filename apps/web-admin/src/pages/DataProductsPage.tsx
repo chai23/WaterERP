@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Product } from "../adminUtils";
 import { useDashboard } from "../DashboardContext";
 
@@ -24,10 +24,14 @@ const DEFAULT_PRODUCT_FORM = {
 };
 
 export default function DataProductsPage() {
-  const { products, productSaving, productMessage, productForm, setProductForm, onSubmitNewProduct, loadDashboard } = useDashboard();
+  const { products, productSaving, productMessage, productForm, setProductForm, onSubmitNewProduct, refreshMasters } = useDashboard();
   const [patchingId, setPatchingId] = useState<string | null>(null);
   const [codeDraftById, setCodeDraftById] = useState<Record<string, string>>({});
   const [codeSavingId, setCodeSavingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    void refreshMasters(["products"], false);
+  }, [refreshMasters]);
 
   const createHasValidCode = normalizeProductCodeUi(productForm.productCode) != null;
   const createHasName = productForm.name.trim().length > 0;
@@ -96,7 +100,7 @@ export default function DataProductsPage() {
         delete n[String(p.id)];
         return n;
       });
-      loadDashboard();
+      await refreshMasters(["products"], true);
     } catch {
       window.alert("無法連線 API");
     } finally {
@@ -117,7 +121,7 @@ export default function DataProductsPage() {
         window.alert(payload.message ?? "更新失敗");
         return;
       }
-      loadDashboard();
+      await refreshMasters(["products"], true);
     } catch {
       window.alert("無法連線 API");
     } finally {
@@ -138,7 +142,7 @@ export default function DataProductsPage() {
         window.alert(payload.message ?? "更新失敗");
         return;
       }
-      loadDashboard();
+      await refreshMasters(["products"], true);
     } catch {
       window.alert("無法連線 API");
     } finally {
@@ -159,7 +163,7 @@ export default function DataProductsPage() {
         window.alert(payload.message ?? "更新失敗");
         return;
       }
-      loadDashboard();
+      await refreshMasters(["products"], true);
     } catch {
       window.alert("無法連線 API");
     } finally {

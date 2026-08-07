@@ -725,9 +725,8 @@ export default function App() {
     if (!token) return;
     void (async () => {
       setProductsError("");
-      const [prodRes, orderRes, meRes] = await Promise.all([
+      const [prodRes, meRes] = await Promise.all([
         api<Product[]>("/api/liff/products", { token }),
-        api<OrderRow[]>("/api/liff/orders", { token }),
         api<Customer>("/api/liff/me", { token }),
       ]);
       if (prodRes.ok && prodRes.data) {
@@ -739,10 +738,17 @@ export default function App() {
         setProducts([]);
         setProductsError(prodRes.message || "無法載入商品列表");
       }
-      if (orderRes.ok && orderRes.data) setOrders(orderRes.data);
       if (meRes.ok && meRes.data) setCustomer(meRes.data);
     })();
   }, [token]);
+
+  useEffect(() => {
+    if (!token || tab !== "orders") return;
+    void (async () => {
+      const orderRes = await api<OrderRow[]>("/api/liff/orders", { token });
+      if (orderRes.ok && orderRes.data) setOrders(orderRes.data);
+    })();
+  }, [token, tab]);
 
   useEffect(() => {
     if (!token || tab !== "account") return;
@@ -758,6 +764,14 @@ export default function App() {
           setSvcAddressId(String(def.id));
         }
       }
+      if (tickets.ok && tickets.data) setServiceTickets(tickets.data);
+    })();
+  }, [token, tab]);
+
+  useEffect(() => {
+    if (!token || tab !== "service") return;
+    void (async () => {
+      const tickets = await api<ServiceTicket[]>("/api/liff/service-tickets", { token });
       if (tickets.ok && tickets.data) setServiceTickets(tickets.data);
     })();
   }, [token, tab]);

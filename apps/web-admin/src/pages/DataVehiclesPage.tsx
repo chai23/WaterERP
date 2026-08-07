@@ -1,7 +1,13 @@
+import { useEffect } from "react";
 import { useDashboard } from "../DashboardContext";
 
 export default function DataVehiclesPage() {
-  const { vehicles, vehicleSaving, vehicleMessage, vehicleForm, setVehicleForm, onSubmitNewVehicle } = useDashboard();
+  const { vehicles, vehicleSaving, vehicleMessage, vehicleForm, setVehicleForm, onSubmitNewVehicle, refreshMasters } =
+    useDashboard();
+
+  useEffect(() => {
+    void refreshMasters(["vehicles"], false);
+  }, [refreshMasters]);
 
   return (
     <>

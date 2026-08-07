@@ -88,7 +88,7 @@ export default function OrderCompletePage() {
   const [rows, setRows] = useState<SettlementRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
-  const [filterPipeline, setFilterPipeline] = useState("");
+  const [filterPipeline, setFilterPipeline] = useState("pending_settlement");
   const [filterDriverId, setFilterDriverId] = useState("");
   const [q, setQ] = useState("");
   const [approvingId, setApprovingId] = useState<string | null>(null);

@@ -124,6 +124,16 @@ function orderLineDisplayName(line: OrderLineRow): string {
   return name;
 }
 
+function goodsSummaryFromJob(job: AssignmentJob, maxLen = 72): string {
+  const parts = deliveryLinesFromJob(job).map((line) => {
+    const qty = line.qtyOrdered ?? 0;
+    return `${orderLineDisplayName(line)} × ${qty}`;
+  });
+  if (parts.length === 0) return "";
+  const text = parts.join("、");
+  return text.length > maxLen ? `${text.slice(0, maxLen - 1)}…` : text;
+}
+
 function isFloorBonusEligible(floor: number): boolean {
   return floor >= 2 || floor < 0;
 }
@@ -288,6 +298,8 @@ export default function OrderProxyReportPage() {
   const [confirmingLineId, setConfirmingLineId] = useState<string | null>(null);
   const [lineQtyConfirmedByJob, setLineQtyConfirmedByJob] = useState<Record<string, boolean>>({});
   const [formByJob, setFormByJob] = useState<Record<string, JobFormState>>({});
+  /** 展開中的任務（預設收合，方便掃單） */
+  const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
 
   const selectedDriver = useMemo(
     () => activeDrivers.find((d) => String(d.id) === driverId) ?? null,
@@ -333,6 +345,7 @@ export default function OrderProxyReportPage() {
           }))
         : [];
       setJobs(list);
+      setExpandedJobId((cur) => (cur && list.some((j) => String(j.id) === cur) ? cur : null));
       setFormByJob((prev) => {
         const next = { ...prev };
         const confirmedNext: Record<string, boolean> = {};
@@ -617,34 +630,70 @@ export default function OrderProxyReportPage() {
                 cashDueRaw != null && feeEst > 0 && floorFeeBillingIsCash(job) ? projected : cashDueRaw;
               const barrelsOnSite = job.salesOrder?.deliveryAddress?.barrelsOnSite ?? null;
 
+              const goodsPreview = goodsSummaryFromJob(job);
+              const expanded = expandedJobId === id;
+
               return (
                 <article
                   key={id}
-                  className={`proxy-report-card${pendingOffice ? " proxy-report-card--pending" : ""}`}
+                  className={`proxy-report-card${pendingOffice ? " proxy-report-card--pending" : ""}${
+                    expanded ? " proxy-report-card--expanded" : ""
+                  }`}
                 >
-                  <div className="proxy-report-card__head">
-                    <code className="proxy-report-card__order-no">{job.salesOrder?.orderNo ?? "—"}</code>
-                    <span>{job.salesOrder?.customer?.name ?? "—"}</span>
-                    <span className={deliveryAssignmentStatusBadgeClass(job.status)}>
-                      {deliveryAssignmentStatusLabel(job.status)}
+                  <button
+                    type="button"
+                    className="proxy-report-card__summary"
+                    aria-expanded={expanded}
+                    onClick={() => setExpandedJobId((cur) => (cur === id ? null : id))}
+                  >
+                    <div className="proxy-report-card__summary-main">
+                      <div className="proxy-report-card__head">
+                        <code className="proxy-report-card__order-no">{job.salesOrder?.orderNo ?? "—"}</code>
+                        <span className="proxy-report-card__customer">{job.salesOrder?.customer?.name ?? "—"}</span>
+                        <span className={deliveryAssignmentStatusBadgeClass(job.status)}>
+                          {deliveryAssignmentStatusLabel(job.status)}
+                        </span>
+                        {job.settlementOutcome ? (
+                          <span className="pill pill--subtle">
+                            {settlementOutcomeLabel(job.settlementOutcome, {
+                              billingTypeAtOrder: job.salesOrder?.billingTypeAtOrder,
+                              expectedAmount:
+                                job.expectedAmount != null
+                                  ? Number(job.expectedAmount)
+                                  : job.driverBillingHints?.cashDue != null
+                                    ? Number(job.driverBillingHints.cashDue)
+                                    : null,
+                              cashReceived: job.cashReceived != null ? Number(job.cashReceived) : 0,
+                              checkReceived: job.checkReceived != null ? Number(job.checkReceived) : 0,
+                            })}
+                          </span>
+                        ) : null}
+                      </div>
+                      <p className="proxy-report-card__meta">
+                        {job.salesOrder?.deliveryAddress?.addressLine ?? "—"}
+                        {job.vehicle?.plateNo ? ` · 車輛 ${job.vehicle.plateNo}` : ""}
+                        {barrelsOnSite != null ? ` · 送貨點在場空桶 ${barrelsOnSite}` : ""}
+                      </p>
+                      {!expanded ? (
+                        <div className="proxy-report-card__preview">
+                          {cashDue != null && cashDue > 0 ? (
+                            <span className="proxy-report-card__cash-due">建議收款 ${cashDue}</span>
+                          ) : hints ? (
+                            <span className="proxy-report-card__cash-muted">
+                              {billingTypeLabel(hints.billingType)} · 本趟現金 $0
+                            </span>
+                          ) : null}
+                          {goodsPreview ? <span className="proxy-report-card__preview-goods">{goodsPreview}</span> : null}
+                        </div>
+                      ) : null}
+                    </div>
+                    <span className="proxy-report-card__toggle" aria-hidden="true">
+                      {expanded ? "收合" : "展開"}
                     </span>
-                    {job.settlementOutcome ? (
-                      <span className="pill pill--subtle">
-                        {settlementOutcomeLabel(job.settlementOutcome, {
-                          billingTypeAtOrder: job.salesOrder?.billingTypeAtOrder,
-                          expectedAmount: job.expectedAmount != null ? Number(job.expectedAmount) : job.driverBillingHints?.cashDue != null ? Number(job.driverBillingHints.cashDue) : null,
-                          cashReceived: job.cashReceived != null ? Number(job.cashReceived) : 0,
-                          checkReceived: job.checkReceived != null ? Number(job.checkReceived) : 0,
-                        })}
-                      </span>
-                    ) : null}
-                  </div>
-                  <p className="proxy-report-card__meta">
-                    {job.salesOrder?.deliveryAddress?.addressLine ?? "—"}
-                    {job.vehicle?.plateNo ? ` · 車輛 ${job.vehicle.plateNo}` : ""}
-                    {barrelsOnSite != null ? ` · 送貨點在場空桶 ${barrelsOnSite}` : ""}
-                  </p>
+                  </button>
 
+                  {expanded ? (
+                    <div className="proxy-report-card__body">
                   {hints ? (
                     <div className="proxy-report-card__billing">
                       <div>
@@ -908,6 +957,7 @@ export default function OrderProxyReportPage() {
                                 type="number"
                                 min={0}
                                 value={form.emptyBarrelsReturned}
+                                onFocus={(e) => e.currentTarget.select()}
                                 onChange={(e) =>
                                   updateForm(id, { emptyBarrelsReturned: Math.max(0, Math.floor(Number(e.target.value) || 0)) })
                                 }
@@ -920,6 +970,7 @@ export default function OrderProxyReportPage() {
                                 min={0}
                                 step="0.01"
                                 value={form.cashReceived}
+                                onFocus={(e) => e.currentTarget.select()}
                                 onChange={(e) => updateForm(id, { cashReceived: Number(e.target.value) || 0 })}
                               />
                             </div>
@@ -930,6 +981,7 @@ export default function OrderProxyReportPage() {
                                 min={0}
                                 step="0.01"
                                 value={form.checkReceived}
+                                onFocus={(e) => e.currentTarget.select()}
                                 onChange={(e) => updateForm(id, { checkReceived: Number(e.target.value) || 0 })}
                               />
                             </div>
@@ -974,6 +1026,8 @@ export default function OrderProxyReportPage() {
                         </button>
                       </fieldset>
                     </>
+                  ) : null}
+                    </div>
                   ) : null}
                 </article>
               );

@@ -203,9 +203,20 @@ function historyGoodsSummary(o: CustomerSalesOrder, maxLen = 88): string {
   return `${s.slice(0, Math.max(0, maxLen - 1))}…`;
 }
 
+/** 歷史訂單最新配送任務的空桶回收數；尚無回報時回傳 null */
+function historyEmptyBarrels(o: CustomerSalesOrder): number | null {
+  const assignments = Array.isArray(o.assignments) ? o.assignments : [];
+  if (assignments.length === 0) return null;
+  const n = assignments[0]?.emptyBarrelsReturned;
+  if (n == null || !Number.isFinite(Number(n))) return null;
+  return Math.max(0, Math.floor(Number(n)));
+}
+
 function historyRowDetailTitle(o: CustomerSalesOrder): string {
   const lines = (o.lines ?? []).map((ln) => historyLineSummary(ln)).join("\n");
-  return `${o.orderNo}｜${historyDisplayYmd(o)}\n${lines}`;
+  const empty = historyEmptyBarrels(o);
+  const emptyLine = empty != null ? `\n收空桶 ${empty}` : "";
+  return `${historyDisplayYmd(o)}｜${o.orderNo}${emptyLine}\n${lines}`;
 }
 
 type OrderLineField = "code" | "billing" | "price" | "qty";
@@ -220,8 +231,18 @@ type OrderNewPageProps = {
 };
 
 export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
-  const { customers, products, saving, formMessage, form, setForm, onSubmitCreateOrder, selectedCustomer, lastOrderSlipForPrint } =
-    useDashboard();
+  const {
+    customers,
+    products,
+    saving,
+    formMessage,
+    form,
+    setForm,
+    onSubmitCreateOrder,
+    selectedCustomer,
+    lastOrderSlipForPrint,
+    refreshMasters,
+  } = useDashboard();
   const [billingSummary, setBillingSummary] = useState<CustomerBillingSummary | null>(null);
   const [lastPriceMap, setLastPriceMap] = useState<Record<string, { unitPrice: string; orderNo: string }>>({});
   const [summaryLoading, setSummaryLoading] = useState(false);
@@ -231,8 +252,13 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
   const [matchHint, setMatchHint] = useState("");
   const [lineProductCodes, setLineProductCodes] = useState<Record<string, string>>({});
   const [promotionPreview, setPromotionPreview] = useState<string[]>([]);
+  const [historyApplyMsg, setHistoryApplyMsg] = useState("");
   const lineFieldRefs = useRef<Record<string, HTMLElement | null>>({});
   const pendingLineFocus = useRef<{ rowId: string; field: OrderLineField } | null>(null);
+
+  useEffect(() => {
+    void refreshMasters(["customers", "products"], false);
+  }, [refreshMasters]);
 
   const focusLineField = useCallback((rowId: string, field: OrderLineField) => {
     requestAnimationFrame(() => {
@@ -608,6 +634,93 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
       return changed ? { ...f, lines: nextLines } : f;
     });
   }, [activeProducts, lineProductCodes, lastPriceMap, setForm]);
+
+  const applyHistoryOrderToLines = useCallback(
+    (o: CustomerSalesOrder) => {
+      const sourceLines = (o.lines ?? []).filter((ln) => !ln.isPromotionGift);
+      if (sourceLines.length === 0) {
+        setHistoryApplyMsg("此筆歷史訂單沒有可帶入的商品明細。");
+        return;
+      }
+
+      const hasExisting = form.lines.some((l) => l.productId);
+      if (
+        hasExisting &&
+        !window.confirm(`要以歷史訂單 ${o.orderNo} 的商品明細覆寫目前列表嗎？`)
+      ) {
+        return;
+      }
+
+      const defBilling = parseLineBilling(selectedCustomer?.billingType);
+      const nextLines: ReturnType<typeof newOrderFormLine>[] = [];
+      const nextCodes: Record<string, string> = {};
+      const skipped: string[] = [];
+
+      for (const ln of sourceLines) {
+        if (nextLines.length >= 30) break;
+        const pid = ln.product?.id != null ? String(ln.product.id) : "";
+        const catalog = pid ? activeProducts.find((p) => String(p.id) === pid && p.isActive !== false) : undefined;
+        if (!catalog) {
+          skipped.push(ln.product?.name?.trim() || "未知商品");
+          continue;
+        }
+
+        const purpose: LinePurpose =
+          ln.linePurpose === "prepaid_barrel_topup" ? "prepaid_barrel_topup" : "delivery";
+        const isReplenishment = Boolean(ln.isReplenishment) && purpose === "delivery";
+        const billing: LineBillingType = purpose === "prepaid_barrel_topup"
+          ? "cash"
+          : parseLineBilling(ln.billingTypeAtLine ?? selectedCustomer?.billingType);
+
+        const qtyRaw = Math.floor(Number(ln.qtyOrdered));
+        const qty = Number.isFinite(qtyRaw) && qtyRaw > 0 ? qtyRaw : 1;
+        const priceRaw = String(ln.unitPrice ?? "").trim();
+        const unitPrice = isReplenishment
+          ? "0"
+          : priceRaw !== ""
+            ? priceRaw
+            : defaultUnitPriceForProduct(catalog, lastPriceMap);
+
+        const row = newOrderFormLine(billing);
+        row.productId = pid;
+        row.qty = qty;
+        row.unitPrice = unitPrice;
+        row.linePurpose = purpose;
+        row.isReplenishment = isReplenishment;
+        nextLines.push(row);
+
+        const code = (catalog.productCode ?? ln.product?.productCode ?? "").trim();
+        if (/^\d{3}$/.test(code)) nextCodes[row.id] = code;
+      }
+
+      if (nextLines.length === 0) {
+        setHistoryApplyMsg(
+          skipped.length > 0
+            ? `無法帶入：商品已下架或不存在（${skipped.slice(0, 3).join("、")}${skipped.length > 3 ? "…" : ""}）`
+            : "無法帶入商品明細。",
+        );
+        return;
+      }
+
+      if (nextLines.length < 30) {
+        nextLines.push(newOrderFormLine(defBilling));
+      }
+
+      setForm((f) => ({ ...f, lines: nextLines }));
+      setLineProductCodes(nextCodes);
+
+      const skipNote =
+        skipped.length > 0
+          ? `；略過 ${skipped.length} 項無法對應商品`
+          : "";
+      setHistoryApplyMsg(`已帶入 ${o.orderNo} 共 ${nextLines.filter((l) => l.productId).length} 項${skipNote}`);
+
+      requestAnimationFrame(() => {
+        document.getElementById("order-new-zone-lines")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    },
+    [activeProducts, form.lines, lastPriceMap, selectedCustomer?.billingType, setForm],
+  );
 
   const updateLine = (
     id: string,
@@ -1005,22 +1118,47 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
             ) : (
               <>
                 <p className="order-new__meta-line order-new__history-caption">
-                  {sortedHistoryOrders.length} 筆 · 配送日近→遠 · 最多 100 筆
+                  {sortedHistoryOrders.length} 筆 · 配送日近→遠 · 最多 100 筆 · 雙擊可帶入商品明細
                 </p>
+                {historyApplyMsg ? (
+                  <p
+                    className={
+                      historyApplyMsg.startsWith("已帶入")
+                        ? "feedback feedback--ok order-new__history-apply-msg"
+                        : "feedback feedback--err order-new__history-apply-msg"
+                    }
+                  >
+                    {historyApplyMsg}
+                  </p>
+                ) : null}
                 <div className="order-new__history-table" role="list">
                   {sortedHistoryOrders.map((o) => {
                     const dateStr = historyDisplayYmd(o);
                     const statusRaw = String(o.status ?? "");
                     const goods = historyGoodsSummary(o);
-                    const title = historyRowDetailTitle(o);
+                    const emptyBarrels = historyEmptyBarrels(o);
+                    const title = `${historyRowDetailTitle(o)}\n\n雙擊：帶入商品、單價與數量到下方列表`;
                     return (
-                      <div role="listitem" key={String(o.id)} className="order-new__history-row" title={title}>
-                        <span className="order-new__history-row__top">
+                      <div
+                        role="listitem"
+                        key={String(o.id)}
+                        className="order-new__history-row order-new__history-row--applyable"
+                        title={title}
+                        onDoubleClick={() => applyHistoryOrderToLines(o)}
+                      >
+                        <div className="order-new__history-row__date-line">
                           <span className="order-new__history-row__ymd mono-text">{dateStr}</span>
-                          <span className="order-new__history-row__no mono-text">{o.orderNo}</span>
                           <span className={orderStatusBadgeClass(statusRaw)}>{orderStatusLabel(o.status)}</span>
-                        </span>
-                        <span className="order-new__history-row__goods">{goods || "無明細"}</span>
+                        </div>
+                        <p className="order-new__history-row__goods">{goods || "無明細"}</p>
+                        <div className="order-new__history-row__meta">
+                          {emptyBarrels != null ? (
+                            <span className="order-new__history-row__empty">收空 {emptyBarrels}</span>
+                          ) : (
+                            <span className="order-new__history-row__empty order-new__history-row__empty--na">收空 —</span>
+                          )}
+                          <span className="order-new__history-row__no mono-text">{o.orderNo}</span>
+                        </div>
                       </div>
                     );
                   })}
@@ -1031,7 +1169,11 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
           </aside>
         </div>
 
-        <section className="order-new__zone order-new__zone--lines" aria-labelledby="order-new-lines-title">
+        <section
+          id="order-new-zone-lines"
+          className="order-new__zone order-new__zone--lines"
+          aria-labelledby="order-new-lines-title"
+        >
           <header className="order-new__zone-head order-new__zone-head--flush">
             <span className="order-new__zone-index order-new__zone-index--brand" aria-hidden="true">
               4

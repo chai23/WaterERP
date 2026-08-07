@@ -26,7 +26,7 @@ export default function DataDriversPage() {
     driverForm,
     setDriverForm,
     onSubmitNewDriver,
-    loadDashboard,
+    refreshMasters,
   } = useDashboard();
 
   const [drivers, setDrivers] = useState<Driver[]>([]);
@@ -48,7 +48,8 @@ export default function DataDriversPage() {
 
   useEffect(() => {
     void loadDrivers();
-  }, [loadDrivers]);
+    void refreshMasters(["vehicles", "drivers"], false);
+  }, [loadDrivers, refreshMasters]);
 
   useEffect(() => {
     if (driverMessage.includes("成功")) void loadDrivers();
@@ -76,7 +77,7 @@ export default function DataDriversPage() {
       body: JSON.stringify(patch),
     });
     await loadDrivers();
-    loadDashboard();
+    await refreshMasters(["drivers", "vehicles"], true);
   };
 
   const onSaveCapacity = async (driverId: string) => {

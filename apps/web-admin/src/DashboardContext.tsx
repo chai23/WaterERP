@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import type { Customer, CustomerMasterOption, Driver, Product, Vehicle } from "./adminUtils";
 import { driverEmployeeCode, todayLocalYmd } from "./adminUtils";
 import type { OrderSlipSource } from "./orderPrint";
@@ -109,6 +109,10 @@ export type LineBillingType = "cash" | "monthly" | "prepaid";
 /** delivery：一般出貨；prepaid_barrel_topup：預付桶儲值（不出庫，核銷收款後入桶數） */
 export type LinePurpose = "delivery" | "prepaid_barrel_topup";
 
+export type MasterKind = "customers" | "products" | "drivers" | "vehicles" | "zones";
+
+const MASTER_TTL_MS = 2 * 60 * 1000;
+
 function defaultLineBillingForCustomer(c: Customer | undefined): LineBillingType {
   const t = c?.billingType;
   if (t === "monthly" || t === "prepaid" || t === "cash") return t;
@@ -173,7 +177,13 @@ export type DashboardContextValue = {
     }>
   >;
   error: string;
-  loadDashboard: () => Promise<void>;
+  loadDashboard: (opts?: { forceMasters?: boolean }) => Promise<void>;
+  /** 僅刷新訂單列表（查詢訂單／分派後） */
+  loadOrders: () => Promise<void>;
+  /** 僅刷新會計摘要與健康檢查（總覽／報表篩選） */
+  loadSummary: () => Promise<void>;
+  /** 主檔短效快取：預設 2 分鐘內不重抓；force 強制更新 */
+  refreshMasters: (kinds?: MasterKind[], force?: boolean) => Promise<void>;
   selectedCustomer: Customer | undefined;
   saving: boolean;
   formMessage: string;
@@ -305,6 +315,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     driverId: "",
     billingType: "",
   });
+  const masterFetchedAtRef = useRef<Partial<Record<MasterKind, number>>>({});
   const [error, setError] = useState<string>("");
   const [saving, setSaving] = useState<boolean>(false);
   const [formMessage, setFormMessage] = useState<string>("");
@@ -356,25 +367,191 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     initialQty: "0",
   });
 
-  const loadDashboard = useCallback((): Promise<void> => {
-    setError("");
-    const params = new URLSearchParams();
-    params.set("range", summaryFilter.range);
-    if (summaryFilter.range === "custom") {
-      params.set("startDate", summaryFilter.startDate);
-      params.set("endDate", summaryFilter.endDate);
-    } else if (summaryFilter.range === "today" || summaryFilter.range === "day") {
-      if (summaryFilter.startDate) params.set("startDate", summaryFilter.startDate);
-    } else if (summaryFilter.range === "month") {
-      if (summaryFilter.startDate) {
+  const loadDashboard = useCallback(
+    async (opts?: { forceMasters?: boolean }): Promise<void> => {
+      setError("");
+      const params = new URLSearchParams();
+      params.set("range", summaryFilter.range);
+      if (summaryFilter.range === "custom") {
         params.set("startDate", summaryFilter.startDate);
-        params.set("ym", summaryFilter.startDate.slice(0, 7));
+        params.set("endDate", summaryFilter.endDate);
+      } else if (summaryFilter.range === "today" || summaryFilter.range === "day") {
+        if (summaryFilter.startDate) params.set("startDate", summaryFilter.startDate);
+      } else if (summaryFilter.range === "month") {
+        if (summaryFilter.startDate) {
+          params.set("startDate", summaryFilter.startDate);
+          params.set("ym", summaryFilter.startDate.slice(0, 7));
+        }
       }
+      if (summaryFilter.customerId) params.set("customerId", summaryFilter.customerId);
+      if (summaryFilter.driverId) params.set("driverId", summaryFilter.driverId);
+      if (summaryFilter.billingType) params.set("billingType", summaryFilter.billingType);
+      const summaryUrl = `/api/accounting/summary?${params.toString()}`;
+
+      const normMasters = (arr: unknown[]): CustomerMasterOption[] =>
+        arr.map((x) => {
+          const r = x as Record<string, unknown>;
+          return {
+            id: String(r.id),
+            name: String(r.name ?? ""),
+            sortOrder: Number(r.sortOrder ?? 0),
+            isActive: r.isActive !== false,
+          };
+        });
+
+      const fetchJson = async (url: string): Promise<unknown> => {
+        const r = await fetch(url);
+        if (!r.ok) {
+          throw new Error(`${url} ${r.status}`);
+        }
+        return r.json();
+      };
+
+      const fetchJsonOrEmpty = async (url: string): Promise<unknown[]> => {
+        try {
+          const data = await fetchJson(url);
+          return Array.isArray(data) ? data : [];
+        } catch {
+          return [];
+        }
+      };
+
+      const forceMasters = opts?.forceMasters === true;
+      const now = Date.now();
+      const masterKinds: MasterKind[] = ["customers", "products", "drivers", "vehicles", "zones"];
+      const needMasters = forceMasters
+        ? masterKinds
+        : masterKinds.filter((k) => {
+            const at = masterFetchedAtRef.current[k];
+            return at == null || now - at > MASTER_TTL_MS;
+          });
+
+      const masterFetches: Promise<void>[] = [];
+      if (needMasters.includes("customers")) {
+        masterFetches.push(
+          fetchJson("/api/customers").then((c) => {
+            setCustomers(Array.isArray(c) ? (c as Customer[]) : []);
+            masterFetchedAtRef.current.customers = Date.now();
+          }),
+        );
+      }
+      if (needMasters.includes("zones")) {
+        masterFetches.push(
+          Promise.all([fetchJsonOrEmpty("/api/address-zones"), fetchJsonOrEmpty("/api/affiliated-companies")]).then(
+            ([zones, companies]) => {
+              setAddressZones(normMasters(zones));
+              setAffiliatedCompanies(normMasters(companies));
+              masterFetchedAtRef.current.zones = Date.now();
+            },
+          ),
+        );
+      }
+      if (needMasters.includes("products")) {
+        masterFetches.push(
+          fetchJson("/api/products").then((p) => {
+            setProducts(asArray<Product>(p));
+            masterFetchedAtRef.current.products = Date.now();
+          }),
+        );
+      }
+      if (needMasters.includes("drivers")) {
+        masterFetches.push(
+          fetchJson("/api/drivers").then((d) => {
+            setDrivers(asArray<Driver>(d));
+            masterFetchedAtRef.current.drivers = Date.now();
+          }),
+        );
+      }
+      if (needMasters.includes("vehicles")) {
+        masterFetches.push(
+          fetchJson("/api/vehicles").then((v) => {
+            setVehicles(asArray<Vehicle>(v));
+            masterFetchedAtRef.current.vehicles = Date.now();
+          }),
+        );
+      }
+
+      await Promise.all([
+        fetchJson("/api/health").then((h) => setHealth(JSON.stringify(h))),
+        ...masterFetches,
+        fetchJson("/api/sales-orders").then((o) => setOrders(asArray(o))),
+        fetchJson("/api/completed-deliveries").then((cd) => setCompletedDeliveries(asArray(cd))),
+        fetchJson("/api/payments").then((pay) => setPayments(asArray(pay))),
+        fetchJson(summaryUrl).then((s) => setSummary(asSummaryState(s, today))),
+      ]).catch(() => {
+        setHealth("無法連線 API（請確認 apps/api 已啟動）");
+        setError("資料讀取失敗，請檢查 API 是否正常或資料庫是否有資料。");
+      });
+    },
+    [
+      summaryFilter.range,
+      summaryFilter.startDate,
+      summaryFilter.endDate,
+      summaryFilter.customerId,
+      summaryFilter.driverId,
+      summaryFilter.billingType,
+      today,
+    ],
+  );
+
+  const loadOrders = useCallback(async (): Promise<void> => {
+    try {
+      const r = await fetch("/api/sales-orders");
+      if (!r.ok) throw new Error(`sales-orders ${r.status}`);
+      const o = await r.json();
+      setOrders(asArray(o));
+    } catch {
+      setError("訂單資料讀取失敗");
     }
-    if (summaryFilter.customerId) params.set("customerId", summaryFilter.customerId);
-    if (summaryFilter.driverId) params.set("driverId", summaryFilter.driverId);
-    if (summaryFilter.billingType) params.set("billingType", summaryFilter.billingType);
-    const summaryUrl = `/api/accounting/summary?${params.toString()}`;
+  }, []);
+
+  const loadSummary = useCallback(async (): Promise<void> => {
+    try {
+      const params = new URLSearchParams();
+      params.set("range", summaryFilter.range);
+      if (summaryFilter.range === "custom") {
+        params.set("startDate", summaryFilter.startDate);
+        params.set("endDate", summaryFilter.endDate);
+      } else if (summaryFilter.range === "today" || summaryFilter.range === "day") {
+        if (summaryFilter.startDate) params.set("startDate", summaryFilter.startDate);
+      } else if (summaryFilter.range === "month") {
+        if (summaryFilter.startDate) {
+          params.set("startDate", summaryFilter.startDate);
+          params.set("ym", summaryFilter.startDate.slice(0, 7));
+        }
+      }
+      if (summaryFilter.customerId) params.set("customerId", summaryFilter.customerId);
+      if (summaryFilter.driverId) params.set("driverId", summaryFilter.driverId);
+      if (summaryFilter.billingType) params.set("billingType", summaryFilter.billingType);
+      const [h, s] = await Promise.all([
+        fetch("/api/health").then((r) => r.json()),
+        fetch(`/api/accounting/summary?${params.toString()}`).then((r) => r.json()),
+      ]);
+      setHealth(JSON.stringify(h));
+      setSummary(asSummaryState(s, today));
+    } catch {
+      setHealth("無法連線 API（請確認 apps/api 已啟動）");
+    }
+  }, [
+    summaryFilter.range,
+    summaryFilter.startDate,
+    summaryFilter.endDate,
+    summaryFilter.customerId,
+    summaryFilter.driverId,
+    summaryFilter.billingType,
+    today,
+  ]);
+
+  const refreshMasters = useCallback(async (kinds?: MasterKind[], force = false): Promise<void> => {
+    const want = kinds ?? (["customers", "products", "drivers", "vehicles", "zones"] as MasterKind[]);
+    const now = Date.now();
+    const need = force
+      ? want
+      : want.filter((k) => {
+          const at = masterFetchedAtRef.current[k];
+          return at == null || now - at > MASTER_TTL_MS;
+        });
+    if (need.length === 0) return;
 
     const normMasters = (arr: unknown[]): CustomerMasterOption[] =>
       arr.map((x) => {
@@ -387,65 +564,72 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         };
       });
 
-    const fetchJson = async (url: string): Promise<unknown> => {
-      const r = await fetch(url);
-      if (!r.ok) {
-        throw new Error(`${url} ${r.status}`);
-      }
-      return r.json();
-    };
+    const tasks: Promise<void>[] = [];
+    if (need.includes("customers")) {
+      tasks.push(
+        fetch("/api/customers")
+          .then((r) => r.json())
+          .then((c) => {
+            setCustomers(Array.isArray(c) ? (c as Customer[]) : []);
+            masterFetchedAtRef.current.customers = Date.now();
+          }),
+      );
+    }
+    if (need.includes("zones")) {
+      tasks.push(
+        Promise.all([
+          fetch("/api/address-zones").then((r) => (r.ok ? r.json() : [])),
+          fetch("/api/affiliated-companies").then((r) => (r.ok ? r.json() : [])),
+        ]).then(([zones, companies]) => {
+          setAddressZones(normMasters(Array.isArray(zones) ? zones : []));
+          setAffiliatedCompanies(normMasters(Array.isArray(companies) ? companies : []));
+          masterFetchedAtRef.current.zones = Date.now();
+        }),
+      );
+    }
+    if (need.includes("products")) {
+      tasks.push(
+        fetch("/api/products")
+          .then((r) => r.json())
+          .then((p) => {
+            setProducts(asArray<Product>(p));
+            masterFetchedAtRef.current.products = Date.now();
+          }),
+      );
+    }
+    if (need.includes("drivers")) {
+      tasks.push(
+        fetch("/api/drivers")
+          .then((r) => r.json())
+          .then((d) => {
+            setDrivers(asArray<Driver>(d));
+            masterFetchedAtRef.current.drivers = Date.now();
+          }),
+      );
+    }
+    if (need.includes("vehicles")) {
+      tasks.push(
+        fetch("/api/vehicles")
+          .then((r) => r.json())
+          .then((v) => {
+            setVehicles(asArray<Vehicle>(v));
+            masterFetchedAtRef.current.vehicles = Date.now();
+          }),
+      );
+    }
+    await Promise.all(tasks);
+  }, []);
 
-    const fetchJsonOrEmpty = async (url: string): Promise<unknown[]> => {
-      try {
-        const data = await fetchJson(url);
-        return Array.isArray(data) ? data : [];
-      } catch {
-        return [];
-      }
-    };
-
-    return Promise.all([
-      fetchJson("/api/health"),
-      fetchJson("/api/customers"),
-      fetchJsonOrEmpty("/api/address-zones"),
-      fetchJsonOrEmpty("/api/affiliated-companies"),
-      fetchJson("/api/products"),
-      fetchJson("/api/drivers"),
-      fetchJson("/api/vehicles"),
-      fetchJson("/api/sales-orders"),
-      fetchJson("/api/completed-deliveries"),
-      fetchJson("/api/payments"),
-      fetchJson(summaryUrl),
-    ])
-      .then(([h, c, zones, companies, p, d, v, o, cd, pay, s]) => {
-        setHealth(JSON.stringify(h));
-        setCustomers(Array.isArray(c) ? (c as Customer[]) : []);
-        setAddressZones(normMasters(zones as unknown[]));
-        setAffiliatedCompanies(normMasters(companies as unknown[]));
-        setProducts(asArray<Product>(p));
-        setDrivers(asArray<Driver>(d));
-        setVehicles(asArray<Vehicle>(v));
-        setOrders(asArray(o));
-        setCompletedDeliveries(asArray(cd));
-        setPayments(asArray(pay));
-        setSummary(asSummaryState(s, today));
-      })
-      .catch(() => {
-        setHealth("無法連線 API（請確認 apps/api 已啟動）");
-        setError("資料讀取失敗，請檢查 API 是否正常或資料庫是否有資料。");
-      });
-  }, [
-    summaryFilter.range,
-    summaryFilter.startDate,
-    summaryFilter.endDate,
-    summaryFilter.customerId,
-    summaryFilter.driverId,
-    summaryFilter.billingType,
-  ]);
-
+  // 初次載入：主檔（TTL）＋訂單＋明細＋摘要
   useEffect(() => {
-    loadDashboard();
-  }, [loadDashboard]);
+    void loadDashboard({ forceMasters: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 僅掛載一次；摘要篩選變更改由 loadSummary
+  }, []);
+
+  // 摘要篩選變更：只刷新摘要，不重抓客戶／商品等主檔
+  useEffect(() => {
+    void loadSummary();
+  }, [loadSummary]);
 
   const selectedCustomer = customers.find((c) => String(c.id) === form.customerId);
 
@@ -516,7 +700,8 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         remark: "",
         cashInvoiceMode: "none",
       }));
-      loadDashboard();
+      await loadOrders();
+      await loadSummary();
     } catch {
       setFormMessage("建立訂單時發生錯誤，請稍後重試。");
     } finally {
@@ -554,7 +739,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       const warnText = warnings.length > 0 ? `（注意：${warnings.join("；")}）` : "";
       setAssignMessage(`分派成功：${payload.data.salesOrder?.orderNo ?? ""}${warnText}`);
       setAssignForm((prev) => ({ ...prev, estimatedDeliverySlot: "" }));
-      loadDashboard();
+      await loadOrders();
       return true;
     } catch {
       setAssignMessage("分派時發生錯誤，請稍後重試。");
@@ -614,7 +799,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         driverDeliveryWage: "0",
         initialQty: "0",
       });
-      loadDashboard();
+      await refreshMasters(["products"], true);
     } catch {
       setProductMessage("新增商品時發生錯誤，請稍後重試。");
     } finally {
@@ -646,7 +831,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       }
       setVehicleMessage("新增車輛成功");
       setVehicleForm({ plateNo: "", description: "" });
-      loadDashboard();
+      await refreshMasters(["vehicles"], true);
     } catch {
       setVehicleMessage("新增車輛時發生錯誤，請稍後重試。");
     } finally {
@@ -683,7 +868,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       }
       setDriverMessage("新增司機成功");
       setDriverForm((prev) => ({ ...prev, name: "", employeeCode: "", phone: "", password: "", vehicleId: "", maxOrderCount: "20", maxBarrelQty: "150" }));
-      loadDashboard();
+      await refreshMasters(["drivers", "vehicles"], true);
     } catch {
       setDriverMessage("新增司機時發生錯誤，請稍後重試。");
     } finally {
@@ -708,7 +893,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         alert(payload.message ?? "取消失敗");
         return;
       }
-      loadDashboard();
+      await loadOrders();
     } catch {
       alert("取消時發生錯誤，請稍後重試。");
     }
@@ -774,6 +959,9 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     setSummaryFilter,
     error,
     loadDashboard,
+    loadOrders,
+    loadSummary,
+    refreshMasters,
     selectedCustomer,
     saving,
     formMessage,

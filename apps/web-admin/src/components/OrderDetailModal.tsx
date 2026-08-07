@@ -377,8 +377,8 @@ export function OrderDetailModal({ order, onClose }: { order: OrderRecord; onClo
                     <th>品名</th>
                     <th>用途</th>
                     <th>結帳</th>
-                    <th className="num">訂購</th>
-                    <th className="num">已送</th>
+                    <th className="num">實際送桶</th>
+                    <th className="num">空桶回收</th>
                     <th className="num">單價</th>
                     <th className="num">小計</th>
                   </tr>
@@ -406,8 +406,18 @@ export function OrderDetailModal({ order, onClose }: { order: OrderRecord; onClo
                           ) : null}
                         </td>
                         <td>{lineBillingTypeLabel(line.billingTypeAtLine)}</td>
-                        <td className="num">{line.qtyOrdered != null ? String(line.qtyOrdered) : "—"}</td>
                         <td className="num">{line.qtyDelivered != null ? String(line.qtyDelivered) : "—"}</td>
+                        {i === 0 ? (
+                          <td
+                            className="num"
+                            rowSpan={lines.length}
+                            title="本趟配送空桶回收（非單品明細）"
+                          >
+                            {assignment?.emptyBarrelsReturned != null
+                              ? String(assignment.emptyBarrelsReturned)
+                              : "—"}
+                          </td>
+                        ) : null}
                         <td className="num">{moneyText(line.unitPrice)}</td>
                         <td className="num">
                           {moneyText(line.lineAmount)}

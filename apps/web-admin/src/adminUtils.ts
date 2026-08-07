@@ -200,7 +200,7 @@ export type CustomerSalesOrderLine = {
   promotionRuleKey?: string | null;
   promotionNote?: string | null;
   isReplenishment?: boolean;
-  product?: { id: string; name: string; unit?: string | null };
+  product?: { id: string; name: string; unit?: string | null; productCode?: string | null };
 };
 
 export type CustomerSalesOrder = {
@@ -228,6 +228,7 @@ export type CustomerSalesOrder = {
     officeSettledAt?: string | null;
     completedAt?: string | null;
     status?: string;
+    emptyBarrelsReturned?: number | null;
   }>;
 };
 

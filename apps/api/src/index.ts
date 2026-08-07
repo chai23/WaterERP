@@ -4074,7 +4074,7 @@ app.get("/api/customers/:customerId", async (req, res) => {
             deliveryAddress: true,
             lines: { include: { product: true } },
             assignments: {
-              where: { status: { in: ["completed", "not_delivered"] } },
+              where: { status: { in: ["completed", "not_delivered", "pending_settlement"] } },
               orderBy: { id: "desc" },
               take: 1,
             },

@@ -38,7 +38,7 @@ function scoreCustomerMatch(c: Customer, qRaw: string): number {
 const MIN_AUTO_SCORE = 240_000;
 
 export default function BarrelPickupNewPage() {
-  const { customers, drivers, vehicles } = useDashboard();
+  const { customers, drivers, vehicles, refreshMasters } = useDashboard();
   const [customerKeyword, setCustomerKeyword] = useState("");
   const [customerId, setCustomerId] = useState("");
   const [addressId, setAddressId] = useState("");
@@ -48,6 +48,10 @@ export default function BarrelPickupNewPage() {
   const [barrelsExpected, setBarrelsExpected] = useState("");
   const [remark, setRemark] = useState("");
   const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    void refreshMasters(["customers", "drivers", "vehicles"], false);
+  }, [refreshMasters]);
   const [saving, setSaving] = useState(false);
 
   const selectedCustomer = customers.find((c) => String(c.id) === customerId);

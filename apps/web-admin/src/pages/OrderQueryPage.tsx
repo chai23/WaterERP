@@ -1,5 +1,5 @@
-import { useCallback, useMemo, useState } from "react";
-import { fmtLocalYmd, moneyText, orderStatusBadgeClass } from "../adminUtils";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { fmtLocalYmd, moneyText, orderStatusBadgeClass, orderStatusLabel } from "../adminUtils";
 import { OrderDetailModal, type OrderRecord } from "../components/OrderDetailModal";
 import { useDashboard } from "../DashboardContext";
 import { openOrderPrintWindow, slipFromDashboardOrderWithAnnouncement } from "../orderPrint";
@@ -52,11 +52,27 @@ function orderTaxInclusiveAmount(order: OrderRecord): string {
 export { OrderDetailModal, type OrderRecord };
 
 export default function OrderQueryPage() {
-  const { orders, onCancelOrder } = useDashboard();
+  const { orders, loadOrders, onCancelOrder } = useDashboard();
   const [q, setQ] = useState("");
   const [sourceFilter, setSourceFilter] = useState<"all" | "liff" | "admin">("all");
   const [detailOrder, setDetailOrder] = useState<OrderRecord | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const closeDetail = useCallback(() => setDetailOrder(null), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      setRefreshing(true);
+      try {
+        await loadOrders();
+      } finally {
+        if (!cancelled) setRefreshing(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [loadOrders]);
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
@@ -66,21 +82,25 @@ export default function OrderQueryPage() {
       if (!s) return true;
       const no = String(o.orderNo ?? "").toLowerCase();
       const cust = String(o.customer?.name ?? "").toLowerCase();
-      return no.includes(s) || cust.includes(s);
+      const code = String(o.customer?.customerCode ?? "").toLowerCase();
+      return no.includes(s) || cust.includes(s) || code.includes(s);
     });
   }, [orders, q, sourceFilter]);
 
   return (
     <section className="card">
-      <h2 className="card__title">查詢訂單</h2>
+      <h2 className="card__title">
+        查詢訂單
+        {refreshing ? <span className="card__title-count">更新中…</span> : null}
+      </h2>
       <p className="card__hint">
-        以單號或客戶名稱篩選；未結案訂單可取消。<strong>滑鼠移到列上</strong>會高亮該筆訂單；<strong>點一下訂單列</strong>或點<strong>明細欄「詳情」</strong>可開啟詳情並檢視多筆商品明細。
+        以單號、客戶名稱或客戶編號篩選；未結案訂單可取消。<strong>滑鼠移到列上</strong>會高亮該筆訂單；<strong>點一下訂單列</strong>或點<strong>明細欄「詳情」</strong>可開啟詳情並檢視多筆商品明細。
         配送日欄位：<strong>已結案顯示實際配送日</strong>，未結案顯示預計配送日。
         套印單上一維條碼內容為<strong>訂單編號字串</strong>，可用掃描槍掃描後貼入上方關鍵字以快速查單。
       </p>
       <div className="field" style={{ maxWidth: "24rem", marginBottom: "1rem" }}>
         <span>關鍵字</span>
-        <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="單號或客戶名稱" />
+        <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="單號、客戶名稱或客戶編號" />
       </div>
       <div className="field" style={{ maxWidth: "16rem", marginBottom: "1rem" }}>
         <span>訂單來源</span>
@@ -130,7 +150,7 @@ export default function OrderQueryPage() {
                   </td>
                   <td>{o.customer?.name ?? "—"}</td>
                   <td>
-                    <span className={orderStatusBadgeClass(o.status)}>{o.status}</span>
+                    <span className={orderStatusBadgeClass(o.status)}>{orderStatusLabel(o.status)}</span>
                   </td>
                   <td>{deliveryDateLabel(o as OrderRecord)}</td>
                   <td className="num">{orderTaxInclusiveAmount(o as OrderRecord)}</td>
