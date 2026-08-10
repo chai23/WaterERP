@@ -19,6 +19,7 @@ import {
   billingTypeLabel,
   fmtLocalYmd,
   formatBarrelSiteChangeSummary,
+  geocodeStatusMeta,
   ledgerEntryTypeLabel,
   moneyText,
   orderStatusBadgeClass,
@@ -27,6 +28,7 @@ import {
   sumCustomerBarrelsOnSite,
   todayLocalYmd,
 } from "../adminUtils";
+import AddressGeocodePanel from "../components/AddressGeocodePanel";
 import { OrderDetailModal, type OrderRecord } from "../components/OrderDetailModal";
 import { cashInvoiceModeLabel } from "../taxDisplay";
 import { formatDeliveryFloor } from "../floorBonusUtils";
@@ -716,6 +718,19 @@ export default function DataCustomersPage() {
     void refreshMasters(["customers"], true);
   };
 
+  const patchAddressGeo = (addressId: string, patch: Partial<Address>) => {
+    setDetail((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        addresses: (prev.addresses ?? []).map((a) =>
+          String(a.id) === String(addressId) ? { ...a, ...patch } : a,
+        ),
+      };
+    });
+    void refreshMasters(["customers"], true);
+  };
+
   const startEditAddress = (a: Address) => {
     setShowAddAddressForm(false);
     setEditAddrId(String(a.id));
@@ -1314,6 +1329,11 @@ export default function DataCustomersPage() {
                       <span>空桶 {sumCustomerBarrelsOnSite(c)}</span>
                       <span>地址 {(c.addresses ?? []).length}</span>
                       {c.billingType === "prepaid" ? <span>預付 {c.prepaidBarrelBalance ?? 0}</span> : null}
+                      {(c.addresses ?? []).some(
+                        (a) => a.geocodeStatus !== "ok" && a.geocodeStatus !== "manual_confirmed",
+                      ) ? (
+                        <span className="badge badge--default">座標未齊</span>
+                      ) : null}
                     </div>
                   </button>
                 );
@@ -2118,6 +2138,11 @@ export default function DataCustomersPage() {
                                 {[a.contactName, a.contactPhone, a.contactMobile].filter(Boolean).join(" · ")}
                               </p>
                             ) : null}
+                            <AddressGeocodePanel
+                              address={a}
+                              defaultOpen={false}
+                              onUpdated={(patch) => patchAddressGeo(String(a.id), patch)}
+                            />
                           </li>
                         ))}
                       </ul>
@@ -2586,6 +2611,7 @@ export default function DataCustomersPage() {
                 <ul className="customer-edit-address-list">
                   {(detail.addresses ?? []).map((a) => {
                     const isEditing = editAddrId === String(a.id);
+                    const geoMeta = geocodeStatusMeta(a.geocodeStatus);
                     return (
                       <li
                         key={String(a.id)}
@@ -2606,6 +2632,7 @@ export default function DataCustomersPage() {
                                 {a.patrolProduct?.name ? ` · ${a.patrolProduct.name}` : ""}
                               </span>
                             ) : null}
+                            <span className={geoMeta.className}>{geoMeta.text}</span>
                           </div>
                           <div className="customer-detail-actions">
                             <button type="button" className="btn btn--ghost btn--sm" onClick={() => startEditAddress(a)}>
@@ -2627,6 +2654,11 @@ export default function DataCustomersPage() {
                             {[a.contactName, a.contactPhone, a.contactMobile].filter(Boolean).join(" · ")}
                           </p>
                         ) : null}
+                        <AddressGeocodePanel
+                          address={a}
+                          defaultOpen={a.geocodeStatus !== "ok" && a.geocodeStatus !== "manual_confirmed"}
+                          onUpdated={(patch) => patchAddressGeo(String(a.id), patch)}
+                        />
                       </li>
                     );
                   })}

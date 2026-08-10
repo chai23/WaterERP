@@ -17,6 +17,13 @@ DROP TABLE IF EXISTS `barrel_pickup_events`;
 DROP TABLE IF EXISTS `barrel_pickups`;
 DROP TABLE IF EXISTS `delivery_events`;
 DROP TABLE IF EXISTS `delivery_assignments`;
+DROP TABLE IF EXISTS `delivery_plan_unassigned`;
+DROP TABLE IF EXISTS `delivery_route_stops`;
+DROP TABLE IF EXISTS `delivery_routes`;
+DROP TABLE IF EXISTS `delivery_planning_audit_logs`;
+DROP TABLE IF EXISTS `delivery_plans`;
+DROP TABLE IF EXISTS `delivery_planning_settings`;
+DROP TABLE IF EXISTS `driver_attendance`;
 DROP TABLE IF EXISTS `credit_note_allocations`;
 DROP TABLE IF EXISTS `credit_notes`;
 DROP TABLE IF EXISTS `prepayment_txns`;
@@ -82,6 +89,12 @@ CREATE TABLE `drivers` (
   `employee_code` VARCHAR(50) NULL DEFAULT NULL,
   `max_order_count` INT UNSIGNED NOT NULL DEFAULT 20 COMMENT '可負荷最高訂單數',
   `max_barrel_qty` INT UNSIGNED NOT NULL DEFAULT 150 COMMENT '可運送最大桶數',
+  `work_start_time` TIME NULL DEFAULT NULL,
+  `work_end_time` TIME NULL DEFAULT NULL,
+  `depot_latitude` DECIMAL(10, 7) NULL DEFAULT NULL,
+  `depot_longitude` DECIMAL(10, 7) NULL DEFAULT NULL,
+  `familiar_zone_ids_json` JSON NULL DEFAULT NULL COMMENT 'AddressZone id 陣列',
+  `can_high_floor` TINYINT(1) NULL DEFAULT NULL,
   `base_salary` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '月基本底薪',
   `is_active` TINYINT(1) NOT NULL DEFAULT 1,
   `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -341,6 +354,13 @@ CREATE TABLE `delivery_addresses` (
   `contact_phone` VARCHAR(32) NULL DEFAULT NULL,
   `contact_mobile` VARCHAR(32) NULL DEFAULT NULL COMMENT '現場手機',
   `notes` TEXT NULL,
+  `latitude` DECIMAL(10, 7) NULL DEFAULT NULL COMMENT 'WGS84 緯度',
+  `longitude` DECIMAL(10, 7) NULL DEFAULT NULL COMMENT 'WGS84 經度',
+  `geocode_status` VARCHAR(32) NOT NULL DEFAULT 'pending' COMMENT 'pending|ok|ambiguous|failed|manual_confirmed',
+  `geocoded_address` VARCHAR(500) NULL DEFAULT NULL COMMENT 'geocode 正規化地址',
+  `geocoded_at` DATETIME(3) NULL DEFAULT NULL,
+  `location_accuracy` VARCHAR(32) NULL DEFAULT NULL,
+  `manual_location_confirmed` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '管理員地圖確認',
   `is_default` TINYINT(1) NOT NULL DEFAULT 0,
   `barrels_on_site` INT NOT NULL DEFAULT 0 COMMENT '此送貨點未收回空桶數：核銷送達時依押桶商品與回桶數自動增減，亦可手動調整',
   `patrol_weekday` TINYINT UNSIGNED NULL DEFAULT NULL COMMENT '巡查星期：1=週一 … 7=週日；NULL=不參加巡查',
@@ -351,6 +371,7 @@ CREATE TABLE `delivery_addresses` (
   PRIMARY KEY (`id`),
   KEY `fk_addr_customer` (`customer_id`),
   KEY `idx_addr_patrol_weekday` (`patrol_weekday`),
+  KEY `idx_addr_geocode_status` (`geocode_status`),
   KEY `fk_addr_patrol_product` (`patrol_product_id`),
   CONSTRAINT `fk_addr_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -402,6 +423,23 @@ CREATE TABLE `sales_orders` (
   `delivery_address_id` BIGINT UNSIGNED NOT NULL,
   `status` VARCHAR(32) NOT NULL DEFAULT 'draft' COMMENT 'draft,confirmed,in_production,ready_to_ship,assigned,delivering,completed,cancelled,exception',
   `scheduled_delivery_date` DATE NULL DEFAULT NULL,
+  `delivery_window_start` TIME NULL DEFAULT NULL COMMENT '最早可送',
+  `delivery_window_end` TIME NULL DEFAULT NULL COMMENT '最晚可送',
+  `preferred_time_note` VARCHAR(200) NULL DEFAULT NULL,
+  `service_duration_minutes` INT UNSIGNED NULL DEFAULT NULL,
+  `allow_early_delivery` TINYINT(1) NULL DEFAULT NULL,
+  `allow_late_delivery` TINYINT(1) NULL DEFAULT NULL,
+  `time_window_priority` VARCHAR(16) NULL DEFAULT NULL COMMENT 'required|preferred',
+  `order_kind` VARCHAR(24) NULL DEFAULT NULL COMMENT 'general|patrol|replenishment|emergency',
+  `dispatch_priority` VARCHAR(16) NULL DEFAULT NULL COMMENT 'normal|urgent|must',
+  `earliest_date` DATE NULL DEFAULT NULL,
+  `earliest_shift` VARCHAR(8) NULL DEFAULT NULL COMMENT 'am|pm',
+  `latest_date` DATE NULL DEFAULT NULL,
+  `latest_shift` VARCHAR(8) NULL DEFAULT NULL COMMENT 'am|pm',
+  `preferred_shift` VARCHAR(8) NULL DEFAULT NULL COMMENT 'am|pm|any',
+  `dispatch_locked` TINYINT(1) NOT NULL DEFAULT 0,
+  `preferred_driver_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `required_driver_id` BIGINT UNSIGNED NULL DEFAULT NULL,
   `subtotal` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
   `total_amount` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
   `lock_version` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT '樂觀鎖：分派／改狀態時＋1',
@@ -429,9 +467,15 @@ CREATE TABLE `sales_orders` (
   KEY `idx_so_billing_period` (`billing_period_key`, `customer_id`),
   KEY `idx_so_customer_office_settled` (`customer_id`, `office_settled_at`),
   KEY `idx_so_source` (`source`),
+  KEY `idx_so_order_kind` (`order_kind`),
+  KEY `idx_so_latest_shift` (`latest_date`, `latest_shift`),
+  KEY `idx_so_preferred_driver` (`preferred_driver_id`),
+  KEY `idx_so_required_driver` (`required_driver_id`),
   CONSTRAINT `fk_so_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
   CONSTRAINT `fk_so_addr` FOREIGN KEY (`delivery_address_id`) REFERENCES `delivery_addresses` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-  CONSTRAINT `fk_so_creator` FOREIGN KEY (`created_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+  CONSTRAINT `fk_so_creator` FOREIGN KEY (`created_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_so_preferred_driver` FOREIGN KEY (`preferred_driver_id`) REFERENCES `drivers` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_so_required_driver` FOREIGN KEY (`required_driver_id`) REFERENCES `drivers` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `promotion_rules` (
@@ -614,6 +658,9 @@ CREATE TABLE `delivery_assignments` (
   `office_settled_at` DATETIME(3) NULL DEFAULT NULL COMMENT '辦公室核銷確認時間',
   `estimated_delivery_slot` VARCHAR(120) NULL DEFAULT NULL COMMENT '預計配送時段說明',
   `estimated_delivery_at` DATETIME(3) NULL DEFAULT NULL COMMENT '預計配送時間點',
+  `route_stop_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `route_sequence` INT UNSIGNED NULL DEFAULT NULL COMMENT '發布站序；NULL=人工或舊資料',
+  `assignment_shift` VARCHAR(8) NULL DEFAULT NULL COMMENT 'am|pm',
   `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (`id`),
@@ -623,6 +670,7 @@ CREATE TABLE `delivery_assignments` (
   KEY `fk_da_assigner` (`assigned_by_user_id`),
   KEY `idx_da_driver_date` (`driver_id`, `assignment_date`),
   KEY `idx_da_date_status` (`assignment_date`, `status`),
+  KEY `idx_da_route_stop` (`route_stop_id`),
   CONSTRAINT `fk_da_order` FOREIGN KEY (`sales_order_id`) REFERENCES `sales_orders` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
   CONSTRAINT `fk_da_driver` FOREIGN KEY (`driver_id`) REFERENCES `drivers` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
   CONSTRAINT `fk_da_vehicle` FOREIGN KEY (`vehicle_id`) REFERENCES `vehicles` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
@@ -974,3 +1022,191 @@ ALTER TABLE `payments`
 
 ALTER TABLE `customer_ledger_entries`
   ADD CONSTRAINT `fk_cle_receipt_voucher` FOREIGN KEY (`receipt_voucher_id`) REFERENCES `receipt_vouchers` (`id`) ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- ---------------------------------------------------------------------------
+-- AI 派單（MVP-A／B）：出勤、設定、方案草稿
+-- ---------------------------------------------------------------------------
+CREATE TABLE `driver_attendance` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `driver_id` BIGINT UNSIGNED NOT NULL,
+  `work_date` DATE NOT NULL,
+  `shift` VARCHAR(8) NOT NULL DEFAULT 'all' COMMENT 'am|pm|all',
+  `is_on_duty` TINYINT(1) NOT NULL DEFAULT 1,
+  `work_start_time` TIME NULL DEFAULT NULL,
+  `work_end_time` TIME NULL DEFAULT NULL,
+  `note` VARCHAR(500) NULL DEFAULT NULL,
+  `run_zone_ids_json` JSON NULL DEFAULT NULL COMMENT '本班主跑 AddressZone id 陣列',
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_driver_attendance_date_shift` (`driver_id`, `work_date`, `shift`),
+  KEY `idx_driver_attendance_date` (`work_date`),
+  CONSTRAINT `fk_driver_attendance_driver`
+    FOREIGN KEY (`driver_id`) REFERENCES `drivers` (`id`)
+    ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `delivery_planning_settings` (
+  `setting_key` VARCHAR(100) NOT NULL,
+  `setting_value` TEXT NOT NULL,
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  `updated_by_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  PRIMARY KEY (`setting_key`),
+  KEY `idx_dps_updated_by` (`updated_by_user_id`),
+  CONSTRAINT `fk_dps_updated_by`
+    FOREIGN KEY (`updated_by_user_id`) REFERENCES `users` (`id`)
+    ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `delivery_plans` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `plan_date` DATE NOT NULL,
+  `shift` VARCHAR(8) NOT NULL DEFAULT 'all' COMMENT 'am|pm|all',
+  `version` INT UNSIGNED NOT NULL DEFAULT 1,
+  `status` VARCHAR(32) NOT NULL DEFAULT 'draft' COMMENT 'draft|pending_review|published|cancelled',
+  `mode` VARCHAR(32) NOT NULL DEFAULT 'suggest_driver' COMMENT 'suggest_driver|full_route',
+  `algorithm_version` VARCHAR(64) NULL DEFAULT NULL,
+  `weight_profile_key` VARCHAR(100) NULL DEFAULT NULL,
+  `total_distance_meters` INT UNSIGNED NULL DEFAULT NULL,
+  `total_drive_minutes` INT UNSIGNED NULL DEFAULT NULL,
+  `unassigned_count` INT UNSIGNED NOT NULL DEFAULT 0,
+  `created_by_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `approved_by_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `published_at` DATETIME(3) NULL DEFAULT NULL,
+  `compute_started_at` DATETIME(3) NULL DEFAULT NULL,
+  `compute_finished_at` DATETIME(3) NULL DEFAULT NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_delivery_plans_date_shift_version` (`plan_date`, `shift`, `version`),
+  KEY `idx_delivery_plans_date_status` (`plan_date`, `status`),
+  KEY `idx_delivery_plans_created_by` (`created_by_user_id`),
+  KEY `idx_delivery_plans_approved_by` (`approved_by_user_id`),
+  CONSTRAINT `fk_delivery_plans_created_by`
+    FOREIGN KEY (`created_by_user_id`) REFERENCES `users` (`id`)
+    ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_delivery_plans_approved_by`
+    FOREIGN KEY (`approved_by_user_id`) REFERENCES `users` (`id`)
+    ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `delivery_planning_audit_logs` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `plan_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `action` VARCHAR(64) NOT NULL,
+  `model_version` VARCHAR(64) NULL DEFAULT NULL,
+  `prompt_version` VARCHAR(64) NULL DEFAULT NULL,
+  `input_summary` JSON NULL DEFAULT NULL,
+  `output_summary` JSON NULL DEFAULT NULL,
+  `actor_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  KEY `idx_dpal_plan` (`plan_id`),
+  KEY `idx_dpal_action_created` (`action`, `created_at`),
+  KEY `idx_dpal_actor` (`actor_user_id`),
+  CONSTRAINT `fk_dpal_plan`
+    FOREIGN KEY (`plan_id`) REFERENCES `delivery_plans` (`id`)
+    ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_dpal_actor`
+    FOREIGN KEY (`actor_user_id`) REFERENCES `users` (`id`)
+    ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `delivery_routes` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `plan_id` BIGINT UNSIGNED NOT NULL,
+  `driver_id` BIGINT UNSIGNED NOT NULL,
+  `vehicle_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `sequence_no` INT UNSIGNED NOT NULL DEFAULT 1,
+  `departure_at` DATETIME(3) NULL DEFAULT NULL,
+  `return_at` DATETIME(3) NULL DEFAULT NULL,
+  `total_distance_meters` INT UNSIGNED NULL DEFAULT NULL,
+  `total_drive_minutes` INT UNSIGNED NULL DEFAULT NULL,
+  `total_barrel_qty` INT UNSIGNED NOT NULL DEFAULT 0,
+  `risk_score` DECIMAL(8, 2) NULL DEFAULT NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_delivery_routes_plan_driver` (`plan_id`, `driver_id`),
+  KEY `idx_delivery_routes_driver` (`driver_id`),
+  KEY `idx_delivery_routes_vehicle` (`vehicle_id`),
+  CONSTRAINT `fk_delivery_routes_plan`
+    FOREIGN KEY (`plan_id`) REFERENCES `delivery_plans` (`id`)
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_delivery_routes_driver`
+    FOREIGN KEY (`driver_id`) REFERENCES `drivers` (`id`)
+    ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_delivery_routes_vehicle`
+    FOREIGN KEY (`vehicle_id`) REFERENCES `vehicles` (`id`)
+    ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `delivery_route_stops` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `route_id` BIGINT UNSIGNED NOT NULL,
+  `sales_order_id` BIGINT UNSIGNED NOT NULL,
+  `stop_sequence` INT UNSIGNED NOT NULL,
+  `eta_at` DATETIME(3) NULL DEFAULT NULL,
+  `etd_at` DATETIME(3) NULL DEFAULT NULL,
+  `prev_distance_meters` INT UNSIGNED NULL DEFAULT NULL,
+  `prev_drive_minutes` INT UNSIGNED NULL DEFAULT NULL,
+  `window_start` TIME NULL DEFAULT NULL,
+  `window_end` TIME NULL DEFAULT NULL,
+  `has_hard_violation` TINYINT(1) NOT NULL DEFAULT 0,
+  `violation_codes_json` JSON NULL DEFAULT NULL,
+  `ai_explanation` TEXT NULL DEFAULT NULL,
+  `manual_adjust_reason` VARCHAR(500) NULL DEFAULT NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_route_stop_sequence` (`route_id`, `stop_sequence`),
+  UNIQUE KEY `uk_route_stop_order` (`route_id`, `sales_order_id`),
+  KEY `idx_route_stops_order` (`sales_order_id`),
+  CONSTRAINT `fk_route_stops_route`
+    FOREIGN KEY (`route_id`) REFERENCES `delivery_routes` (`id`)
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_route_stops_order`
+    FOREIGN KEY (`sales_order_id`) REFERENCES `sales_orders` (`id`)
+    ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `delivery_plan_unassigned` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `plan_id` BIGINT UNSIGNED NOT NULL,
+  `sales_order_id` BIGINT UNSIGNED NOT NULL,
+  `reason_code` VARCHAR(64) NOT NULL,
+  `reason_text` VARCHAR(500) NULL DEFAULT NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_plan_unassigned_order` (`plan_id`, `sales_order_id`),
+  KEY `idx_plan_unassigned_order` (`sales_order_id`),
+  CONSTRAINT `fk_plan_unassigned_plan`
+    FOREIGN KEY (`plan_id`) REFERENCES `delivery_plans` (`id`)
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_plan_unassigned_order`
+    FOREIGN KEY (`sales_order_id`) REFERENCES `sales_orders` (`id`)
+    ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+ALTER TABLE `delivery_assignments`
+  ADD CONSTRAINT `fk_da_route_stop`
+    FOREIGN KEY (`route_stop_id`) REFERENCES `delivery_route_stops` (`id`)
+    ON DELETE SET NULL ON UPDATE CASCADE;
+
+INSERT INTO `delivery_planning_settings` (`setting_key`, `setting_value`)
+VALUES
+  ('weights.v1', '{"late_minutes":0.35,"drive_time":0.25,"distance":0.15,"workload_balance":0.10,"zone_familiarity":0.05,"fixed_driver":0.05,"high_floor_balance":0.05}'),
+  ('service_duration.default_minutes', '10'),
+  ('service_duration.per_barrel_minutes', '2'),
+  ('service_duration.per_floor_minutes', '1.5'),
+  ('shift.am.start', '08:00'),
+  ('shift.am.end', '12:00'),
+  ('shift.pm.start', '13:00'),
+  ('shift.pm.end', '17:30'),
+  ('shift.am.cutoff', '15:00'),
+  ('shift.pm.cutoff', '10:00'),
+  ('sla.general_shifts', '4'),
+  ('sla.after_scheduled_shifts', ''),
+  ('patrol.early_shifts', '1'),
+  ('patrol.late_shifts', '1')
+ON DUPLICATE KEY UPDATE `setting_value` = VALUES(`setting_value`);

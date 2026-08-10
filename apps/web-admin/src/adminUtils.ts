@@ -16,7 +16,29 @@ export type Address = {
   targetWaterLevel?: number | null;
   patrolProductId?: string | null;
   patrolProduct?: { id: string; name: string; productCode?: string | null; isActive?: boolean } | null;
+  latitude?: string | number | null;
+  longitude?: string | number | null;
+  geocodeStatus?: string | null;
+  geocodedAddress?: string | null;
+  geocodedAt?: string | null;
+  locationAccuracy?: string | null;
+  manualLocationConfirmed?: boolean;
 };
+
+export function geocodeStatusMeta(status?: string | null): { text: string; className: string } {
+  switch ((status ?? "pending").toLowerCase()) {
+    case "ok":
+      return { text: "已自動定位", className: "badge badge--confirmed" };
+    case "manual_confirmed":
+      return { text: "已確認座標", className: "badge badge--completed" };
+    case "ambiguous":
+      return { text: "座標待確認", className: "badge badge--delivering" };
+    case "failed":
+      return { text: "定位失敗", className: "badge badge--cancelled" };
+    default:
+      return { text: "未定位", className: "badge badge--default" };
+  }
+}
 
 export const PATROL_WEEKDAY_OPTIONS: { value: number; label: string }[] = [
   { value: 1, label: "週一" },

@@ -25,6 +25,14 @@ import {
   serviceTicketStatusLabel,
   serviceTypeLabel,
 } from "./serviceTickets.js";
+import { createDeliveryAssignment } from "./createDeliveryAssignment.js";
+import { registerDeliveryPlanningRoutes } from "./modules/delivery-planning/routes.js";
+import { isDeliveryPlanningEnabled } from "./modules/delivery-planning/flag.js";
+import {
+  generalEffectiveLatest,
+  patrolWindow,
+} from "./modules/delivery-planning/shiftSla.js";
+import { loadPlanningSettings, slaConfigFromSettings } from "./modules/delivery-planning/settings.js";
 
 const prisma = new PrismaClient();
 const app = express();
@@ -2052,10 +2060,22 @@ app.use(async (req, res, next) => {
 app.get("/api/health", async (_req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
-    res.json({ ok: true, db: "connected" });
+    res.json({
+      ok: true,
+      db: "connected",
+      deliveryPlanningEnabled: isDeliveryPlanningEnabled(),
+    });
   } catch (e) {
     res.status(503).json({ ok: false, db: "error", message: String(e) });
   }
+});
+
+registerDeliveryPlanningRoutes({
+  app,
+  prisma,
+  getAuthUser,
+  requireRole,
+  toBigInt,
 });
 
 const customerMasterInclude = {
@@ -5043,6 +5063,13 @@ app.patch("/api/customers/:customerId/addresses/:addressId", async (req, res) =>
       patrolWeekday?: number | null;
       targetWaterLevel?: number | null;
       patrolProductId?: bigint | null;
+      latitude?: null;
+      longitude?: null;
+      geocodeStatus?: string;
+      geocodedAddress?: null;
+      geocodedAt?: null;
+      locationAccuracy?: null;
+      manualLocationConfirmed?: boolean;
     } = {};
 
     if (body.label !== undefined) {
@@ -5123,6 +5150,16 @@ app.patch("/api/customers/:customerId/addresses/:addressId", async (req, res) =>
     if (nextWeekday != null && nextProductId == null) {
       res.status(400).json({ ok: false, message: "啟用巡查時請指定預設商品" });
       return;
+    }
+
+    if (data.addressLine != null && data.addressLine !== existing.addressLine) {
+      data.latitude = null;
+      data.longitude = null;
+      data.geocodeStatus = "pending";
+      data.geocodedAddress = null;
+      data.geocodedAt = null;
+      data.locationAccuracy = null;
+      data.manualLocationConfirmed = false;
     }
 
     if (Object.keys(data).length === 0) {
@@ -8649,113 +8686,43 @@ app.post("/api/delivery-assignments", async (req, res) => {
       return;
     }
 
-    const order = await prisma.salesOrder.findUnique({ where: { id: salesOrderId } });
-    if (!order) {
-      res.status(404).json({ ok: false, message: "找不到訂單" });
-      return;
-    }
-    if (["completed", "cancelled", "pending_review"].includes(order.status)) {
-      res.status(400).json({
-        ok: false,
-        message:
-          order.status === "pending_review"
-            ? "此訂單尚未經辦公室確認，不可分派"
-            : "此訂單狀態不可分派",
-      });
-      return;
-    }
-    const customer = await prisma.customer.findUnique({ where: { id: order.customerId } });
-    if (!customer) {
-      res.status(400).json({ ok: false, message: "客戶不存在" });
-      return;
-    }
-    const arOutstanding = await prisma.arOpenItem.aggregate({
-      where: activeArOpenItemWhere({ customerId: order.customerId }),
-      _sum: { outstandingAmount: true },
-    });
-    const outstanding = new Prisma.Decimal(arOutstanding._sum.outstandingAmount ?? 0);
-    if (new Prisma.Decimal(customer.creditLimit).greaterThan(0) && outstanding.greaterThan(new Prisma.Decimal(customer.creditLimit))) {
-      res.status(400).json({ ok: false, message: "客戶欠款超過信用額度，已鎖定分派" });
-      return;
-    }
-
-    const driver = await prisma.driver.findUnique({ where: { id: driverId } });
-    if (!driver || !driver.isActive) {
-      res.status(400).json({ ok: false, message: "司機不存在或未啟用" });
-      return;
-    }
-
-    if (vehicleId) {
-      const vehicle = await prisma.vehicle.findUnique({ where: { id: vehicleId } });
-      if (!vehicle || !vehicle.isActive) {
-        res.status(400).json({ ok: false, message: "車輛不存在或未啟用" });
-        return;
-      }
-    }
-
-    const existing = await prisma.deliveryAssignment.findFirst({
-      where: {
-        salesOrderId,
-        status: { in: ["assigned", "delivering", "pending_settlement"] },
-      },
-      orderBy: { id: "desc" },
-    });
-    if (existing) {
-      res.status(400).json({ ok: false, message: "此訂單已有進行中的分派" });
-      return;
-    }
-
-    const stockShortages = await analyzeOrderStockShortage(prisma, salesOrderId);
-    const stockWarnings = stockShortages.map(
-      (s) => `缺貨警告：${s.productName} 需 ${s.need}、目前庫存 ${s.onHand}`,
-    );
-
-    const created = await prisma.$transaction(async (tx) => {
-      await tx.salesOrder.update({
-        where: { id: salesOrderId },
-        data: { status: "assigned", lockVersion: { increment: 1 } },
-      });
-      return tx.deliveryAssignment.create({
-        data: {
-          salesOrderId,
-          driverId,
-          vehicleId,
-          assignmentDate,
-          status: "assigned",
-          assignedByUserId: DEFAULT_CREATOR_USER_ID,
-          estimatedDeliverySlot,
-          estimatedDeliveryAt,
-        },
-        include: {
-          salesOrder: true,
-          driver: { include: { user: true } },
-          vehicle: true,
-        },
-      });
-    });
-
     const assignmentDateLabel =
       typeof body.assignmentDate === "string" && body.assignmentDate.trim()
         ? body.assignmentDate.trim().slice(0, 10)
         : assignmentDate.toISOString().slice(0, 10);
-    void notifyCustomerViaLine(prisma, {
-      customerId: order.customerId,
-      eventType: "order_assigned",
+
+    // 行為等價：仍使用 DEFAULT_CREATOR_USER_ID（與重構前相同）
+    const result = await createDeliveryAssignment(prisma, {
       salesOrderId,
-      deliveryAssignmentId: created.id,
-      text: formatOrderAssignedMessage({
-        orderNo: order.orderNo,
-        assignmentDate: assignmentDateLabel,
-        estimatedSlot: estimatedDeliverySlot,
-      }),
-      payload: { estimatedDeliveryAt: estimatedDeliveryAt?.toISOString() ?? null },
-    }).catch((err) => console.error("[line-notify] order_assigned", err));
+      driverId,
+      vehicleId,
+      assignmentDate,
+      assignmentDateLabel,
+      assignedByUserId: DEFAULT_CREATOR_USER_ID,
+      estimatedDeliverySlot,
+      estimatedDeliveryAt,
+      checkStock: true,
+    });
+
+    if (!result.ok) {
+      res.status(result.httpStatus ?? 400).json({ ok: false, message: result.reason });
+      return;
+    }
+
+    const created = await prisma.deliveryAssignment.findUnique({
+      where: { id: result.assignmentId },
+      include: {
+        salesOrder: true,
+        driver: { include: { user: true } },
+        vehicle: true,
+      },
+    });
 
     res.status(201).json({
       ok: true,
       data: created,
-      warnings: stockWarnings,
-      stockShortages,
+      warnings: result.warnings,
+      stockShortages: result.stockShortages,
     });
   } catch (e) {
     res.status(500).json({ ok: false, message: String(e) });
@@ -8812,79 +8779,22 @@ app.post("/api/orders/batch-assign", async (req, res) => {
     for (const salesOrderId of salesOrderIds) {
       const idStr = salesOrderId.toString();
       try {
-        const order = await prisma.salesOrder.findUnique({ where: { id: salesOrderId } });
-        if (!order) {
-          skipped.push({ id: idStr, reason: "找不到訂單" });
-          continue;
-        }
-        if (["completed", "cancelled", "pending_review"].includes(order.status)) {
-          skipped.push({
-            id: idStr,
-            reason:
-              order.status === "pending_review"
-                ? "尚未經辦公室確認，不可分派"
-                : "此訂單狀態不可分派",
-          });
-          continue;
-        }
-        const customer = await prisma.customer.findUnique({ where: { id: order.customerId } });
-        if (!customer) {
-          skipped.push({ id: idStr, reason: "客戶不存在" });
-          continue;
-        }
-        const arOutstanding = await prisma.arOpenItem.aggregate({
-          where: activeArOpenItemWhere({ customerId: order.customerId }),
-          _sum: { outstandingAmount: true },
-        });
-        const outstanding = new Prisma.Decimal(arOutstanding._sum.outstandingAmount ?? 0);
-        if (
-          new Prisma.Decimal(customer.creditLimit).greaterThan(0) &&
-          outstanding.greaterThan(new Prisma.Decimal(customer.creditLimit))
-        ) {
-          skipped.push({ id: idStr, reason: "客戶欠款超過信用額度，已鎖定分派" });
-          continue;
-        }
-        const existing = await prisma.deliveryAssignment.findFirst({
-          where: {
-            salesOrderId,
-            status: { in: ["assigned", "delivering", "pending_settlement"] },
-          },
-          orderBy: { id: "desc" },
-        });
-        if (existing) {
-          skipped.push({ id: idStr, reason: "此訂單已有進行中的分派" });
-          continue;
-        }
-
-        const created = await prisma.$transaction(async (tx) => {
-          await tx.salesOrder.update({
-            where: { id: salesOrderId },
-            data: { status: "assigned", lockVersion: { increment: 1 } },
-          });
-          return tx.deliveryAssignment.create({
-            data: {
-              salesOrderId,
-              driverId,
-              vehicleId,
-              assignmentDate,
-              status: "assigned",
-              assignedByUserId: actorUserId,
-            },
-          });
-        });
-
-        succeeded.push(idStr);
-        void notifyCustomerViaLine(prisma, {
-          customerId: order.customerId,
-          eventType: "order_assigned",
+        // 與重構前相同：batch 不做庫存檢查；規則集中於 createDeliveryAssignment
+        const result = await createDeliveryAssignment(prisma, {
           salesOrderId,
-          deliveryAssignmentId: created.id,
-          text: formatOrderAssignedMessage({
-            orderNo: order.orderNo,
-            assignmentDate: assignmentDateLabel,
-            estimatedSlot: null,
-          }),
-        }).catch((err) => console.error("[line-notify] order_assigned", err));
+          driverId,
+          vehicleId,
+          assignmentDate,
+          assignmentDateLabel,
+          assignedByUserId: actorUserId,
+          estimatedDeliverySlot: null,
+          checkStock: false,
+        });
+        if (!result.ok) {
+          skipped.push({ id: idStr, reason: result.reason });
+          continue;
+        }
+        succeeded.push(idStr);
       } catch (e) {
         skipped.push({ id: idStr, reason: String(e) });
       }
@@ -8911,6 +8821,14 @@ async function createConfirmedSalesOrder(
     cashInvoiceMode?: unknown;
     isTest?: unknown;
     testBatchId?: unknown;
+    orderKind?: unknown;
+    dispatchPriority?: unknown;
+    earliestDate?: unknown;
+    earliestShift?: unknown;
+    latestDate?: unknown;
+    latestShift?: unknown;
+    preferredShift?: unknown;
+    dispatchLocked?: unknown;
   },
   opts: {
     source?: string;
@@ -9176,6 +9094,57 @@ async function createConfirmedSalesOrder(
       .filter((l) => l.linePurpose === "prepaid_barrel_topup")
       .reduce((s, l) => s + l.qtyOrdered, 0);
 
+    const remarkText = typeof body.remark === "string" ? body.remark.trim() || null : null;
+    const anyReplenishment = lineCreates.some((l) => l.isReplenishment);
+    let orderKind =
+      typeof body.orderKind === "string" && body.orderKind.trim()
+        ? body.orderKind.trim()
+        : remarkText?.startsWith("【週期巡查】")
+          ? "patrol"
+          : anyReplenishment
+            ? "replenishment"
+            : "general";
+    const dispatchPriority =
+      typeof body.dispatchPriority === "string" && body.dispatchPriority.trim()
+        ? body.dispatchPriority.trim()
+        : anyReplenishment
+          ? "urgent"
+          : orderKind === "patrol"
+            ? "normal"
+            : "normal";
+    const preferredShift =
+      typeof body.preferredShift === "string" && body.preferredShift.trim()
+        ? body.preferredShift.trim()
+        : orderKind === "patrol"
+          ? "any"
+          : null;
+
+    let earliestDate: Date | null = parseLocalYmdToDbDate(String(body.earliestDate ?? "").trim());
+    let earliestShift = typeof body.earliestShift === "string" ? body.earliestShift.trim() || null : null;
+    let latestDate: Date | null = parseLocalYmdToDbDate(String(body.latestDate ?? "").trim());
+    let latestShift = typeof body.latestShift === "string" ? body.latestShift.trim() || null : null;
+
+    const slaCfg = slaConfigFromSettings(await loadPlanningSettings(prisma));
+    if (orderKind === "patrol" && safeScheduled && (!earliestDate || !latestDate)) {
+      const dueYmd = safeScheduled.toISOString().slice(0, 10);
+      const win = patrolWindow(dueYmd, slaCfg.patrolEarlyShifts, slaCfg.patrolLateShifts);
+      earliestDate = earliestDate ?? parseLocalYmdToDbDate(win.earliest.date);
+      earliestShift = earliestShift ?? win.earliest.shift;
+      latestDate = latestDate ?? parseLocalYmdToDbDate(win.latest.date);
+      latestShift = latestShift ?? win.latest.shift;
+    } else if (orderKind === "general" && !latestDate) {
+      const schedYmd = safeScheduled ? safeScheduled.toISOString().slice(0, 10) : null;
+      const sla = generalEffectiveLatest(
+        new Date(),
+        schedYmd,
+        null,
+        slaCfg.generalShifts,
+        slaCfg.afterScheduledShifts,
+      );
+      latestDate = parseLocalYmdToDbDate(sla.date);
+      latestShift = sla.shift;
+    }
+
     const created = await prisma.$transaction(async (tx) => {
       const so = await tx.salesOrder.create({
         data: {
@@ -9186,7 +9155,7 @@ async function createConfirmedSalesOrder(
           scheduledDeliveryDate: safeScheduled,
           subtotal,
           totalAmount: subtotal,
-          remark: typeof body.remark === "string" ? body.remark.trim() || null : null,
+          remark: remarkText,
           billingTypeAtOrder,
           cashSubtotal,
           monthlySubtotal,
@@ -9197,6 +9166,14 @@ async function createConfirmedSalesOrder(
           isTest,
           testBatchId: isTest ? testBatchId : null,
           createdByUserId: creatorUserId,
+          orderKind,
+          dispatchPriority,
+          earliestDate,
+          earliestShift,
+          latestDate,
+          latestShift,
+          preferredShift,
+          dispatchLocked: body.dispatchLocked === true,
           lines: {
             create: lineCreates,
           },
@@ -9474,6 +9451,8 @@ app.post("/api/sales-orders/generate-patrol", async (req, res) => {
           deliveryAddressId: c.addressId,
           scheduledDeliveryDate: c.scheduledDeliveryDate,
           remark,
+          orderKind: "patrol",
+          preferredShift: "any",
           lines: [
             {
               productId: c.productId,

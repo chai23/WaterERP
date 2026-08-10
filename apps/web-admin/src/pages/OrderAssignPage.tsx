@@ -9,8 +9,9 @@ import {
   orderStatusBadgeClass,
 } from "../adminUtils";
 import AssignmentStatusPanel from "./OrderAssignmentStatusPage";
+import AiSuggestAssignPanel from "../components/AiSuggestAssignPanel";
 
-type PageTab = "status" | "assign";
+type PageTab = "status" | "assign" | "ai";
 
 function digitsOnly(value: string): string {
   return value.replace(/\D/g, "");
@@ -221,18 +222,42 @@ export default function OrderAssignPage() {
     driverEmployeeCode,
   } = useDashboard();
   const [searchParams, setSearchParams] = useSearchParams();
+  const [aiEnabled, setAiEnabled] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/delivery-planning/status")
+      .then(async (r) => {
+        if (!r.ok) return null;
+        return r.json() as Promise<{ ok?: boolean; data?: { enabled?: boolean } }>;
+      })
+      .then((j) => {
+        if (!cancelled && j?.data?.enabled) setAiEnabled(true);
+      })
+      .catch(() => {
+        /* flag 關或未部署時維持 false */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const pageTab: PageTab = useMemo(() => {
     const t = searchParams.get("tab");
+    if (t === "ai" && aiEnabled) return "ai";
     if (t === "assign" || t === "status") return t;
     if (searchParams.get("customerId")) return "assign";
     return "status";
-  }, [searchParams]);
+  }, [searchParams, aiEnabled]);
 
   const setPageTab = useCallback(
     (tab: PageTab) => {
       if (tab === "status") {
         setSearchParams({ tab: "status" });
+        return;
+      }
+      if (tab === "ai") {
+        setSearchParams({ tab: "ai" });
         return;
       }
       const next = new URLSearchParams(searchParams);
@@ -468,7 +493,9 @@ export default function OrderAssignPage() {
         <p className="order-new__hero-lead">
           {pageTab === "status"
             ? "先查看未分派／已分派佇列，避免漏派；需要派車時再切到「分配訂單」。"
-            : "區塊 ①② 輸入客戶後列出未完成訂單；區塊 ③ 顯示司機當日任務；區塊 ④ 確認分派。"}
+            : pageTab === "ai"
+              ? "選班別、確認出勤與跑區，勾選訂單後一鍵排班；確認發布才寫入正式派單。"
+              : "區塊 ①② 輸入客戶後列出未完成訂單；區塊 ③ 顯示司機當日任務；區塊 ④ 確認分派。"}
         </p>
         <nav className="order-assign-tabs" role="tablist" aria-label="分配訂單分頁">
           <button
@@ -489,11 +516,24 @@ export default function OrderAssignPage() {
           >
             分配訂單
           </button>
+          {aiEnabled ? (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={pageTab === "ai"}
+              className={`order-assign-tabs__btn${pageTab === "ai" ? " order-assign-tabs__btn--active" : ""}`}
+              onClick={() => setPageTab("ai")}
+            >
+              班次排程
+            </button>
+          ) : null}
         </nav>
       </header>
 
       {pageTab === "status" ? (
         <AssignmentStatusPanel onGoAssign={goAssignFromQueue} />
+      ) : pageTab === "ai" ? (
+        <AiSuggestAssignPanel />
       ) : (
       <form onSubmit={handleSubmit} className="order-new__form order-new__form--layout">
         <div className="order-new__workspace" aria-label="分配訂單分區">

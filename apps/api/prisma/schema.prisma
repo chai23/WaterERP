@@ -43,6 +43,10 @@ model User {
   operationAuditLogs              OperationAuditLog[]      @relation("OperationAuditActor")
   dayCloseLocksLocked             DayCloseLock[]           @relation("DayCloseLocker")
   dayCloseLocksUnlocked           DayCloseLock[]           @relation("DayCloseUnlocker")
+  deliveryPlansCreated            DeliveryPlan[]           @relation("DeliveryPlanCreator")
+  deliveryPlansApproved           DeliveryPlan[]           @relation("DeliveryPlanApprover")
+  deliveryPlanningSettingsUpdated DeliveryPlanningSetting[] @relation("DeliveryPlanningSettingUpdater")
+  deliveryPlanningAuditLogs       DeliveryPlanningAuditLog[] @relation("DeliveryPlanningAuditActor")
 
   @@map("users")
 }
@@ -57,6 +61,7 @@ model Vehicle {
 
   drivers             Driver[]
   deliveryAssignments DeliveryAssignment[]
+  deliveryRoutes      DeliveryRoute[]
   barrelPickups       BarrelPickup[]
   barrelMovements     BarrelMovement[]
   serviceTicketsAssess ServiceTicket[] @relation("ServiceTicketAssessVehicle")
@@ -72,6 +77,13 @@ model Driver {
   employeeCode  String?  @map("employee_code") @db.VarChar(50)
   maxOrderCount Int      @default(20) @map("max_order_count") @db.UnsignedInt
   maxBarrelQty  Int      @default(150) @map("max_barrel_qty") @db.UnsignedInt
+  /// AI 派單：預設上班時間（可空；不影響既有人工派單）
+  workStartTime DateTime? @map("work_start_time") @db.Time(0)
+  workEndTime   DateTime? @map("work_end_time") @db.Time(0)
+  depotLatitude  Decimal? @map("depot_latitude") @db.Decimal(10, 7)
+  depotLongitude Decimal? @map("depot_longitude") @db.Decimal(10, 7)
+  familiarZoneIdsJson Json? @map("familiar_zone_ids_json")
+  canHighFloor Boolean? @map("can_high_floor")
   /// 月基本底薪（薪資統計用）
   baseSalary    Decimal  @default(0) @map("base_salary") @db.Decimal(14, 2)
   isActive      Boolean  @default(true) @map("is_active")
@@ -87,8 +99,35 @@ model Driver {
   serviceTicketsAssess ServiceTicket[] @relation("ServiceTicketAssessDriver")
   serviceTicketsReturn ServiceTicket[] @relation("ServiceTicketReturnDriver")
   serviceTicketsCollect ServiceTicket[] @relation("ServiceTicketCollectorDriver")
+  attendanceRecords DriverAttendance[]
+  deliveryRoutes DeliveryRoute[]
+  preferredForOrders SalesOrder[] @relation("OrderPreferredDriver")
+  requiredForOrders  SalesOrder[] @relation("OrderRequiredDriver")
 
   @@map("drivers")
+}
+
+/// 司機當日出勤（AI 派單；不改 is_active 語意）
+model DriverAttendance {
+  id            BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  driverId      BigInt    @map("driver_id") @db.UnsignedBigInt
+  workDate      DateTime  @map("work_date") @db.Date
+  /// am | pm | all（舊資料 all＝全日）
+  shift         String    @default("all") @db.VarChar(8)
+  isOnDuty      Boolean   @default(true) @map("is_on_duty")
+  workStartTime DateTime? @map("work_start_time") @db.Time(0)
+  workEndTime   DateTime? @map("work_end_time") @db.Time(0)
+  note          String?   @db.VarChar(500)
+  /// 本班主跑區域 AddressZone id 陣列（僅該日該班）
+  runZoneIdsJson Json?    @map("run_zone_ids_json")
+  createdAt     DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt     DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+
+  driver Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@unique([driverId, workDate, shift], map: "uk_driver_attendance_date_shift")
+  @@index([workDate], map: "idx_driver_attendance_date")
+  @@map("driver_attendance")
 }
 
 model AddressZone {
@@ -279,6 +318,14 @@ model DeliveryAddress {
   contactPhone  String?  @map("contact_phone") @db.VarChar(32)
   contactMobile String?  @map("contact_mobile") @db.VarChar(32)
   notes         String?  @db.Text
+  /// AI 派單地理（可空；人工派單不依賴）
+  latitude      Decimal? @db.Decimal(10, 7)
+  longitude     Decimal? @db.Decimal(10, 7)
+  geocodeStatus String   @default("pending") @map("geocode_status") @db.VarChar(32)
+  geocodedAddress String? @map("geocoded_address") @db.VarChar(500)
+  geocodedAt    DateTime? @map("geocoded_at") @db.DateTime(3)
+  locationAccuracy String? @map("location_accuracy") @db.VarChar(32)
+  manualLocationConfirmed Boolean @default(false) @map("manual_location_confirmed")
   isDefault     Boolean  @default(false) @map("is_default")
   /// 此送貨點未收回空桶數：核銷送達時依押桶商品與回桶數自動增減，亦可手動調整
   barrelsOnSite Int      @default(0) @map("barrels_on_site")
@@ -299,6 +346,7 @@ model DeliveryAddress {
   serviceTickets ServiceTicket[]
 
   @@index([patrolWeekday], map: "idx_addr_patrol_weekday")
+  @@index([geocodeStatus], map: "idx_addr_geocode_status")
   @@map("delivery_addresses")
 }
 
@@ -409,6 +457,26 @@ model SalesOrder {
   deliveryAddressId      BigInt    @map("delivery_address_id") @db.UnsignedBigInt
   status                 String    @default("draft") @db.VarChar(32)
   scheduledDeliveryDate  DateTime? @map("scheduled_delivery_date") @db.Date
+  /// AI 派單時窗（全可空；未填=無硬時窗）
+  deliveryWindowStart    DateTime? @map("delivery_window_start") @db.Time(0)
+  deliveryWindowEnd      DateTime? @map("delivery_window_end") @db.Time(0)
+  preferredTimeNote      String?   @map("preferred_time_note") @db.VarChar(200)
+  serviceDurationMinutes Int?      @map("service_duration_minutes") @db.UnsignedInt
+  allowEarlyDelivery     Boolean?  @map("allow_early_delivery")
+  allowLateDelivery      Boolean?  @map("allow_late_delivery")
+  timeWindowPriority     String?   @map("time_window_priority") @db.VarChar(16)
+  /// general | patrol | replenishment | emergency（可空＝視為 general）
+  orderKind              String?   @map("order_kind") @db.VarChar(24)
+  /// normal | urgent | must
+  dispatchPriority       String?   @map("dispatch_priority") @db.VarChar(16)
+  earliestDate           DateTime? @map("earliest_date") @db.Date
+  earliestShift          String?   @map("earliest_shift") @db.VarChar(8)
+  latestDate             DateTime? @map("latest_date") @db.Date
+  latestShift            String?   @map("latest_shift") @db.VarChar(8)
+  preferredShift         String?   @map("preferred_shift") @db.VarChar(8)
+  dispatchLocked         Boolean   @default(false) @map("dispatch_locked")
+  preferredDriverId      BigInt?   @map("preferred_driver_id") @db.UnsignedBigInt
+  requiredDriverId       BigInt?   @map("required_driver_id") @db.UnsignedBigInt
   subtotal               Decimal   @default(0) @db.Decimal(14, 2)
   totalAmount            Decimal   @default(0) @map("total_amount") @db.Decimal(14, 2)
   lockVersion            Int       @default(0) @map("lock_version") @db.UnsignedInt
@@ -446,8 +514,12 @@ model SalesOrder {
   customer        Customer          @relation(fields: [customerId], references: [id])
   deliveryAddress DeliveryAddress   @relation(fields: [deliveryAddressId], references: [id])
   createdBy       User?             @relation("SalesOrderCreator", fields: [createdByUserId], references: [id])
+  preferredDriver Driver?           @relation("OrderPreferredDriver", fields: [preferredDriverId], references: [id], onDelete: SetNull)
+  requiredDriver  Driver?           @relation("OrderRequiredDriver", fields: [requiredDriverId], references: [id], onDelete: SetNull)
   lines           SalesOrderLine[]
   assignments     DeliveryAssignment[]
+  routeStops      DeliveryRouteStop[]
+  planUnassigned  DeliveryPlanUnassigned[]
   payments        Payment[]
   notificationLogs NotificationLog[]
   ledgerEntries   CustomerLedgerEntry[]
@@ -463,6 +535,8 @@ model SalesOrder {
   @@index([customerId, officeSettledAt])
   @@index([isTest])
   @@index([testBatchId, isTest])
+  @@index([orderKind], map: "idx_so_order_kind")
+  @@index([latestDate, latestShift], map: "idx_so_latest_shift")
   @@map("sales_orders")
 }
 
@@ -656,6 +730,10 @@ model DeliveryAssignment {
   estimatedDeliverySlot String?  @map("estimated_delivery_slot") @db.VarChar(120)
   /// 預計配送時間點（選填）
   estimatedDeliveryAt  DateTime? @map("estimated_delivery_at") @db.DateTime(3)
+  /// AI 方案發布後可選關聯（可空；人工派單維持 null）
+  routeStopId          BigInt?   @map("route_stop_id") @db.UnsignedBigInt
+  routeSequence        Int?      @map("route_sequence") @db.UnsignedInt
+  assignmentShift      String?   @map("assignment_shift") @db.VarChar(8)
   createdAt            DateTime  @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt            DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
 
@@ -663,11 +741,13 @@ model DeliveryAssignment {
   driver       Driver            @relation(fields: [driverId], references: [id])
   vehicle      Vehicle?          @relation(fields: [vehicleId], references: [id])
   assignedBy   User?             @relation("AssignmentAssigner", fields: [assignedByUserId], references: [id])
+  routeStop    DeliveryRouteStop? @relation(fields: [routeStopId], references: [id], onDelete: SetNull)
   events       DeliveryEvent[]
   floorBonusRecords FloorDeliveryBonusRecord[]
   barrelMovements BarrelMovement[]
   notificationLogs NotificationLog[]
 
+  @@index([routeStopId], map: "idx_da_route_stop")
   @@map("delivery_assignments")
 }
 
@@ -1288,4 +1368,136 @@ model DayCloseLock {
   unlockedBy User? @relation("DayCloseUnlocker", fields: [unlockedByUserId], references: [id], onDelete: SetNull)
 
   @@map("day_close_locks")
+}
+
+/// AI 派單設定（key-value）
+model DeliveryPlanningSetting {
+  settingKey       String   @id @map("setting_key") @db.VarChar(100)
+  settingValue     String   @map("setting_value") @db.Text
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+  updatedByUserId  BigInt?  @map("updated_by_user_id") @db.UnsignedBigInt
+
+  updatedBy User? @relation("DeliveryPlanningSettingUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@map("delivery_planning_settings")
+}
+
+model DeliveryPlanningAuditLog {
+  id             BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  planId         BigInt?  @map("plan_id") @db.UnsignedBigInt
+  action         String   @db.VarChar(64)
+  modelVersion   String?  @map("model_version") @db.VarChar(64)
+  promptVersion  String?  @map("prompt_version") @db.VarChar(64)
+  inputSummary   Json?    @map("input_summary")
+  outputSummary  Json?    @map("output_summary")
+  actorUserId    BigInt?  @map("actor_user_id") @db.UnsignedBigInt
+  createdAt      DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  plan  DeliveryPlan? @relation(fields: [planId], references: [id], onDelete: SetNull)
+  actor User?         @relation("DeliveryPlanningAuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([planId], map: "idx_dpal_plan")
+  @@index([action, createdAt], map: "idx_dpal_action_created")
+  @@index([actorUserId], map: "idx_dpal_actor")
+  @@map("delivery_planning_audit_logs")
+}
+
+model DeliveryPlan {
+  id                  BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  planDate            DateTime  @map("plan_date") @db.Date
+  /// am | pm | all
+  shift               String    @default("all") @db.VarChar(8)
+  version             Int       @default(1) @db.UnsignedInt
+  status              String    @default("draft") @db.VarChar(32)
+  mode                String    @default("suggest_driver") @db.VarChar(32)
+  algorithmVersion    String?   @map("algorithm_version") @db.VarChar(64)
+  weightProfileKey    String?   @map("weight_profile_key") @db.VarChar(100)
+  totalDistanceMeters Int?      @map("total_distance_meters") @db.UnsignedInt
+  totalDriveMinutes   Int?      @map("total_drive_minutes") @db.UnsignedInt
+  unassignedCount     Int       @default(0) @map("unassigned_count") @db.UnsignedInt
+  createdByUserId     BigInt?   @map("created_by_user_id") @db.UnsignedBigInt
+  approvedByUserId    BigInt?   @map("approved_by_user_id") @db.UnsignedBigInt
+  publishedAt         DateTime? @map("published_at") @db.DateTime(3)
+  computeStartedAt    DateTime? @map("compute_started_at") @db.DateTime(3)
+  computeFinishedAt   DateTime? @map("compute_finished_at") @db.DateTime(3)
+  createdAt           DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt           DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+
+  createdBy  User? @relation("DeliveryPlanCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  approvedBy User? @relation("DeliveryPlanApprover", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  routes     DeliveryRoute[]
+  unassigned DeliveryPlanUnassigned[]
+  auditLogs  DeliveryPlanningAuditLog[]
+
+  @@unique([planDate, shift, version], map: "uk_delivery_plans_date_shift_version")
+  @@index([planDate, status], map: "idx_delivery_plans_date_status")
+  @@map("delivery_plans")
+}
+
+model DeliveryRoute {
+  id                  BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  planId              BigInt    @map("plan_id") @db.UnsignedBigInt
+  driverId            BigInt    @map("driver_id") @db.UnsignedBigInt
+  vehicleId           BigInt?   @map("vehicle_id") @db.UnsignedBigInt
+  sequenceNo          Int       @default(1) @map("sequence_no") @db.UnsignedInt
+  departureAt         DateTime? @map("departure_at") @db.DateTime(3)
+  returnAt            DateTime? @map("return_at") @db.DateTime(3)
+  totalDistanceMeters Int?      @map("total_distance_meters") @db.UnsignedInt
+  totalDriveMinutes   Int?      @map("total_drive_minutes") @db.UnsignedInt
+  totalBarrelQty      Int       @default(0) @map("total_barrel_qty") @db.UnsignedInt
+  riskScore           Decimal?  @map("risk_score") @db.Decimal(8, 2)
+  createdAt           DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt           DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+
+  plan    DeliveryPlan         @relation(fields: [planId], references: [id], onDelete: Cascade)
+  driver  Driver               @relation(fields: [driverId], references: [id])
+  vehicle Vehicle?             @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
+  stops   DeliveryRouteStop[]
+
+  @@unique([planId, driverId], map: "uk_delivery_routes_plan_driver")
+  @@map("delivery_routes")
+}
+
+model DeliveryRouteStop {
+  id                   BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  routeId              BigInt    @map("route_id") @db.UnsignedBigInt
+  salesOrderId         BigInt    @map("sales_order_id") @db.UnsignedBigInt
+  stopSequence         Int       @map("stop_sequence") @db.UnsignedInt
+  etaAt                DateTime? @map("eta_at") @db.DateTime(3)
+  etdAt                DateTime? @map("etd_at") @db.DateTime(3)
+  prevDistanceMeters   Int?      @map("prev_distance_meters") @db.UnsignedInt
+  prevDriveMinutes     Int?      @map("prev_drive_minutes") @db.UnsignedInt
+  windowStart          DateTime? @map("window_start") @db.Time(0)
+  windowEnd            DateTime? @map("window_end") @db.Time(0)
+  hasHardViolation     Boolean   @default(false) @map("has_hard_violation")
+  violationCodesJson   Json?     @map("violation_codes_json")
+  aiExplanation        String?   @map("ai_explanation") @db.Text
+  manualAdjustReason   String?   @map("manual_adjust_reason") @db.VarChar(500)
+  createdAt            DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt            DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+
+  route      DeliveryRoute         @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  salesOrder SalesOrder            @relation(fields: [salesOrderId], references: [id])
+  assignments DeliveryAssignment[]
+
+  @@unique([routeId, stopSequence], map: "uk_route_stop_sequence")
+  @@unique([routeId, salesOrderId], map: "uk_route_stop_order")
+  @@index([salesOrderId], map: "idx_route_stops_order")
+  @@map("delivery_route_stops")
+}
+
+model DeliveryPlanUnassigned {
+  id           BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  planId       BigInt   @map("plan_id") @db.UnsignedBigInt
+  salesOrderId BigInt   @map("sales_order_id") @db.UnsignedBigInt
+  reasonCode   String   @map("reason_code") @db.VarChar(64)
+  reasonText   String?  @map("reason_text") @db.VarChar(500)
+  createdAt    DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  plan       DeliveryPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  salesOrder SalesOrder   @relation(fields: [salesOrderId], references: [id])
+
+  @@unique([planId, salesOrderId], map: "uk_plan_unassigned_order")
+  @@index([salesOrderId], map: "idx_plan_unassigned_order")
+  @@map("delivery_plan_unassigned")
 }
