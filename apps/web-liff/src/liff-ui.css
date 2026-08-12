@@ -224,6 +224,53 @@ textarea {
   flex-shrink: 0;
 }
 
+.section-head--toggle {
+  width: 100%;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  appearance: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.section-head--toggle[aria-expanded="false"] {
+  margin-bottom: 0;
+}
+
+.section-head__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-shrink: 0;
+}
+
+.section-head__chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 999px;
+  background: var(--surface-soft, #eef4fb);
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1;
+}
+
+.liff-card--collapsed {
+  padding-top: 0.85rem;
+  padding-bottom: 0.85rem;
+}
+
+.liff-card__body {
+  min-width: 0;
+}
+
 .billing-prepaid {
   display: grid;
   gap: 0.75rem;
@@ -559,6 +606,12 @@ textarea {
   color: var(--accent);
 }
 
+.mini-tag--bought {
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+  color: #047857;
+}
+
 /* —— Date chips —— */
 .date-row {
   display: flex;
@@ -881,18 +934,21 @@ textarea {
 
 .line-table th:nth-child(2),
 .line-table td:nth-child(2) {
-  width: 28%;
+  width: 22%;
 }
 
 .line-table th:nth-child(3),
-.line-table td:nth-child(3) {
-  width: 16%;
-  text-align: right;
-}
-
+.line-table td:nth-child(3),
 .line-table th:nth-child(4),
 .line-table td:nth-child(4) {
-  width: 22%;
+  width: 12%;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.line-table th:nth-child(5),
+.line-table td:nth-child(5) {
+  width: 20%;
   text-align: right;
 }
 

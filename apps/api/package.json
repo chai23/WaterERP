@@ -23,6 +23,7 @@
     "migrate:legacy-users": "tsx scripts/migrate-legacy-masters.ts --personnel-only",
     "migrate:legacy-drivers": "tsx scripts/migrate-legacy-masters.ts --drivers-only --replace",
     "migrate:legacy-products": "tsx scripts/migrate-legacy-masters.ts --products-only --replace",
+    "migrate:legacy-orders": "tsx scripts/migrate-legacy-orders.ts",
     "ensure-admin": "tsx scripts/ensure-admin-user.ts"
   },
   "dependencies": {

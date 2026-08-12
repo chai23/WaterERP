@@ -101,6 +101,8 @@ type Product = {
   unit: string;
   salePrice: string | number;
   consumesPrepaidBarrel?: boolean;
+  previouslyPurchased?: boolean;
+  lastOrderedAt?: string | null;
 };
 
 type OrderLine = {
@@ -484,6 +486,7 @@ export default function App() {
   const [svcMsg, setSvcMsg] = useState("");
   const [svcSubmitting, setSvcSubmitting] = useState(false);
   const [expandedTicketId, setExpandedTicketId] = useState<string | null>(null);
+  const [productsOpen, setProductsOpen] = useState(false);
 
   const [newAddrLabel, setNewAddrLabel] = useState("");
   const [newAddrCity, setNewAddrCity] = useState("");
@@ -553,6 +556,20 @@ export default function App() {
     }
     return { total, qtySum, itemCount, topupCash };
   }, [orderMode, qtyByProduct, topupQtyByProduct, products]);
+
+  const purchasedProducts = useMemo(
+    () => products.filter((p) => p.previouslyPurchased),
+    [products],
+  );
+
+  const visibleOrderProducts = useMemo(() => {
+    if (productsOpen) return products;
+    return products.filter((p) => {
+      const id = String(p.id);
+      if (p.previouslyPurchased) return true;
+      return (qtyByProduct[id] ?? 0) > 0 || (topupQtyByProduct[id] ?? 0) > 0;
+    });
+  }, [products, productsOpen, qtyByProduct, topupQtyByProduct]);
 
   const selectedAddress = useMemo(
     () => customer?.addresses.find((a) => String(a.id) === addressId) ?? null,
@@ -1435,113 +1452,143 @@ export default function App() {
             ) : null}
           </section>
 
-          <section className="liff-card">
-            <div className="section-head">
+          <section className={`liff-card${productsOpen ? "" : " liff-card--collapsed"}`}>
+            <button
+              type="button"
+              className="section-head section-head--toggle"
+              aria-expanded={productsOpen}
+              onClick={() => setProductsOpen((v) => !v)}
+            >
               <h2>選擇商品</h2>
-              <span className="hint">{products.length} 項可訂</span>
-            </div>
-            {productsError ? <p className="feedback feedback--err">{productsError}</p> : null}
-            {!productsError && products.length === 0 ? <p className="muted">載入商品中…</p> : null}
-            <div className="product-list">
-              {products.map((p) => {
-                const id = String(p.id);
-                const qty = qtyByProduct[id] ?? 0;
-                const topupQty = topupQtyByProduct[id] ?? 0;
-                const lineTotal = Number(p.salePrice) * qty;
-                const showTopup = customer.billingType === "prepaid" && p.consumesPrepaidBarrel && qty > 0;
-                return (
-                  <div className={`product-card${qty > 0 ? " has-qty" : ""}`} key={id}>
-                    <div className="product-card__main">
-                      <div>
-                        <h3 className="product-card__name">{p.name}</h3>
-                        <div className="product-card__price">
-                          ${money(p.salePrice)}
-                          <span>／{p.unit}</span>
-                        </div>
-                        <div className="product-card__tags">
-                          {p.productCode ? <span className="mini-tag">#{p.productCode}</span> : null}
-                          {customer.billingType === "prepaid" && p.consumesPrepaidBarrel ? (
-                            <span className="mini-tag mini-tag--accent">
-                              剩 {prepaidBalanceByProductId.get(id) ?? 0} 桶
-                            </span>
+              <span className="section-head__meta">
+                <span className="hint">
+                  {productsOpen
+                    ? cartTotal.itemCount > 0
+                      ? `已選 ${cartTotal.itemCount} 項 · ${products.length} 可訂`
+                      : `${products.length} 項可訂`
+                    : purchasedProducts.length > 0
+                      ? `買過 ${purchasedProducts.length} · 點此看全部`
+                      : `點此看全部 ${products.length} 項`}
+                </span>
+                <span className="section-head__chevron" aria-hidden="true">
+                  {productsOpen ? "▴" : "▾"}
+                </span>
+              </span>
+            </button>
+            <div className="liff-card__body">
+              {productsError ? <p className="feedback feedback--err">{productsError}</p> : null}
+              {!productsError && products.length === 0 ? <p className="muted">載入商品中…</p> : null}
+              {!productsError && products.length > 0 && visibleOrderProducts.length === 0 ? (
+                <p className="muted" style={{ marginTop: 0 }}>
+                  尚無購買紀錄，點上方展開可看全部商品。
+                </p>
+              ) : null}
+              <div className="product-list">
+                {visibleOrderProducts.map((p) => {
+                  const id = String(p.id);
+                  const qty = qtyByProduct[id] ?? 0;
+                  const topupQty = topupQtyByProduct[id] ?? 0;
+                  const lineTotal = Number(p.salePrice) * qty;
+                  const showTopup = customer.billingType === "prepaid" && p.consumesPrepaidBarrel && qty > 0;
+                  return (
+                    <div className={`product-card${qty > 0 ? " has-qty" : ""}`} key={id}>
+                      <div className="product-card__main">
+                        <div>
+                          <h3 className="product-card__name">{p.name}</h3>
+                          <div className="product-card__price">
+                            ${money(p.salePrice)}
+                            <span>／{p.unit}</span>
+                          </div>
+                          <div className="product-card__tags">
+                            {p.previouslyPurchased ? <span className="mini-tag mini-tag--bought">買過</span> : null}
+                            {p.productCode ? <span className="mini-tag">#{p.productCode}</span> : null}
+                            {customer.billingType === "prepaid" && p.consumesPrepaidBarrel ? (
+                              <span className="mini-tag mini-tag--accent">
+                                剩 {prepaidBalanceByProductId.get(id) ?? 0} 桶
+                              </span>
+                            ) : null}
+                          </div>
+                          {qty > 0 ? (
+                            <div className="product-card__sub">
+                              出貨小計 ${money(lineTotal)}（{qty} {p.unit}）
+                            </div>
                           ) : null}
                         </div>
-                        {qty > 0 ? (
-                          <div className="product-card__sub">
-                            出貨小計 ${money(lineTotal)}（{qty} {p.unit}）
-                          </div>
-                        ) : null}
-                      </div>
-                      <div className="qty-ctl">
-                        <button type="button" aria-label="減少" onClick={() => setQty(id, qty - 1)}>
-                          −
-                        </button>
-                        <span className="qty-ctl__val">{qty}</span>
-                        <button type="button" aria-label="增加" onClick={() => setQty(id, qty + 1)}>
-                          ＋
-                        </button>
-                      </div>
-                    </div>
-                    {showTopup ? (
-                      <div className="product-card__topup">
-                        <div className="product-card__topup-head">
-                          <span>本單儲值（配送時收款）</span>
-                          {topupQty > 0 ? <span>${money(Number(p.salePrice) * topupQty)}</span> : null}
-                        </div>
                         <div className="qty-ctl">
-                          <button type="button" aria-label="減少儲值" onClick={() => setTopupQty(id, topupQty - 1)}>
+                          <button type="button" aria-label="減少" onClick={() => setQty(id, qty - 1)}>
                             −
                           </button>
-                          <span className="qty-ctl__val">{topupQty}</span>
-                          <button type="button" aria-label="增加儲值" onClick={() => setTopupQty(id, topupQty + 1)}>
+                          <span className="qty-ctl__val">{qty}</span>
+                          <button type="button" aria-label="增加" onClick={() => setQty(id, qty + 1)}>
                             ＋
                           </button>
                         </div>
                       </div>
-                    ) : null}
-                  </div>
-                );
-              })}
-            </div>
-            <label className="field" style={{ marginTop: "0.9rem", marginBottom: 0 }}>
-              <span>備註（選填）</span>
-              <input
-                value={remark}
-                onChange={(e) => setRemark(e.target.value)}
-                placeholder="上樓方式、聯絡時段、門口注意事項…"
-              />
-            </label>
-            {prepaidCartNeed.length > 0 && orderMode === "delivery" ? (
-              <div className={`feedback ${prepaidShortfall ? "feedback--err" : "feedback--info"}`} style={{ marginTop: "0.75rem" }}>
-                {prepaidCartNeed.map((r) => (
-                  <div key={r.id}>
-                    {r.name}：出貨 {r.need}／餘額 {r.avail}
-                    {r.topup > 0 ? `／本單儲值 ${r.topup}` : ""}
-                    {r.need > r.avail + r.topup ? "（仍不足）" : "（已可下單）"}
-                  </div>
-                ))}
-                {prepaidShortfall ? (
-                  <button
-                    type="button"
-                    className="btn btn--ghost btn--sm"
-                    style={{ marginTop: "0.55rem" }}
-                    onClick={coverPrepaidShortfall}
-                  >
-                    一鍵補足儲值（配送時收款）
-                  </button>
-                ) : cartTotal.topupCash > 0 ? (
-                  <div style={{ marginTop: "0.35rem" }}>配送時預估收款（儲值）${money(cartTotal.topupCash)}</div>
-                ) : null}
+                      {showTopup ? (
+                        <div className="product-card__topup">
+                          <div className="product-card__topup-head">
+                            <span>本單儲值（配送時收款）</span>
+                            {topupQty > 0 ? <span>${money(Number(p.salePrice) * topupQty)}</span> : null}
+                          </div>
+                          <div className="qty-ctl">
+                            <button type="button" aria-label="減少儲值" onClick={() => setTopupQty(id, topupQty - 1)}>
+                              −
+                            </button>
+                            <span className="qty-ctl__val">{topupQty}</span>
+                            <button type="button" aria-label="增加儲值" onClick={() => setTopupQty(id, topupQty + 1)}>
+                              ＋
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
               </div>
-            ) : null}
-            {orderMsg ? (
-              <p className={`feedback ${orderMsg.includes("成功") || orderMsg.includes("已送出") ? "feedback--ok" : "feedback--err"}`}>{orderMsg}</p>
-            ) : null}
-            {selectedAddress && cartTotal.itemCount === 0 ? (
-              <p className="muted" style={{ marginTop: "0.75rem" }}>
-                點商品右側 ＋ 加入數量後即可送出。
-              </p>
-            ) : null}
+              {productsOpen ? (
+                <>
+                  <label className="field" style={{ marginTop: "0.9rem", marginBottom: 0 }}>
+                    <span>備註（選填）</span>
+                    <input
+                      value={remark}
+                      onChange={(e) => setRemark(e.target.value)}
+                      placeholder="上樓方式、聯絡時段、門口注意事項…"
+                    />
+                  </label>
+                  {prepaidCartNeed.length > 0 && orderMode === "delivery" ? (
+                    <div className={`feedback ${prepaidShortfall ? "feedback--err" : "feedback--info"}`} style={{ marginTop: "0.75rem" }}>
+                      {prepaidCartNeed.map((r) => (
+                        <div key={r.id}>
+                          {r.name}：出貨 {r.need}／餘額 {r.avail}
+                          {r.topup > 0 ? `／本單儲值 ${r.topup}` : ""}
+                          {r.need > r.avail + r.topup ? "（仍不足）" : "（已可下單）"}
+                        </div>
+                      ))}
+                      {prepaidShortfall ? (
+                        <button
+                          type="button"
+                          className="btn btn--ghost btn--sm"
+                          style={{ marginTop: "0.55rem" }}
+                          onClick={coverPrepaidShortfall}
+                        >
+                          一鍵補足儲值（配送時收款）
+                        </button>
+                      ) : cartTotal.topupCash > 0 ? (
+                        <div style={{ marginTop: "0.35rem" }}>配送時預估收款（儲值）${money(cartTotal.topupCash)}</div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {selectedAddress && cartTotal.itemCount === 0 ? (
+                    <p className="muted" style={{ marginTop: "0.75rem" }}>
+                      點商品右側 ＋ 加入數量後即可送出。
+                    </p>
+                  ) : null}
+                </>
+              ) : null}
+              {orderMsg ? (
+                <p className={`feedback ${orderMsg.includes("成功") || orderMsg.includes("已送出") ? "feedback--ok" : "feedback--err"}`}>{orderMsg}</p>
+              ) : null}
+            </div>
           </section>
           </>
           ) : (
@@ -1569,6 +1616,7 @@ export default function App() {
                           <span>／{p.unit}</span>
                         </div>
                         <div className="product-card__tags">
+                          {p.previouslyPurchased ? <span className="mini-tag mini-tag--bought">買過</span> : null}
                           {p.productCode ? <span className="mini-tag">#{p.productCode}</span> : null}
                           <span className="mini-tag">目前剩 {prepaidBalanceByProductId.get(id) ?? 0} 桶</span>
                         </div>
@@ -1646,15 +1694,6 @@ export default function App() {
               </button>
             ))}
           </div>
-          {showBillFilter ? (
-            <p className="muted" style={{ marginTop: "-0.25rem", marginBottom: "0.75rem" }}>
-              「配送中／已配送」指送貨進度；「
-              {customer.billingType === "monthly" && cashUnpaidTotal <= 0
-                ? "月結未結清"
-                : "尚未付清"}
-              」指帳款，與是否已送到無關。
-            </p>
-          ) : null}
           {filteredOrders.length === 0 ? (
             <div className="empty-state">
               <strong>目前沒有訂單</strong>
@@ -1774,7 +1813,8 @@ export default function App() {
                           <tr>
                             <th>品項</th>
                             <th>用途</th>
-                            <th>數量</th>
+                            <th>訂購</th>
+                            <th>配送</th>
                             <th>金額</th>
                           </tr>
                         </thead>
@@ -1799,14 +1839,13 @@ export default function App() {
                                     {linePurposeLabel(l)}
                                   </span>
                                 </td>
+                                <td>{l.qtyOrdered}</td>
                                 <td>
-                                  {l.qtyOrdered}
-                                  {!purpose &&
-                                  !gift &&
-                                  l.qtyDelivered != null &&
-                                  l.qtyDelivered !== l.qtyOrdered
-                                    ? `（送 ${l.qtyDelivered}）`
-                                    : ""}
+                                  {purpose || gift
+                                    ? "—"
+                                    : l.qtyDelivered != null
+                                      ? l.qtyDelivered
+                                      : "—"}
                                 </td>
                                 <td>
                                   {gift || Number(l.lineAmount ?? 0) === 0

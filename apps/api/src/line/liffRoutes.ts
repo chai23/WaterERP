@@ -751,21 +751,66 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
     }
   });
 
-  app.get("/api/liff/products", requireMember, async (_req, res) => {
+  app.get("/api/liff/products", requireMember, async (req, res) => {
     try {
-      const rows = await prisma.product.findMany({
-        where: { isActive: true, availableOnLiff: true },
-        orderBy: [{ productCode: "asc" }, { id: "asc" }],
-        select: {
-          id: true,
-          productCode: true,
-          name: true,
-          unit: true,
-          salePrice: true,
-          consumesPrepaidBarrel: true,
-        },
-      });
-      res.json({ ok: true, data: rows });
+      const member = getLiffMember(req)!;
+      const [rows, boughtLines] = await Promise.all([
+        prisma.product.findMany({
+          where: { isActive: true, availableOnLiff: true },
+          orderBy: [{ productCode: "asc" }, { id: "asc" }],
+          select: {
+            id: true,
+            productCode: true,
+            name: true,
+            unit: true,
+            salePrice: true,
+            consumesPrepaidBarrel: true,
+          },
+        }),
+        prisma.salesOrderLine.findMany({
+          where: {
+            salesOrder: {
+              customerId: member.customerId,
+              status: { not: "cancelled" },
+            },
+          },
+          select: {
+            productId: true,
+            salesOrder: { select: { createdAt: true } },
+          },
+          orderBy: [{ id: "desc" }],
+          take: 800,
+        }),
+      ]);
+
+      const lastOrderedAt = new Map<string, Date>();
+      for (const line of boughtLines) {
+        const key = line.productId.toString();
+        if (lastOrderedAt.has(key)) continue;
+        lastOrderedAt.set(key, line.salesOrder.createdAt);
+      }
+
+      const data = rows
+        .map((r) => {
+          const key = r.id.toString();
+          const orderedAt = lastOrderedAt.get(key) ?? null;
+          return {
+            ...r,
+            previouslyPurchased: orderedAt != null,
+            lastOrderedAt: orderedAt ? orderedAt.toISOString() : null,
+          };
+        })
+        .sort((a, b) => {
+          const aT = a.lastOrderedAt ? Date.parse(a.lastOrderedAt) : 0;
+          const bT = b.lastOrderedAt ? Date.parse(b.lastOrderedAt) : 0;
+          if (aT !== bT) return bT - aT;
+          const ac = (a.productCode ?? "").trim();
+          const bc = (b.productCode ?? "").trim();
+          if (ac !== bc) return ac.localeCompare(bc, "zh-Hant");
+          return Number(a.id) - Number(b.id);
+        });
+
+      res.json({ ok: true, data });
     } catch (e) {
       res.status(500).json({ ok: false, message: String(e) });
     }

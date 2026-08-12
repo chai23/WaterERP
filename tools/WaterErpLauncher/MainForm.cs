@@ -82,6 +82,7 @@ internal sealed class MainForm : Form
     private Process? _apiProcess;
     private bool _uiBusy;
     private bool _closing;
+    private TabControl _tabs = null!;
 
     public MainForm()
     {
@@ -93,18 +94,18 @@ internal sealed class MainForm : Form
         MinimumSize = new Size(980, 720);
         Size = new Size(1180, 850);
 
-        var tabs = new TabControl
+        _tabs = new TabControl
         {
             Dock = DockStyle.Fill,
             Font = new Font("Segoe UI", 10f),
             Padding = new Point(18, 8)
         };
-        tabs.TabPages.Add(BuildOverviewTab());
-        tabs.TabPages.Add(BuildDataTab());
-        tabs.TabPages.Add(BuildAdvancedTab());
-        tabs.TabPages.Add(BuildLogTab());
-        tabs.TabPages.Add(BuildSettingsTab());
-        Controls.Add(tabs);
+        _tabs.TabPages.Add(BuildOverviewTab());
+        _tabs.TabPages.Add(BuildDataTab());
+        _tabs.TabPages.Add(BuildAdvancedTab());
+        _tabs.TabPages.Add(BuildLogTab());
+        _tabs.TabPages.Add(BuildSettingsTab());
+        Controls.Add(_tabs);
 
         WireEvents();
         Load += OnLoad;
@@ -238,7 +239,7 @@ internal sealed class MainForm : Form
         AddLegacyButton(legacyButtons, "轉換商品資料", "run db:migrate-products", MigrateProductsConfirmText());
         AddContentRow(content, BuildToolCard(
             "舊庫轉換",
-            "從舊資料庫 database 唯讀匯入 water_erp。請依資料相依順序執行。",
+            "從舊資料庫 database 唯讀匯入主檔到 water_erp。建議順序：分區→公司→客戶→使用者→司機→商品。舊系統訂單不匯入；切換時請在後台「切換日開帳」帶入未收款／同步空桶，歷史單用「舊系統歷史訂單」查看。",
             legacyButtons));
 
         scroll.Controls.Add(content);
@@ -281,7 +282,7 @@ internal sealed class MainForm : Form
         var header = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2 };
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        header.Controls.Add(PageHeader("執行日誌", "API stdout / stderr、部署步驟與錯誤都會顯示於此。"), 0, 0);
+        header.Controls.Add(PageHeader("執行日誌", "API、部署、資料維護與舊庫轉換（含訂單）的 stdout／stderr 都會即時顯示於此。"), 0, 0);
         var clear = UiTheme.Button("清除日誌");
         clear.Click += (_, _) => _log.Clear();
         header.Controls.Add(clear, 1, 0);
@@ -757,7 +758,8 @@ internal sealed class MainForm : Form
         var confirm = MessageBox.Show(
             this,
             "將停止 API / Nginx（保留 MySQL），清空訂單、配送、帳款、庫存異動等交易資料，"
-            + "並保留客戶、商品、司機與使用者等主檔。\n\n此操作無法復原，確定繼續？",
+            + "以及舊庫轉換對照中的訂單／匯款對應。\n"
+            + "會保留客戶、商品、司機與使用者等主檔。\n\n此操作無法復原，確定繼續？",
             "清空交易資料",
             MessageBoxButtons.YesNo,
             MessageBoxIcon.Warning,

@@ -3,15 +3,19 @@ import Foundation
 @MainActor
 final class LogStore: ObservableObject {
     @Published private(set) var entries: [LogEntry] = []
-    private let maxEntries = 400
+    private let maxEntries = 2000
 
     func log(_ level: LogLevel, _ message: String) {
-        let entry = LogEntry(
-            time: Self.formatter.string(from: Date()),
-            level: level,
-            message: message
-        )
-        entries.append(entry)
+        // 多行輸出拆成多筆，方便滾動檢視轉換日誌
+        let chunks = message.split(separator: "\n", omittingEmptySubsequences: false)
+        for chunk in chunks {
+            let entry = LogEntry(
+                time: Self.formatter.string(from: Date()),
+                level: level,
+                message: String(chunk)
+            )
+            entries.append(entry)
+        }
         if entries.count > maxEntries {
             entries.removeFirst(entries.count - maxEntries)
         }
@@ -42,7 +46,8 @@ enum ShellRunner {
         _ launchPath: String,
         arguments: [String] = [],
         cwd: String? = nil,
-        env: [String: String]? = nil
+        env: [String: String]? = nil,
+        onLine: (@MainActor (String) -> Void)? = nil
     ) async -> Result {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
@@ -55,17 +60,60 @@ enum ShellRunner {
                 var environment = ProcessInfo.processInfo.environment
                 let home = FileManager.default.homeDirectoryForCurrentUser.path
                 environment["PATH"] = "\(home)/.local/bin:/opt/homebrew/bin:/usr/local/bin:" + (environment["PATH"] ?? "")
+                // Node／tsx 關閉輸出緩衝，方便啟動器即時顯示轉換日誌
+                environment["PYTHONUNBUFFERED"] = "1"
+                environment["NODE_OPTIONS"] = (environment["NODE_OPTIONS"] ?? "") + " --no-warnings"
                 env?.forEach { environment[$0.key] = $0.value }
                 process.environment = environment
                 process.standardOutput = outPipe
                 process.standardError = errPipe
 
+                let lock = NSLock()
+                var combinedChunks: [String] = []
+
+                func handleChunk(_ data: Data, isError: Bool) {
+                    guard let text = String(data: data, encoding: .utf8), !text.isEmpty else { return }
+                    lock.lock()
+                    combinedChunks.append(text)
+                    lock.unlock()
+                    if let onLine {
+                        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+                            let s = String(line)
+                            if s.isEmpty { continue }
+                            DispatchQueue.main.async {
+                                onLine(s)
+                            }
+                        }
+                    }
+                    _ = isError
+                }
+
+                outPipe.fileHandleForReading.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    if data.isEmpty {
+                        handle.readabilityHandler = nil
+                        return
+                    }
+                    handleChunk(data, isError: false)
+                }
+                errPipe.fileHandleForReading.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    if data.isEmpty {
+                        handle.readabilityHandler = nil
+                        return
+                    }
+                    handleChunk(data, isError: true)
+                }
+
                 do {
                     try process.run()
                     process.waitUntilExit()
-                    let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                    let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                    let combined = [out, err].filter { !$0.isEmpty }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+                    outPipe.fileHandleForReading.readabilityHandler = nil
+                    errPipe.fileHandleForReading.readabilityHandler = nil
+                    // 讀取殘餘
+                    handleChunk(outPipe.fileHandleForReading.readDataToEndOfFile(), isError: false)
+                    handleChunk(errPipe.fileHandleForReading.readDataToEndOfFile(), isError: true)
+                    let combined = combinedChunks.joined().trimmingCharacters(in: .whitespacesAndNewlines)
                     continuation.resume(returning: Result(exitCode: process.terminationStatus, output: combined))
                 } catch {
                     continuation.resume(returning: Result(exitCode: 1, output: error.localizedDescription))

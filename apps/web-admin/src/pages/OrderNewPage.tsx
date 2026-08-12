@@ -3,7 +3,6 @@ import { newOrderFormLine, useDashboard, type LineBillingType, type LinePurpose 
 import type { Customer, CustomerBillingSummary, CustomerDetail, CustomerSalesOrder, Product } from "../adminUtils";
 import { billingTypeLabel, fmtLocalYmd, orderStatusBadgeClass, sumCustomerBarrelsOnSite } from "../adminUtils";
 import { breakdownCashTaxInvoicePreview, DEFAULT_VAT_RATE } from "../taxDisplay";
-import { openOrderPrintWindow, slipWithOrderAnnouncement } from "../orderPrint";
 import { RemarkSloganPicker } from "../components/RemarkSloganPicker";
 
 function parseLineBilling(c: string | undefined | null): LineBillingType {
@@ -98,7 +97,7 @@ function resolveProductByCode(active: Product[], codeDigits: string): Product | 
 
 function defaultUnitPriceForProduct(
   product: Product,
-  lastPriceMap: Record<string, { unitPrice: string; orderNo: string }>,
+  lastPriceMap: Record<string, { unitPrice: string; orderedAt: string }>,
 ): string {
   const last = lastPriceMap[String(product.id)];
   const lastNum = last ? Number(last.unitPrice) : NaN;
@@ -240,11 +239,10 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
     setForm,
     onSubmitCreateOrder,
     selectedCustomer,
-    lastOrderSlipForPrint,
     refreshMasters,
   } = useDashboard();
   const [billingSummary, setBillingSummary] = useState<CustomerBillingSummary | null>(null);
-  const [lastPriceMap, setLastPriceMap] = useState<Record<string, { unitPrice: string; orderNo: string }>>({});
+  const [lastPriceMap, setLastPriceMap] = useState<Record<string, { unitPrice: string; orderedAt: string }>>({});
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [historyOrders, setHistoryOrders] = useState<CustomerSalesOrder[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -252,7 +250,6 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
   const [matchHint, setMatchHint] = useState("");
   const [lineProductCodes, setLineProductCodes] = useState<Record<string, string>>({});
   const [promotionPreview, setPromotionPreview] = useState<string[]>([]);
-  const [historyApplyMsg, setHistoryApplyMsg] = useState("");
   const lineFieldRefs = useRef<Record<string, HTMLElement | null>>({});
   const pendingLineFocus = useRef<{ rowId: string; field: OrderLineField } | null>(null);
 
@@ -421,12 +418,12 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
           setLastPriceMap({});
           return;
         }
-        const next: Record<string, { unitPrice: string; orderNo: string }> = {};
-        for (const row of j.data as Array<{ productId?: string; unitPrice?: string; orderNo?: string }>) {
+        const next: Record<string, { unitPrice: string; orderedAt: string }> = {};
+        for (const row of j.data as Array<{ productId?: string; unitPrice?: string; orderedAt?: string }>) {
           if (!row?.productId) continue;
           next[String(row.productId)] = {
             unitPrice: String(row.unitPrice ?? "0"),
-            orderNo: String(row.orderNo ?? ""),
+            orderedAt: String(row.orderedAt ?? ""),
           };
         }
         setLastPriceMap(next);
@@ -639,7 +636,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
     (o: CustomerSalesOrder) => {
       const sourceLines = (o.lines ?? []).filter((ln) => !ln.isPromotionGift);
       if (sourceLines.length === 0) {
-        setHistoryApplyMsg("此筆歷史訂單沒有可帶入的商品明細。");
+        window.alert("此筆歷史訂單沒有可帶入的商品明細。");
         return;
       }
 
@@ -694,7 +691,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
       }
 
       if (nextLines.length === 0) {
-        setHistoryApplyMsg(
+        window.alert(
           skipped.length > 0
             ? `無法帶入：商品已下架或不存在（${skipped.slice(0, 3).join("、")}${skipped.length > 3 ? "…" : ""}）`
             : "無法帶入商品明細。",
@@ -708,12 +705,6 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
 
       setForm((f) => ({ ...f, lines: nextLines }));
       setLineProductCodes(nextCodes);
-
-      const skipNote =
-        skipped.length > 0
-          ? `；略過 ${skipped.length} 項無法對應商品`
-          : "";
-      setHistoryApplyMsg(`已帶入 ${o.orderNo} 共 ${nextLines.filter((l) => l.productId).length} 項${skipNote}`);
 
       requestAnimationFrame(() => {
         document.getElementById("order-new-zone-lines")?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -978,115 +969,160 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
             <div className="order-new__zone-body">
             {form.customerId && selectedCustomer ? (
               <div className="order-new__cust-billing-merge">
-                <div className="order-new__cust-col">
-                  <p className="order-new__identity order-new__identity--compact">
-                    <span className="mono-text">
-                      <strong>{selectedCustomer.customerCode ?? "------"}</strong>
+                <header className="order-new__cust-head">
+                  <div className="order-new__cust-head-main">
+                    <span className="order-new__cust-code mono-text">
+                      {selectedCustomer.customerCode ?? "------"}
                     </span>
-                    {" · "}
-                    <strong>{selectedCustomer.name}</strong>
-                    {selectedCustomer.phone ? (
-                      <>
-                        {" · "}
-                        <span className="mono-text">{selectedCustomer.phone}</span>
-                      </>
+                    <strong className="order-new__cust-name">{selectedCustomer.name}</strong>
+                    <span className="badge badge--default">
+                      {billingTypeLabel(parseLineBilling(selectedCustomer.billingType))}
+                    </span>
+                    {selectedCustomer.lifecycleStatus === "churned" ? (
+                      <span className="badge badge--cancelled">已流失</span>
                     ) : null}
-                    <span className="text-muted">　ID {selectedCustomer.id}</span>
-                  </p>
+                  </div>
+                  <div className="order-new__cust-head-meta">
+                    {selectedCustomer.contactName ? <span>{selectedCustomer.contactName}</span> : null}
+                    {selectedCustomer.mobile || selectedCustomer.phone ? (
+                      <span className="mono-text">{selectedCustomer.mobile || selectedCustomer.phone}</span>
+                    ) : null}
+                    <span className="text-muted">ID {selectedCustomer.id}</span>
+                  </div>
+                </header>
 
-                  {(() => {
-                    const selectedAddr = (selectedCustomer.addresses ?? []).find(
-                      (a) => String(a.id) === form.deliveryAddressId,
-                    );
-                    const addrBarrels = selectedAddr?.barrelsOnSite;
-                    const totalBarrels = sumCustomerBarrelsOnSite(selectedCustomer);
-                    if (addrBarrels == null && totalBarrels === 0) return null;
-                    return (
-                      <p className="order-new__compact-kv">
-                        <span className="text-muted">未收回空桶</span>{" "}
-                        {selectedAddr ? (
-                          <>
-                            此送貨點 <strong>{addrBarrels ?? 0}</strong>
-                            {(selectedCustomer.addresses ?? []).length > 1 ? (
-                              <span className="text-muted">（全址合計 {totalBarrels}）</span>
-                            ) : null}
-                          </>
-                        ) : (
-                          <>
-                            合計 <strong>{totalBarrels}</strong>
-                            <span className="text-muted">（請先選送貨點以檢視該點桶數）</span>
-                          </>
-                        )}
-                      </p>
-                    );
-                  })()}
+                <div className="order-new__cust-billing-grid">
+                  <div className="order-new__cust-col">
+                    <div className="order-new__panel-label-row">
+                      <p className="order-new__panel-label">送貨點</p>
+                      {(() => {
+                        const selectedAddr = (selectedCustomer.addresses ?? []).find(
+                          (a) => String(a.id) === form.deliveryAddressId,
+                        );
+                        const totalBarrels = sumCustomerBarrelsOnSite(selectedCustomer);
+                        return (
+                          <span className="order-new__barrel-chip">
+                            空桶{" "}
+                            {selectedAddr ? (
+                              <>
+                                此點 <strong>{selectedAddr.barrelsOnSite ?? 0}</strong>
+                                {(selectedCustomer.addresses ?? []).length > 1 ? (
+                                  <span className="text-muted">／合計 {totalBarrels}</span>
+                                ) : null}
+                              </>
+                            ) : (
+                              <>
+                                合計 <strong>{totalBarrels}</strong>
+                              </>
+                            )}
+                          </span>
+                        );
+                      })()}
+                    </div>
 
-                  {(selectedCustomer.addresses ?? []).length > 0 ? (
-                    <>
-                      <p className="order-new__subsection-label order-new__subsection-label--inline">送貨點</p>
-                      <ul className="order-new__address-list order-new__address-list--scroll">
-                        {(selectedCustomer.addresses ?? []).map((a) => (
-                          <li key={String(a.id)}>
-                            {a.isDefault ? <strong title="預設送貨點">★ </strong> : null}
-                            {a.label ? `${a.label} · ` : null}
-                            {a.addressLine}
-                            {a.contactPhone ? <span className="text-muted"> （{a.contactPhone}）</span> : null}
-                          </li>
-                        ))}
+                    {(selectedCustomer.addresses ?? []).length > 0 ? (
+                      <ul className="order-new__addr-cards" role="listbox" aria-label="送貨點">
+                        {(selectedCustomer.addresses ?? []).map((a) => {
+                          const selected = String(a.id) === form.deliveryAddressId;
+                          return (
+                            <li key={String(a.id)}>
+                              <button
+                                type="button"
+                                role="option"
+                                aria-selected={selected}
+                                className={`order-new__addr-card${selected ? " order-new__addr-card--selected" : ""}`}
+                                onClick={() =>
+                                  setForm((prev) => ({ ...prev, deliveryAddressId: String(a.id) }))
+                                }
+                              >
+                                <div className="order-new__addr-card-top">
+                                  <span className="order-new__addr-card-label">
+                                    {a.isDefault ? <span className="badge badge--ok">預設</span> : null}
+                                    {a.label?.trim() ? a.label : "送貨點"}
+                                  </span>
+                                  <span className="order-new__addr-card-barrels">
+                                    空桶 {a.barrelsOnSite ?? 0}
+                                  </span>
+                                </div>
+                                <p className="order-new__addr-card-line">{a.addressLine}</p>
+                                {(a.contactName || a.contactMobile || a.contactPhone) ? (
+                                  <p className="order-new__addr-card-contact">
+                                    {[a.contactName, a.contactMobile || a.contactPhone]
+                                      .filter(Boolean)
+                                      .join(" · ")}
+                                  </p>
+                                ) : null}
+                              </button>
+                            </li>
+                          );
+                        })}
                       </ul>
-                    </>
-                  ) : (
-                    <p className="text-muted order-new__placeholder-sm">尚無送貨地址</p>
-                  )}
-                </div>
+                    ) : (
+                      <p className="text-muted order-new__placeholder-sm">尚無送貨地址</p>
+                    )}
+                  </div>
 
-                <div className="order-new__billing-col">
-                  {summaryLoading ? (
-                    <p className="text-muted order-new__placeholder-sm">帳務摘要載入中…</p>
-                  ) : billingSummary ? (
-                    <dl className="order-new__kv order-new__kv--tight">
-                      <dt>結帳方式</dt>
-                      <dd>
-                        <strong>{billingTypeLabel(billingSummary.billingType)}</strong>
-                        {billingSummary.billingType === "monthly" ? (
-                          billingSummary.monthlySettlementDay != null ? (
-                            <>
-                              {" "}
-                              · 每月 <strong>{billingSummary.monthlySettlementDay}</strong> 號
-                            </>
+                  <div className="order-new__billing-col">
+                    <p className="order-new__panel-label">帳務摘要</p>
+                    {summaryLoading ? (
+                      <p className="text-muted order-new__placeholder-sm">帳務摘要載入中…</p>
+                    ) : billingSummary ? (
+                      <div className="order-new__billing-cards">
+                        <div className="order-new__billing-card">
+                          <span className="order-new__billing-card-label">結帳方式</span>
+                          <strong className="order-new__billing-card-value">
+                            {billingTypeLabel(billingSummary.billingType)}
+                          </strong>
+                          <span className="order-new__billing-card-hint">
+                            {billingSummary.billingType === "monthly"
+                              ? billingSummary.monthlySettlementDay != null
+                                ? `每月 ${billingSummary.monthlySettlementDay} 號`
+                                : "月結日未設定"
+                              : billingSummary.billingType === "prepaid"
+                                ? billingSummary.allowPrepaidOverdraft
+                                  ? "允許透支"
+                                  : "不可透支"
+                                : "現金結帳"}
+                          </span>
+                        </div>
+                        <div className="order-new__billing-card">
+                          <span className="order-new__billing-card-label">往來餘額</span>
+                          <strong className="order-new__billing-card-value">
+                            $ {Number(billingSummary.accountBalance).toLocaleString()}
+                          </strong>
+                          <span className="order-new__billing-card-hint">正＝客戶欠公司</span>
+                        </div>
+                        <div className="order-new__billing-card">
+                          <span className="order-new__billing-card-label">預付桶剩餘</span>
+                          <strong className="order-new__billing-card-value">
+                            {billingSummary.prepaidBarrelBalance} 桶
+                          </strong>
+                          {Array.isArray(billingSummary.prepaidBarrelByProduct) &&
+                          billingSummary.prepaidBarrelByProduct.length > 0 ? (
+                            <span className="order-new__billing-card-hint">
+                              {billingSummary.prepaidBarrelByProduct
+                                .map((x) => `${x.productName} ${x.barrels}`)
+                                .join("、")}
+                            </span>
                           ) : (
-                            <span className="text-muted"> · 月結日未設定</span>
-                          )
-                        ) : null}
-                      </dd>
-                      <dt>往來餘額</dt>
-                      <dd>
-                        <strong>$ {Number(billingSummary.accountBalance).toLocaleString()}</strong>
-                        <span className="text-muted">（正＝客戶欠公司）</span>
-                      </dd>
-                      <dt>預付桶剩餘</dt>
-                      <dd>
-                        <strong>{billingSummary.prepaidBarrelBalance}</strong> 桶
-                        {billingSummary.allowPrepaidOverdraft ? "（允許透支）" : ""}
-                        {Array.isArray(billingSummary.prepaidBarrelByProduct) && billingSummary.prepaidBarrelByProduct.length > 0 ? (
-                          <>
-                            <br />
-                            <small className="text-muted">
-                              {billingSummary.prepaidBarrelByProduct.map((x) => `${x.productName} ${x.barrels}桶`).join("、")}
-                            </small>
-                          </>
-                        ) : null}
-                      </dd>
-                    </dl>
-                  ) : (
-                    <p className="order-new__placeholder-sm">
-                      <span className="feedback feedback--err">無法讀取帳務摘要。</span>{" "}
-                      <span className="text-muted">主檔：{billingTypeLabel(parseLineBilling(selectedCustomer.billingType))}</span>
+                            <span className="order-new__billing-card-hint">
+                              {billingSummary.allowPrepaidOverdraft ? "允許透支" : "無分商品餘額"}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="order-new__placeholder-sm">
+                        <span className="feedback feedback--err">無法讀取帳務摘要。</span>{" "}
+                        <span className="text-muted">
+                          主檔：{billingTypeLabel(parseLineBilling(selectedCustomer.billingType))}
+                        </span>
+                      </p>
+                    )}
+                    <p className="order-new__billing-note">
+                      單內可混現金／月結／預付；預付桶儲值於明細勾選。點左側卡片可切換送貨點。
                     </p>
-                  )}
-                  <p className="order-new__meta-line order-new__meta-line--tight">
-                    單內可混現金／月結／預付；預付桶儲值於明細勾選。
-                  </p>
+                  </div>
                 </div>
               </div>
             ) : (
@@ -1120,17 +1156,6 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
                 <p className="order-new__meta-line order-new__history-caption">
                   {sortedHistoryOrders.length} 筆 · 配送日近→遠 · 最多 100 筆 · 雙擊可帶入商品明細
                 </p>
-                {historyApplyMsg ? (
-                  <p
-                    className={
-                      historyApplyMsg.startsWith("已帶入")
-                        ? "feedback feedback--ok order-new__history-apply-msg"
-                        : "feedback feedback--err order-new__history-apply-msg"
-                    }
-                  >
-                    {historyApplyMsg}
-                  </p>
-                ) : null}
                 <div className="order-new__history-table" role="list">
                   {sortedHistoryOrders.map((o) => {
                     const dateStr = historyDisplayYmd(o);
@@ -1205,156 +1230,177 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
             </div>
             {form.lines.map((row, idx) => (
               <div key={row.id} className="order-lines__row">
-                <div className="order-lines__col order-lines__col--product">
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    maxLength={3}
-                    className="mono-text order-new__product-code"
-                    placeholder="例 001"
-                    value={lineProductCodes[row.id] ?? ""}
-                    ref={setLineFieldRef(row.id, "code")}
-                    onChange={(e) => {
-                      applyProductCodeChange(row.id, e.target.value);
-                    }}
-                    onKeyDown={(e) => handleLineFieldEnter(e, row.id, "code")}
-                    aria-label={`第 ${idx + 1} 列商品編號`}
-                  />
-                  {(() => {
-                    const digits = (lineProductCodes[row.id] ?? "").trim();
-                    const matched = digits.length === 3 ? resolveProductByCode(activeProducts, digits) : undefined;
-                    if (digits.length === 3 && !matched) {
-                      return (
-                        <span className="order-new__line-help feedback feedback--err">
-                          無此編號或商品未設定編號／已下架
-                        </span>
-                      );
-                    }
-                    if (matched) {
-                      const last = row.productId ? lastPriceMap[row.productId] : undefined;
-                      return (
-                        <span className="order-new__line-help text-muted">
-                          {matched.name}　·　售價 $ {matched.salePrice}
-                          {matched.unit ? `／${matched.unit}` : ""}
-                          {last ? (
-                            <>
-                              {" "}
-                              ·{" "}
-                              <span className="order-lines__last-price">
-                                上次 $ {last.unitPrice}
-                                {last.orderNo ? `（${last.orderNo}）` : ""}
-                              </span>
-                            </>
-                          ) : null}
-                        </span>
-                      );
-                    }
-                    return digits.length > 0 && digits.length < 3 ? (
-                      <span className="order-new__line-help text-muted">請輸入完整 3 碼</span>
-                    ) : null;
-                  })()}
-                  {selectedCustomer ? (
-                    <div className="order-line-flags">
-                      <label className="order-line-topup-check">
-                        <input
-                          type="checkbox"
-                          checked={row.linePurpose === "prepaid_barrel_topup"}
-                          disabled={row.isReplenishment}
-                          onChange={(e) => {
-                            const topup = e.target.checked;
-                            updateLine(row.id, {
-                              linePurpose: topup ? "prepaid_barrel_topup" : "delivery",
-                              billingType: topup ? "cash" : parseLineBilling(selectedCustomer.billingType),
-                              isReplenishment: false,
-                            });
-                          }}
-                        />
-                        預付桶儲值（現金應收沖清後入帳桶數）
-                      </label>
-                      <label className="order-line-topup-check">
-                        <input
-                          type="checkbox"
-                          checked={row.isReplenishment}
-                          disabled={row.linePurpose === "prepaid_barrel_topup"}
-                          onChange={(e) => {
-                            const on = e.target.checked;
-                            if (on) {
-                              updateLine(row.id, {
-                                isReplenishment: true,
-                                linePurpose: "delivery",
-                                billingType: "cash",
-                                unitPrice: "0",
-                              });
-                            } else {
-                              const p = activeProducts.find((x) => String(x.id) === row.productId);
-                              const restore = p
-                                ? defaultUnitPriceForProduct(p, lastPriceMap)
-                                : row.unitPrice;
-                              updateLine(row.id, {
-                                isReplenishment: false,
-                                billingType: parseLineBilling(selectedCustomer.billingType),
-                                unitPrice: restore,
-                              });
-                            }
-                          }}
-                        />
-                        補送（預設免費；仍計未收回空桶）
-                      </label>
+                <div className="order-lines__main">
+                  <div className="order-lines__col order-lines__col--product">
+                    <div className="order-lines__product-main">
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        maxLength={3}
+                        className="mono-text order-new__product-code"
+                        placeholder="例 001"
+                        value={lineProductCodes[row.id] ?? ""}
+                        ref={setLineFieldRef(row.id, "code")}
+                        onChange={(e) => {
+                          applyProductCodeChange(row.id, e.target.value);
+                        }}
+                        onKeyDown={(e) => handleLineFieldEnter(e, row.id, "code")}
+                        aria-label={`第 ${idx + 1} 列商品編號`}
+                      />
+                      {(() => {
+                        const digits = (lineProductCodes[row.id] ?? "").trim();
+                        const matched = digits.length === 3 ? resolveProductByCode(activeProducts, digits) : undefined;
+                        if (digits.length === 3 && !matched) {
+                          return (
+                            <span className="order-new__line-help feedback feedback--err">
+                              無此編號或商品未設定編號／已下架
+                            </span>
+                          );
+                        }
+                        if (matched) {
+                          const last = row.productId ? lastPriceMap[row.productId] : undefined;
+                          return (
+                            <span className="order-new__line-help order-new__line-help--product">
+                              <strong>{matched.name}</strong>
+                              <span className="order-new__line-help__sep">·</span>
+                              售價 <strong>$ {matched.salePrice}</strong>
+                              {matched.unit ? `／${matched.unit}` : ""}
+                              {last ? (
+                                <>
+                                  <span className="order-new__line-help__sep">·</span>
+                                  <span className="order-lines__last-price">
+                                    {last.orderedAt
+                                      ? `上次 ${fmtLocalYmd(last.orderedAt)} · $ ${last.unitPrice}`
+                                      : `上次 $ ${last.unitPrice}`}
+                                  </span>
+                                </>
+                              ) : null}
+                            </span>
+                          );
+                        }
+                        return digits.length > 0 && digits.length < 3 ? (
+                          <span className="order-new__line-help text-muted">請輸入完整 3 碼</span>
+                        ) : null;
+                      })()}
                     </div>
-                  ) : null}
+                  </div>
+                  <div className="order-lines__col order-lines__col--billing">
+                    <select
+                      ref={setLineFieldRef(row.id, "billing")}
+                      value={row.billingType}
+                      onChange={(e) => updateLine(row.id, { billingType: e.target.value as LineBillingType })}
+                      onKeyDown={(e) => handleLineFieldEnter(e, row.id, "billing")}
+                      disabled={row.linePurpose === "prepaid_barrel_topup" || row.isReplenishment}
+                      aria-label={`第 ${idx + 1} 列結帳方式`}
+                    >
+                      <option value="cash">現金</option>
+                      <option value="monthly">月結</option>
+                      <option value="prepaid">預付（桶）</option>
+                    </select>
+                  </div>
+                  <div className="order-lines__col order-lines__col--price">
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      ref={setLineFieldRef(row.id, "price")}
+                      value={row.unitPrice}
+                      onChange={(e) => updateLine(row.id, { unitPrice: e.target.value })}
+                      onKeyDown={(e) => handleLineFieldEnter(e, row.id, "price")}
+                      aria-label={`第 ${idx + 1} 列單價`}
+                    />
+                  </div>
+                  <div className="order-lines__col order-lines__col--qty">
+                    <input
+                      type="number"
+                      min={0}
+                      step={1}
+                      ref={setLineFieldRef(row.id, "qty")}
+                      value={row.qty}
+                      onChange={(e) =>
+                        updateLine(row.id, { qty: Math.max(0, Math.floor(Number(e.target.value)) || 0) })
+                      }
+                      onKeyDown={(e) => handleLineFieldEnter(e, row.id, "qty")}
+                      aria-label={`第 ${idx + 1} 列數量`}
+                    />
+                  </div>
+                  <div className="order-lines__col order-lines__col--sub num">
+                    {lineSubtotals[idx] != null ? (
+                      <>
+                        <span className="order-lines__sub-label">小計</span>
+                        <strong>$ {lineSubtotals[idx].toLocaleString()}</strong>
+                      </>
+                    ) : (
+                      "—"
+                    )}
+                  </div>
+                  <div className="order-lines__col order-lines__col--act">
+                    <button
+                      type="button"
+                      className="btn btn--danger btn--sm order-lines__remove"
+                      disabled={form.lines.length <= 1}
+                      onClick={() => removeLine(row.id)}
+                      title={form.lines.length <= 1 ? "至少保留一列" : "移除此列"}
+                    >
+                      刪除
+                    </button>
+                  </div>
                 </div>
-                <div className="order-lines__col order-lines__col--billing">
-                  <select
-                    ref={setLineFieldRef(row.id, "billing")}
-                    value={row.billingType}
-                    onChange={(e) => updateLine(row.id, { billingType: e.target.value as LineBillingType })}
-                    onKeyDown={(e) => handleLineFieldEnter(e, row.id, "billing")}
-                    disabled={row.linePurpose === "prepaid_barrel_topup" || row.isReplenishment}
-                    aria-label={`第 ${idx + 1} 列結帳方式`}
-                  >
-                    <option value="cash">現金</option>
-                    <option value="monthly">月結</option>
-                    <option value="prepaid">預付（桶）</option>
-                  </select>
-                </div>
-                <div className="order-lines__col order-lines__col--price">
-                  <input
-                    type="number"
-                    min={0}
-                    step="0.01"
-                    ref={setLineFieldRef(row.id, "price")}
-                    value={row.unitPrice}
-                    onChange={(e) => updateLine(row.id, { unitPrice: e.target.value })}
-                    onKeyDown={(e) => handleLineFieldEnter(e, row.id, "price")}
-                    aria-label={`第 ${idx + 1} 列單價`}
-                  />
-                </div>
-                <div className="order-lines__col order-lines__col--qty">
-                  <input
-                    type="number"
-                    min={0}
-                    step={1}
-                    ref={setLineFieldRef(row.id, "qty")}
-                    value={row.qty}
-                    onChange={(e) => updateLine(row.id, { qty: Math.max(0, Math.floor(Number(e.target.value)) || 0) })}
-                    onKeyDown={(e) => handleLineFieldEnter(e, row.id, "qty")}
-                    aria-label={`第 ${idx + 1} 列數量`}
-                  />
-                </div>
-                <div className="order-lines__col order-lines__col--sub num">
-                  {lineSubtotals[idx] ? lineSubtotals[idx].toLocaleString() : "—"}
-                </div>
-                <div className="order-lines__col order-lines__col--act">
-                  <button
-                    type="button"
-                    className="btn btn--danger btn--sm"
-                    disabled={form.lines.length <= 1}
-                    onClick={() => removeLine(row.id)}
-                    title={form.lines.length <= 1 ? "至少保留一列" : "移除此列"}
-                  >
-                    刪除
-                  </button>
-                </div>
+                {selectedCustomer ? (
+                  <div className="order-line-flags">
+                    <label
+                      className={`order-line-flag${row.linePurpose === "prepaid_barrel_topup" ? " order-line-flag--on" : ""}`}
+                      title="現金應收沖清後入帳桶數"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={row.linePurpose === "prepaid_barrel_topup"}
+                        disabled={row.isReplenishment}
+                        onChange={(e) => {
+                          const topup = e.target.checked;
+                          updateLine(row.id, {
+                            linePurpose: topup ? "prepaid_barrel_topup" : "delivery",
+                            billingType: topup ? "cash" : parseLineBilling(selectedCustomer.billingType),
+                            isReplenishment: false,
+                          });
+                        }}
+                      />
+                      預付桶儲值
+                    </label>
+                    <label
+                      className={`order-line-flag${row.isReplenishment ? " order-line-flag--on" : ""}`}
+                      title="預設免費；仍計未收回空桶"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={row.isReplenishment}
+                        disabled={row.linePurpose === "prepaid_barrel_topup"}
+                        onChange={(e) => {
+                          const on = e.target.checked;
+                          if (on) {
+                            updateLine(row.id, {
+                              isReplenishment: true,
+                              linePurpose: "delivery",
+                              billingType: "cash",
+                              unitPrice: "0",
+                            });
+                          } else {
+                            const p = activeProducts.find((x) => String(x.id) === row.productId);
+                            const restore = p
+                              ? defaultUnitPriceForProduct(p, lastPriceMap)
+                              : row.unitPrice;
+                            updateLine(row.id, {
+                              isReplenishment: false,
+                              billingType: parseLineBilling(selectedCustomer.billingType),
+                              unitPrice: restore,
+                            });
+                          }
+                        }}
+                      />
+                      補送
+                    </label>
+                  </div>
+                ) : null}
               </div>
             ))}
           </div>
@@ -1406,39 +1452,67 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
           ) : null}
 
           <div className="order-new__invoice-detail">
-          <p className="order-new__invoice-detail-lead text-muted">
-            <strong>現金／儲值區發票</strong>選項見左上「現金區發票」。稅外加時現金應收／司機收款為含稅；月結批次發票於 AR 作業台處理。
-          </p>
-          {form.cashInvoiceMode !== "none" && estimatedByBilling.cash <= 0 ? (
-            <p className="text-muted order-new__meta-line">目前無現金列小計，勾選發票後預覽將在明細含現金列後顯示。</p>
-          ) : null}
-          {cashInvoicePreview ? (
-            <div className="order-new__tax-preview">
-              <p className="order-new__tax-preview-title">
-                現金列發票試算（稅率 {(cashInvoicePreview.taxRate * 100).toFixed(0)}%）
-              </p>
-              <dl className="order-new__kv order-new__kv--tax">
-                <dt>現金列未稅合計</dt>
-                <dd className="num">
-                  <strong>$ {cashInvoicePreview.untaxedAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
-                </dd>
-                <dt>營業稅</dt>
-                <dd className="num">
-                  <strong>$ {cashInvoicePreview.taxAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
-                </dd>
-                <dt>含稅總額（憑證參考）</dt>
-                <dd className="num">
-                  <strong>$ {cashInvoicePreview.totalWithTax.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
-                </dd>
-              </dl>
-              <p className="text-muted order-new__tax-preview-note">
-                {cashInvoicePreview.mode === "tax_exclusive"
-                  ? "稅外加：現金列合計視為未稅金額，由系統另計稅額。"
-                  : "含稅：現金列合計為含稅總額，由系統反拆未稅與稅額。"}
-              </p>
+            <div className="order-new__invoice-detail-head">
+              <div className="order-new__invoice-detail-titles">
+                <h3 className="order-new__invoice-detail-title">發票試算</h3>
+                <p className="order-new__invoice-detail-lead">
+                  現金／儲值區發票請在左上「現金區發票」選擇。稅外加時現金應收為含稅；月結批次發票於 AR 作業台處理。
+                </p>
+              </div>
+              <span className="order-new__invoice-rate-pill">稅率 {DEFAULT_VAT_RATE * 100}%</span>
             </div>
-          ) : null}
-          <p className="text-muted order-new__meta-line order-new__meta-line--vat">預設營業稅率 {DEFAULT_VAT_RATE * 100}%（後端 VAT_RATE）。</p>
+
+            {form.cashInvoiceMode !== "none" && estimatedByBilling.cash <= 0 ? (
+              <p className="order-new__invoice-empty">目前無現金列小計，加入現金商品後即可預覽。</p>
+            ) : null}
+
+            {cashInvoicePreview ? (
+              <div className="order-new__tax-preview">
+                <div className="order-new__tax-preview-head">
+                  <span className="order-new__tax-preview-title">現金列發票</span>
+                  <span className="order-new__tax-mode-pill">
+                    {cashInvoicePreview.mode === "tax_exclusive" ? "稅外加" : "含稅"}
+                  </span>
+                </div>
+                <div className="order-new__tax-rows">
+                  <div className="order-new__tax-row">
+                    <span className="order-new__tax-row__label">未稅合計</span>
+                    <span className="order-new__tax-row__value num">
+                      ${" "}
+                      {cashInvoicePreview.untaxedAmount.toLocaleString(undefined, {
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2,
+                      })}
+                    </span>
+                  </div>
+                  <div className="order-new__tax-row">
+                    <span className="order-new__tax-row__label">營業稅</span>
+                    <span className="order-new__tax-row__value num">
+                      ${" "}
+                      {cashInvoicePreview.taxAmount.toLocaleString(undefined, {
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2,
+                      })}
+                    </span>
+                  </div>
+                  <div className="order-new__tax-row order-new__tax-row--total">
+                    <span className="order-new__tax-row__label">含稅總額</span>
+                    <span className="order-new__tax-row__value num">
+                      ${" "}
+                      {cashInvoicePreview.totalWithTax.toLocaleString(undefined, {
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2,
+                      })}
+                    </span>
+                  </div>
+                </div>
+                <p className="order-new__tax-preview-note">
+                  {cashInvoicePreview.mode === "tax_exclusive"
+                    ? "稅外加：現金列合計視為未稅，系統另計稅額；司機收款以含稅為準。"
+                    : "含稅：現金列合計為含稅總額，系統反拆未稅與稅額（憑證參考）。"}
+                </p>
+              </div>
+            ) : null}
           </div>
 
           <div className="order-new__footer-row">
@@ -1456,21 +1530,6 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
           </div>
           <div className="order-new__submit-area order-new__submit-area--inline">
             <div className="form-actions">
-              {lastOrderSlipForPrint ? (
-                <button
-                  type="button"
-                  className="btn btn--secondary"
-                  onClick={() => {
-                    void (async () => {
-                      const slip = await slipWithOrderAnnouncement(lastOrderSlipForPrint);
-                      const ok = openOrderPrintWindow(slip);
-                      if (!ok) window.alert("無法開啟列印視窗，請允許此網站的彈出視窗後再試。");
-                    })();
-                  }}
-                >
-                  列印上一筆訂單
-                </button>
-              ) : null}
               <button type="submit" className="btn btn--primary" disabled={saving}>
                 {saving ? "建立中..." : "建立訂單"}
               </button>

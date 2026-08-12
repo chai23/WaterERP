@@ -28,6 +28,7 @@ import {
 import { createDeliveryAssignment } from "./createDeliveryAssignment.js";
 import { registerDeliveryPlanningRoutes } from "./modules/delivery-planning/routes.js";
 import { isDeliveryPlanningEnabled } from "./modules/delivery-planning/flag.js";
+import { registerLegacyHistoryRoutes } from "./modules/legacy-history/routes.js";
 import {
   generalEffectiveLatest,
   patrolWindow,
@@ -2071,6 +2072,14 @@ app.get("/api/health", async (_req, res) => {
 });
 
 registerDeliveryPlanningRoutes({
+  app,
+  prisma,
+  getAuthUser,
+  requireRole,
+  toBigInt,
+});
+
+registerLegacyHistoryRoutes({
   app,
   prisma,
   getAuthUser,
@@ -4224,7 +4233,7 @@ app.get("/api/customers/:customerId/last-product-prices", async (req, res) => {
       },
       include: {
         product: { select: { id: true, name: true } },
-        salesOrder: { select: { orderNo: true, createdAt: true } },
+        salesOrder: { select: { orderNo: true, createdAt: true, scheduledDeliveryDate: true } },
       },
       orderBy: [{ id: "desc" }],
       take: 1000,
@@ -4241,12 +4250,13 @@ app.get("/api/customers/:customerId/last-product-prices", async (req, res) => {
       const key = r.productId.toString();
       if (seen.has(key)) continue;
       seen.add(key);
+      const orderDate = r.salesOrder.scheduledDeliveryDate ?? r.salesOrder.createdAt;
       list.push({
         productId: key,
         productName: r.product.name,
         unitPrice: r.unitPrice.toString(),
         orderNo: r.salesOrder.orderNo,
-        orderedAt: r.salesOrder.createdAt.toISOString(),
+        orderedAt: orderDate.toISOString(),
       });
     }
     res.json({ ok: true, data: list });

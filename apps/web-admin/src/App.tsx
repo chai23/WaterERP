@@ -18,6 +18,8 @@ import BarrelPickupNewPage from "./pages/BarrelPickupNewPage";
 import BarrelPickupSettlePage from "./pages/BarrelPickupSettlePage";
 import BarrelPickupQueryPage from "./pages/BarrelPickupQueryPage";
 import DataCustomersPage from "./pages/DataCustomersPage";
+import CustomerLegacyOrdersPage from "./pages/CustomerLegacyOrdersPage";
+import LegacyCutoverPage from "./pages/LegacyCutoverPage";
 import DataDriversPage from "./pages/DataDriversPage";
 import DataProductsPage from "./pages/DataProductsPage";
 import DataVehiclesPage from "./pages/DataVehiclesPage";
@@ -91,6 +93,8 @@ export default function App() {
               <Route path="orders/query" element={<OrderQueryPage />} />
               <Route path="data" element={<Navigate to="/data/customers" replace />} />
               <Route path="data/customers" element={<DataCustomersPage />} />
+              <Route path="data/legacy-orders" element={<CustomerLegacyOrdersPage />} />
+              <Route path="data/legacy-cutover" element={<LegacyCutoverPage />} />
               <Route path="data/drivers" element={<DataDriversPage />} />
               <Route path="data/products" element={<DataProductsPage />} />
               <Route path="data/vehicles" element={<DataVehiclesPage />} />

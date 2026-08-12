@@ -124,34 +124,39 @@ export function OrderPatrolGeneratePanel() {
           </div>
         </header>
         <div className="order-new__zone-body">
-          <div className="order-create-panel__week-row">
-            <div className="field order-create-panel__week-field">
-              <label htmlFor="order-patrol-week-start">週次錨點日</label>
+          <div className="order-create-panel__week-block">
+            <label htmlFor="order-patrol-week-start" className="order-create-panel__week-label">
+              週次錨點日
+            </label>
+            <div className="order-create-panel__week-controls">
               <input
                 id="order-patrol-week-start"
+                className="order-create-panel__week-input"
                 type="date"
                 value={weekStart}
+                title="會對齊該週週一～週日"
                 onChange={(e) => setWeekStart(e.target.value)}
               />
-              <p className="order-create-panel__field-hint">會對齊該週週一～週日</p>
+              <button
+                type="button"
+                className="btn btn--secondary order-create-panel__week-reload"
+                disabled={loading || !weekStart}
+                onClick={() => void loadPreview(weekStart)}
+              >
+                {loading ? "載入中…" : "重新預覽"}
+              </button>
+              {preview ? (
+                <div className="order-create-panel__week-chip" aria-live="polite">
+                  本週 <strong>{preview.weekStart}</strong>
+                  <span aria-hidden="true">〜</span>
+                  <strong>{preview.weekEnd}</strong>
+                </div>
+              ) : null}
             </div>
-            <button
-              type="button"
-              className="btn btn--secondary"
-              disabled={loading || !weekStart}
-              onClick={() => void loadPreview(weekStart)}
-            >
-              {loading ? "載入中…" : "重新預覽"}
-            </button>
           </div>
 
           {preview ? (
             <>
-              <div className="order-create-panel__week-chip" aria-live="polite">
-                本週 <strong>{preview.weekStart}</strong>
-                <span aria-hidden="true">〜</span>
-                <strong>{preview.weekEnd}</strong>
-              </div>
               <div className="order-create-panel__stats" role="group" aria-label="本週預覽統計">
                 <div className="order-create-panel__stat order-create-panel__stat--accent">
                   <span className="order-create-panel__stat-value">{preview.creatable}</span>
@@ -177,18 +182,25 @@ export function OrderPatrolGeneratePanel() {
           <div className="order-create-panel__actions">
             <button
               type="button"
-              className="btn btn--primary"
+              className="btn btn--primary order-create-panel__generate"
               disabled={generating || loading || !preview || preview.creatable <= 0}
               onClick={() => void onGenerate()}
             >
-              {generating ? "產生中…" : `一鍵產生本週巡查單${preview ? `（${preview.creatable}）` : ""}`}
+              <span className="order-create-panel__generate-label">
+                {generating ? "產生中…" : "一鍵產生本週巡查單"}
+              </span>
+              {preview && !generating ? (
+                <span className="order-create-panel__generate-count">{preview.creatable}</span>
+              ) : null}
             </button>
-            <Link to="/data/customers" className="btn btn--ghost btn--sm">
-              客戶主檔設定巡查
-            </Link>
-            <Link to="/orders/assign" className="btn btn--ghost btn--sm">
-              去分配訂單
-            </Link>
+            <div className="order-create-panel__action-links" role="group" aria-label="相關作業">
+              <Link to="/data/customers" className="btn btn--secondary order-create-panel__action-link">
+                客戶主檔設定巡查
+              </Link>
+              <Link to="/orders/assign" className="btn btn--secondary order-create-panel__action-link">
+                去分配訂單
+              </Link>
+            </div>
           </div>
 
           {message ? <p className={feedbackClass}>{message}</p> : null}
@@ -283,9 +295,6 @@ export function OrderPatrolGeneratePanel() {
               <p className="order-new__empty-state-desc">
                 請至客戶資料 → 送貨地址填寫巡查星期、目標水位、預設商品。
               </p>
-              <Link to="/data/customers" className="btn btn--secondary btn--sm">
-                去客戶主檔
-              </Link>
             </div>
           )}
         </div>

@@ -141,7 +141,7 @@ struct LegacyMigrationView: View {
             VStack(alignment: .leading, spacing: 16) {
                 Text("舊庫轉換")
                     .font(.title2.bold())
-                Text("從舊庫 database 唯讀匯入至本機 water_erp，功能與 Windows 啟動器相同。")
+                Text("從舊庫 database 唯讀匯入主檔至本機 water_erp。舊系統訂單不匯入；切換時請在後台「切換日開帳」帶入未收款／同步空桶，歷史單用「舊系統歷史訂單」查看。")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
@@ -195,6 +195,7 @@ struct LegacyMigrationView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("1. 地址分區 → 2. 隸屬公司 → 3. 客戶資料")
                         Text("4. 使用者資料 → 5. 司機資料 → 6. 商品資料")
+                        Text("訂單請在後台「舊系統歷史訂單」查看；切換日用「切換日開帳」帶入未收款。")
                     }
                     .font(.caption)
                     .frame(maxWidth: .infinity, alignment: .leading)

@@ -235,6 +235,7 @@ export default function DataCustomersPage() {
   const [reactivatedAtYmd, setReactivatedAtYmd] = useState(() => todayLocalYmd());
   const [lifecycleActionMsg, setLifecycleActionMsg] = useState("");
   const [lifecycleActionLoading, setLifecycleActionLoading] = useState(false);
+  const [lifecyclePanelOpen, setLifecyclePanelOpen] = useState(false);
   const [barrelCollections, setBarrelCollections] = useState<CustomerBarrelCollectionRow[]>([]);
   const [barrelCollectionsLoading, setBarrelCollectionsLoading] = useState(false);
   const [barrelCollectionsErr, setBarrelCollectionsErr] = useState("");
@@ -384,6 +385,7 @@ export default function DataCustomersPage() {
       setLifecycleActionMsg(
         warnings.length > 0 ? `已標記流失（提醒：${warnings.join("；")}）` : "已標記流失",
       );
+      setLifecyclePanelOpen(true);
       await refreshMasters(["customers"], true);
       await fetchDetail(detailId);
       await loadLifecycleEvents(detailId);
@@ -550,6 +552,7 @@ export default function DataCustomersPage() {
       }
       const d = data as CustomerDetail;
       setDetail(d);
+      setLifecyclePanelOpen(d.lifecycleStatus === "churned");
       setEditBasicName(d.name);
       setEditBasicCustomerCode(d.customerCode ?? "");
       setEditBasicContactName(d.contactName ?? "");
@@ -663,6 +666,8 @@ export default function DataCustomersPage() {
     setDetailId(id);
     setPageMode("browse");
     setWorkspaceTab(tab);
+    setLifecyclePanelOpen(false);
+    setLifecycleActionMsg("");
   };
 
   const startCreateCustomer = () => {
@@ -1201,7 +1206,7 @@ export default function DataCustomersPage() {
           : "";
   const workspaceTabs: { id: WorkspaceTab; label: string; count?: number }[] = [
     { id: "summary", label: "摘要" },
-    { id: "orders", label: "訂單", count: detail?.salesOrders?.length },
+    { id: "orders", label: "新系統訂單", count: detail?.salesOrders?.length },
     { id: "billing", label: "帳務", count: billingLedger?.entries.length },
     { id: "edit", label: "編輯資料" },
   ];
@@ -1211,7 +1216,7 @@ export default function DataCustomersPage() {
       <header className="customer-hub__header">
         <div className="customer-hub__header-main">
           <h2 className="card__title">客戶資料</h2>
-          <p className="customer-hub__lead">左側選客戶、右側看帳務與訂單；不必再切換分頁重選一次。</p>
+          <p className="customer-hub__lead">左側選客戶、右側看帳務與訂單；切換系統時可用「切換日開帳」帶入舊欠款。</p>
         </div>
         <div className="customer-hub__header-actions">
           {pageMode === "create" ? (
@@ -1813,6 +1818,14 @@ export default function DataCustomersPage() {
                         開新訂單
                       </Link>
                     )}
+                    {detailId ? (
+                      <Link
+                        className="btn btn--ghost btn--sm"
+                        to={`/data/legacy-orders?customerId=${detailId}`}
+                      >
+                        舊系統歷史訂單
+                      </Link>
+                    ) : null}
                     {detailId && workspaceCustomer.lineUserId ? (
                       <button
                         type="button"
@@ -1943,146 +1956,183 @@ export default function DataCustomersPage() {
                     </section>
                   </div>
 
-                  <section className="customer-hub__panel">
-                    <h4 className="customer-hub__panel-title">客戶狀態</h4>
-                    {workspaceCustomer.lifecycleStatus === "churned" ? (
-                      <div className="form-grid form-grid--wide">
-                        <dl className="customer-overview-dl">
-                          <dt>現況</dt>
-                          <dd>
-                            <span className="badge badge--cancelled">已流失</span>
-                          </dd>
-                          <dt>流失日</dt>
-                          <dd className="mono-text">{fmtLocalYmd(workspaceCustomer.churnedAt) || "—"}</dd>
-                          <dt>原因</dt>
-                          <dd>{workspaceCustomer.churnReason?.label ?? "—"}</dd>
-                          {workspaceCustomer.churnReasonNote ? (
-                            <>
-                              <dt>說明</dt>
-                              <dd>{workspaceCustomer.churnReasonNote}</dd>
-                            </>
-                          ) : null}
-                        </dl>
-                        <form onSubmit={reactivateCustomer} className="form-grid form-grid--wide">
-                          <div className="form-row-2">
-                            <div className="field">
-                              <span>回流生效日</span>
-                              <input
-                                type="date"
-                                value={reactivatedAtYmd}
-                                onChange={(e) => setReactivatedAtYmd(e.target.value)}
-                                required
-                              />
-                            </div>
-                            <div className="field">
-                              <span>備註（選填）</span>
-                              <input
-                                type="text"
-                                value={reactivateNote}
-                                onChange={(e) => setReactivateNote(e.target.value)}
-                                placeholder="例如：恢復叫貨"
-                              />
-                            </div>
-                          </div>
-                          <div className="form-actions">
-                            <button type="submit" className="btn btn--primary btn--sm" disabled={lifecycleActionLoading}>
-                              {lifecycleActionLoading ? "處理中…" : "標記回流"}
-                            </button>
-                          </div>
-                        </form>
+                  <section className={`customer-hub__panel customer-lifecycle-panel${lifecyclePanelOpen ? " customer-lifecycle-panel--open" : ""}`}>
+                    <button
+                      type="button"
+                      className="customer-lifecycle-panel__toggle"
+                      aria-expanded={lifecyclePanelOpen}
+                      onClick={() => setLifecyclePanelOpen((v) => !v)}
+                    >
+                      <div className="customer-lifecycle-panel__toggle-main">
+                        <h4 className="customer-hub__panel-title">客戶狀態</h4>
+                        {workspaceCustomer.lifecycleStatus === "churned" ? (
+                          <span className="badge badge--cancelled">已流失</span>
+                        ) : (
+                          <span className="badge badge--confirmed">使用中</span>
+                        )}
+                        {workspaceCustomer.lifecycleStatus === "churned" && workspaceCustomer.churnedAt ? (
+                          <span className="customer-lifecycle-panel__toggle-meta mono-text">
+                            {fmtLocalYmd(workspaceCustomer.churnedAt)}
+                            {workspaceCustomer.churnReason?.label
+                              ? ` · ${workspaceCustomer.churnReason.label}`
+                              : ""}
+                          </span>
+                        ) : null}
                       </div>
-                    ) : (
-                      <form onSubmit={markCustomerChurn} className="form-grid form-grid--wide">
-                        <p className="card__hint">
-                          人工標記「決定不再服務日」；標記後無法開新訂單，巡查產生亦會略過此客戶。
-                        </p>
-                        <div className="form-row-2">
-                          <div className="field">
-                            <span>不再服務日</span>
-                            <input
-                              type="date"
-                              value={churnedAtYmd}
-                              onChange={(e) => setChurnedAtYmd(e.target.value)}
-                              required
-                            />
+                      <span className="customer-lifecycle-panel__chevron" aria-hidden>
+                        {lifecyclePanelOpen ? "收合" : "展開"}
+                      </span>
+                    </button>
+
+                    {lifecyclePanelOpen ? (
+                      <div className="customer-lifecycle-panel__body">
+                        {workspaceCustomer.lifecycleStatus === "churned" ? (
+                          <div className="customer-lifecycle-panel__content">
+                            <div className="customer-lifecycle-status">
+                              <div className="customer-lifecycle-status__row">
+                                <span>流失日</span>
+                                <strong className="mono-text">
+                                  {fmtLocalYmd(workspaceCustomer.churnedAt) || "—"}
+                                </strong>
+                              </div>
+                              <div className="customer-lifecycle-status__row">
+                                <span>原因</span>
+                                <strong>{workspaceCustomer.churnReason?.label ?? "—"}</strong>
+                              </div>
+                              {workspaceCustomer.churnReasonNote ? (
+                                <div className="customer-lifecycle-status__row customer-lifecycle-status__row--note">
+                                  <span>說明</span>
+                                  <strong>{workspaceCustomer.churnReasonNote}</strong>
+                                </div>
+                              ) : null}
+                            </div>
+                            <form onSubmit={reactivateCustomer} className="customer-lifecycle-form">
+                              <p className="customer-lifecycle-form__hint">標記回流後可再開新訂單與巡查。</p>
+                              <div className="customer-lifecycle-form__row">
+                                <label className="customer-lifecycle-field">
+                                  <span>回流生效日</span>
+                                  <input
+                                    type="date"
+                                    value={reactivatedAtYmd}
+                                    onChange={(e) => setReactivatedAtYmd(e.target.value)}
+                                    required
+                                  />
+                                </label>
+                                <label className="customer-lifecycle-field customer-lifecycle-field--grow">
+                                  <span>備註（選填）</span>
+                                  <input
+                                    type="text"
+                                    value={reactivateNote}
+                                    onChange={(e) => setReactivateNote(e.target.value)}
+                                    placeholder="例如：恢復叫貨"
+                                  />
+                                </label>
+                                <button
+                                  type="submit"
+                                  className="btn btn--primary btn--sm"
+                                  disabled={lifecycleActionLoading}
+                                >
+                                  {lifecycleActionLoading ? "處理中…" : "標記回流"}
+                                </button>
+                              </div>
+                            </form>
                           </div>
-                          <div className="field">
-                            <span>流失原因</span>
-                            <select value={churnReasonId} onChange={(e) => setChurnReasonId(e.target.value)} required>
-                              <option value="">請選擇</option>
-                              {churnReasons.map((r) => (
-                                <option key={r.id} value={r.id}>
-                                  {r.label}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                        </div>
-                        <div className="field">
-                          <span>補充說明（原因為「其他」時必填）</span>
-                          <input
-                            type="text"
-                            value={churnReasonNote}
-                            onChange={(e) => setChurnReasonNote(e.target.value)}
-                          />
-                        </div>
-                        <div className="form-actions">
-                          <button type="submit" className="btn btn--danger btn--sm" disabled={lifecycleActionLoading}>
-                            {lifecycleActionLoading ? "處理中…" : "標記流失"}
-                          </button>
-                        </div>
-                      </form>
-                    )}
-                    {lifecycleActionMsg ? (
-                      <p
-                        className={
-                          lifecycleActionMsg.includes("失敗") || lifecycleActionMsg.includes("請")
-                            ? "feedback feedback--err"
-                            : "feedback feedback--ok"
-                        }
-                        style={{ marginTop: "0.75rem" }}
-                      >
-                        {lifecycleActionMsg}
-                      </p>
-                    ) : null}
-                    <div className="table-wrap" style={{ marginTop: "1rem" }}>
-                      <table className="data-table data-table--compact">
-                        <thead>
-                          <tr>
-                            <th>事件</th>
-                            <th>生效日</th>
-                            <th>原因</th>
-                            <th>說明</th>
-                          </tr>
-                        </thead>
-                        <tbody>
+                        ) : (
+                          <form onSubmit={markCustomerChurn} className="customer-lifecycle-form">
+                            <p className="customer-lifecycle-form__hint">
+                              標記後無法開新訂單，巡查亦會略過此客戶。
+                            </p>
+                            <div className="customer-lifecycle-form__row">
+                              <label className="customer-lifecycle-field">
+                                <span>不再服務日</span>
+                                <input
+                                  type="date"
+                                  value={churnedAtYmd}
+                                  onChange={(e) => setChurnedAtYmd(e.target.value)}
+                                  required
+                                />
+                              </label>
+                              <label className="customer-lifecycle-field customer-lifecycle-field--grow">
+                                <span>流失原因</span>
+                                <select
+                                  value={churnReasonId}
+                                  onChange={(e) => setChurnReasonId(e.target.value)}
+                                  required
+                                >
+                                  <option value="">請選擇</option>
+                                  {churnReasons.map((r) => (
+                                    <option key={r.id} value={r.id}>
+                                      {r.label}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                            </div>
+                            <div className="customer-lifecycle-form__row">
+                              <label className="customer-lifecycle-field customer-lifecycle-field--grow">
+                                <span>補充說明（原因為「其他」時必填）</span>
+                                <input
+                                  type="text"
+                                  value={churnReasonNote}
+                                  onChange={(e) => setChurnReasonNote(e.target.value)}
+                                />
+                              </label>
+                              <button
+                                type="submit"
+                                className="btn btn--danger btn--sm"
+                                disabled={lifecycleActionLoading}
+                              >
+                                {lifecycleActionLoading ? "處理中…" : "標記流失"}
+                              </button>
+                            </div>
+                          </form>
+                        )}
+
+                        {lifecycleActionMsg ? (
+                          <p
+                            className={
+                              lifecycleActionMsg.includes("失敗") || lifecycleActionMsg.includes("請")
+                                ? "feedback feedback--err"
+                                : "feedback feedback--ok"
+                            }
+                          >
+                            {lifecycleActionMsg}
+                          </p>
+                        ) : null}
+
+                        <div className="customer-lifecycle-history">
+                          <div className="customer-lifecycle-history__head">狀態紀錄</div>
                           {lifecycleEventsLoading ? (
-                            <tr>
-                              <td colSpan={4} className="text-muted">
-                                載入中…
-                              </td>
-                            </tr>
+                            <p className="customer-lifecycle-history__empty">載入中…</p>
                           ) : lifecycleEvents.length === 0 ? (
-                            <tr>
-                              <td colSpan={4} className="text-muted">
-                                尚無紀錄
-                              </td>
-                            </tr>
+                            <p className="customer-lifecycle-history__empty">尚無紀錄</p>
                           ) : (
-                            lifecycleEvents.map((ev) => (
-                              <tr key={ev.id}>
-                                <td>{lifecycleEventLabel(ev.eventType)}</td>
-                                <td className="mono-text">{ev.effectiveAt ?? "—"}</td>
-                                <td>{ev.churnReason?.label ?? "—"}</td>
-                                <td>
-                                  <small className="text-muted">{ev.note ?? "—"}</small>
-                                </td>
-                              </tr>
-                            ))
+                            <ul className="customer-lifecycle-history__list">
+                              {lifecycleEvents.map((ev) => (
+                                <li key={ev.id} className="customer-lifecycle-history__item">
+                                  <div className="customer-lifecycle-history__item-top">
+                                    <span className="badge badge--default">
+                                      {lifecycleEventLabel(ev.eventType)}
+                                    </span>
+                                    <span className="mono-text">{ev.effectiveAt ?? "—"}</span>
+                                    {ev.churnReason?.label ? (
+                                      <span className="customer-lifecycle-history__reason">
+                                        {ev.churnReason.label}
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                  {ev.note ? (
+                                    <p className="customer-lifecycle-history__note" title={ev.note}>
+                                      {ev.note}
+                                    </p>
+                                  ) : null}
+                                </li>
+                              ))}
+                            </ul>
                           )}
-                        </tbody>
-                      </table>
-                    </div>
+                        </div>
+                      </div>
+                    ) : null}
                   </section>
 
                   {(workspaceCustomer.standingRemark || workspaceCustomer.notes) ? (
@@ -2151,10 +2201,17 @@ export default function DataCustomersPage() {
 
                   <section className="customer-hub__panel">
                     <div className="customer-hub__panel-head">
-                      <h4 className="customer-hub__panel-title">最近訂單</h4>
-                      <button type="button" className="btn btn--ghost btn--sm" onClick={() => setWorkspaceTab("orders")}>
-                        查看全部
-                      </button>
+                      <h4 className="customer-hub__panel-title">最近訂單（新系統）</h4>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        {detailId ? (
+                          <Link className="btn btn--ghost btn--sm" to={`/data/legacy-orders?customerId=${detailId}`}>
+                            舊系統歷史
+                          </Link>
+                        ) : null}
+                        <button type="button" className="btn btn--ghost btn--sm" onClick={() => setWorkspaceTab("orders")}>
+                          查看全部
+                        </button>
+                      </div>
                     </div>
                     {(detail?.salesOrders ?? []).length === 0 ? (
                       <p className="card__hint">尚無訂單紀錄</p>
@@ -2506,103 +2563,158 @@ export default function DataCustomersPage() {
                 </header>
 
                 {editAddrId ? (
-                  <form onSubmit={onSaveAddressEdit} className="customer-address-edit-panel form-grid form-grid--wide">
-                    <h4 className="customer-address-edit-panel__title">編輯地址</h4>
-                    <div className="form-row-2">
-                      <div className="field">
-                        <span>標籤</span>
-                        <input type="text" value={editAddrLabel} onChange={(e) => setEditAddrLabel(e.target.value)} />
-                      </div>
-                      <div className="field">
-                        <span>地址內容（必填）</span>
-                        <input type="text" value={editAddrLine} onChange={(e) => setEditAddrLine(e.target.value)} />
-                      </div>
-                    </div>
-                    <div className="field">
-                      <span>聯絡人</span>
-                      <input type="text" value={editAddrContactName} onChange={(e) => setEditAddrContactName(e.target.value)} />
-                    </div>
-                    <div className="form-row-2">
-                      <div className="field">
-                        <span>手機</span>
-                        <input type="text" value={editAddrContactMobile} onChange={(e) => setEditAddrContactMobile(e.target.value)} />
-                      </div>
-                      <div className="field">
-                        <span>電話</span>
-                        <input type="text" value={editAddrContactPhone} onChange={(e) => setEditAddrContactPhone(e.target.value)} />
-                      </div>
-                    </div>
-                    <label className="field field--checkbox">
-                      <input type="checkbox" checked={editAddrDefault} onChange={(e) => setEditAddrDefault(e.target.checked)} />
-                      <span>設為預設送貨點</span>
-                    </label>
-                    <div className="field">
-                      <span>未收回空桶</span>
-                      <input
-                        type="number"
-                        min={0}
-                        step={1}
-                        value={editAddrBarrels}
-                        onChange={(e) => setEditAddrBarrels(e.target.value)}
-                      />
-                    </div>
-                    <div className="field">
-                      <span>送貨樓層（選填）</span>
-                      <input
-                        type="number"
-                        step={1}
-                        value={editAddrFloor}
-                        onChange={(e) => setEditAddrFloor(e.target.value)}
-                        placeholder="例：2、3、-1（地下一樓）"
-                      />
-                    </div>
-                    <div className="form-row-2">
-                      <div className="field">
-                        <span>巡查星期</span>
-                        <select value={editAddrPatrolWeekday} onChange={(e) => setEditAddrPatrolWeekday(e.target.value)}>
-                          <option value="">不參加週期巡查</option>
-                          {PATROL_WEEKDAY_OPTIONS.map((o) => (
-                            <option key={o.value} value={o.value}>
-                              {o.label}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="field">
-                        <span>目標水位（桶）</span>
+                  <form onSubmit={onSaveAddressEdit} className="customer-address-edit-panel">
+                    <header className="customer-address-edit-panel__head">
+                      <h4 className="customer-address-edit-panel__title">編輯地址</h4>
+                      <label className="customer-address-edit-panel__default">
                         <input
-                          type="number"
-                          min={0}
-                          step={1}
-                          value={editAddrTargetWaterLevel}
-                          onChange={(e) => setEditAddrTargetWaterLevel(e.target.value)}
-                          placeholder="例：8"
+                          type="checkbox"
+                          checked={editAddrDefault}
+                          onChange={(e) => setEditAddrDefault(e.target.checked)}
                         />
+                        <span>設為預設送貨點</span>
+                      </label>
+                    </header>
+
+                    <div className="customer-address-edit-panel__section">
+                      <div className="customer-address-edit-panel__section-title">基本資料</div>
+                      <div className="customer-address-edit-panel__grid">
+                        <label className="customer-address-field customer-address-field--sm">
+                          <span>標籤</span>
+                          <input type="text" value={editAddrLabel} onChange={(e) => setEditAddrLabel(e.target.value)} />
+                        </label>
+                        <label className="customer-address-field customer-address-field--wide">
+                          <span>地址內容（必填）</span>
+                          <input type="text" value={editAddrLine} onChange={(e) => setEditAddrLine(e.target.value)} required />
+                        </label>
                       </div>
                     </div>
-                    <div className="field">
-                      <span>巡查預設商品{editAddrPatrolWeekday ? "（必填）" : ""}</span>
-                      <select value={editAddrPatrolProductId} onChange={(e) => setEditAddrPatrolProductId(e.target.value)}>
-                        <option value="">—</option>
-                        {activeProducts.map((p) => (
-                          <option key={String(p.id)} value={String(p.id)}>
-                            {(p.productCode ? `${p.productCode} ` : "") + p.name}
-                          </option>
-                        ))}
-                      </select>
-                      <span className="field-hint text-muted">
-                        一鍵產單用；結帳跟客戶主檔（目前：{billingTypeLabel(detail?.billingType ?? workspaceCustomer?.billingType)}）
-                      </span>
+
+                    <div className="customer-address-edit-panel__section">
+                      <div className="customer-address-edit-panel__section-title">聯絡方式</div>
+                      <div className="customer-address-edit-panel__grid">
+                        <label className="customer-address-field">
+                          <span>聯絡人</span>
+                          <input
+                            type="text"
+                            value={editAddrContactName}
+                            onChange={(e) => setEditAddrContactName(e.target.value)}
+                          />
+                        </label>
+                        <label className="customer-address-field">
+                          <span>手機</span>
+                          <input
+                            type="text"
+                            value={editAddrContactMobile}
+                            onChange={(e) => setEditAddrContactMobile(e.target.value)}
+                          />
+                        </label>
+                        <label className="customer-address-field">
+                          <span>電話</span>
+                          <input
+                            type="text"
+                            value={editAddrContactPhone}
+                            onChange={(e) => setEditAddrContactPhone(e.target.value)}
+                          />
+                        </label>
+                      </div>
                     </div>
-                    <div className="form-actions">
+
+                    <div className="customer-address-edit-panel__section">
+                      <div className="customer-address-edit-panel__section-title">送貨／空桶</div>
+                      <div className="customer-address-edit-panel__grid">
+                        <label className="customer-address-field customer-address-field--sm">
+                          <span>未收回空桶</span>
+                          <input
+                            type="number"
+                            min={0}
+                            step={1}
+                            value={editAddrBarrels}
+                            onChange={(e) => setEditAddrBarrels(e.target.value)}
+                          />
+                        </label>
+                        <label className="customer-address-field">
+                          <span>送貨樓層（選填）</span>
+                          <input
+                            type="number"
+                            step={1}
+                            value={editAddrFloor}
+                            onChange={(e) => setEditAddrFloor(e.target.value)}
+                            placeholder="例：2、3、-1"
+                          />
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="customer-address-edit-panel__section">
+                      <div className="customer-address-edit-panel__section-title">週期巡查</div>
+                      <div className="customer-address-edit-panel__grid">
+                        <label className="customer-address-field">
+                          <span>巡查星期</span>
+                          <select
+                            value={editAddrPatrolWeekday}
+                            onChange={(e) => setEditAddrPatrolWeekday(e.target.value)}
+                          >
+                            <option value="">不參加週期巡查</option>
+                            {PATROL_WEEKDAY_OPTIONS.map((o) => (
+                              <option key={o.value} value={o.value}>
+                                {o.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="customer-address-field customer-address-field--sm">
+                          <span>目標水位（桶）</span>
+                          <input
+                            type="number"
+                            min={0}
+                            step={1}
+                            value={editAddrTargetWaterLevel}
+                            onChange={(e) => setEditAddrTargetWaterLevel(e.target.value)}
+                            placeholder="例：8"
+                          />
+                        </label>
+                        <label className="customer-address-field customer-address-field--wide">
+                          <span>巡查預設商品{editAddrPatrolWeekday ? "（必填）" : ""}</span>
+                          <select
+                            value={editAddrPatrolProductId}
+                            onChange={(e) => setEditAddrPatrolProductId(e.target.value)}
+                          >
+                            <option value="">—</option>
+                            {activeProducts.map((p) => (
+                              <option key={String(p.id)} value={String(p.id)}>
+                                {(p.productCode ? `${p.productCode} ` : "") + p.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                      <p className="customer-address-edit-panel__hint">
+                        一鍵產單用；結帳跟客戶主檔（目前：
+                        {billingTypeLabel(detail?.billingType ?? workspaceCustomer?.billingType)}）
+                      </p>
+                    </div>
+
+                    <div className="customer-address-edit-panel__actions">
                       <button type="submit" className="btn btn--primary btn--sm" disabled={patchAddrSaving}>
                         {patchAddrSaving ? "儲存中…" : "儲存地址"}
                       </button>
-                      <button type="button" className="btn btn--ghost btn--sm" onClick={cancelEditAddress} disabled={patchAddrSaving}>
+                      <button
+                        type="button"
+                        className="btn btn--ghost btn--sm"
+                        onClick={cancelEditAddress}
+                        disabled={patchAddrSaving}
+                      >
                         取消
                       </button>
                       {patchAddrMsg ? (
-                        <span className={patchAddrMsg.includes("已") ? "feedback feedback--ok" : "feedback feedback--err"}>{patchAddrMsg}</span>
+                        <span
+                          className={
+                            patchAddrMsg.includes("已") ? "feedback feedback--ok" : "feedback feedback--err"
+                          }
+                        >
+                          {patchAddrMsg}
+                        </span>
                       ) : null}
                     </div>
                   </form>
@@ -2665,87 +2777,148 @@ export default function DataCustomersPage() {
                 </ul>
 
                 {showAddAddressForm ? (
-                  <form onSubmit={onAddAddress} className="customer-edit-add-address form-grid form-grid--wide">
-                    <h4 className="customer-edit-add-address__title">新增送貨地址</h4>
-                    <div className="form-row-2">
-                      <div className="field">
-                        <span>標籤</span>
-                        <input type="text" value={newAddrLabel} onChange={(e) => setNewAddrLabel(e.target.value)} />
-                      </div>
-                      <div className="field">
-                        <span>地址內容（必填）</span>
-                        <input type="text" value={newAddrLine} onChange={(e) => setNewAddrLine(e.target.value)} />
-                      </div>
-                    </div>
-                    <div className="field">
-                      <span>聯絡人</span>
-                      <input type="text" value={newAddrContactName} onChange={(e) => setNewAddrContactName(e.target.value)} />
-                    </div>
-                    <div className="form-row-2">
-                      <div className="field">
-                        <span>手機</span>
-                        <input type="text" value={newAddrContactMobile} onChange={(e) => setNewAddrContactMobile(e.target.value)} />
-                      </div>
-                      <div className="field">
-                        <span>電話</span>
-                        <input type="text" value={newAddrContactPhone} onChange={(e) => setNewAddrContactPhone(e.target.value)} />
-                      </div>
-                    </div>
-                    <label className="field field--checkbox">
-                      <input type="checkbox" checked={newAddrDefault} onChange={(e) => setNewAddrDefault(e.target.checked)} />
-                      <span>設為預設送貨點</span>
-                    </label>
-                    <div className="field">
-                      <span>送貨樓層（選填）</span>
-                      <input
-                        type="number"
-                        step={1}
-                        value={newAddrFloor}
-                        onChange={(e) => setNewAddrFloor(e.target.value)}
-                        placeholder="例：2、3、-1（地下一樓）"
-                      />
-                    </div>
-                    <div className="form-row-2">
-                      <div className="field">
-                        <span>巡查星期</span>
-                        <select value={newAddrPatrolWeekday} onChange={(e) => setNewAddrPatrolWeekday(e.target.value)}>
-                          <option value="">不參加週期巡查</option>
-                          {PATROL_WEEKDAY_OPTIONS.map((o) => (
-                            <option key={o.value} value={o.value}>
-                              {o.label}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="field">
-                        <span>目標水位（桶）</span>
+                  <form onSubmit={onAddAddress} className="customer-address-edit-panel customer-address-edit-panel--add">
+                    <header className="customer-address-edit-panel__head">
+                      <h4 className="customer-address-edit-panel__title">新增送貨地址</h4>
+                      <label className="customer-address-edit-panel__default">
                         <input
-                          type="number"
-                          min={0}
-                          step={1}
-                          value={newAddrTargetWaterLevel}
-                          onChange={(e) => setNewAddrTargetWaterLevel(e.target.value)}
-                          placeholder="例：8"
+                          type="checkbox"
+                          checked={newAddrDefault}
+                          onChange={(e) => setNewAddrDefault(e.target.checked)}
                         />
+                        <span>設為預設送貨點</span>
+                      </label>
+                    </header>
+
+                    <div className="customer-address-edit-panel__section">
+                      <div className="customer-address-edit-panel__section-title">基本資料</div>
+                      <div className="customer-address-edit-panel__grid">
+                        <label className="customer-address-field customer-address-field--sm">
+                          <span>標籤</span>
+                          <input type="text" value={newAddrLabel} onChange={(e) => setNewAddrLabel(e.target.value)} />
+                        </label>
+                        <label className="customer-address-field customer-address-field--wide">
+                          <span>地址內容（必填）</span>
+                          <input type="text" value={newAddrLine} onChange={(e) => setNewAddrLine(e.target.value)} required />
+                        </label>
                       </div>
                     </div>
-                    <div className="field">
-                      <span>巡查預設商品{newAddrPatrolWeekday ? "（必填）" : ""}</span>
-                      <select value={newAddrPatrolProductId} onChange={(e) => setNewAddrPatrolProductId(e.target.value)}>
-                        <option value="">—</option>
-                        {activeProducts.map((p) => (
-                          <option key={String(p.id)} value={String(p.id)}>
-                            {(p.productCode ? `${p.productCode} ` : "") + p.name}
-                          </option>
-                        ))}
-                      </select>
+
+                    <div className="customer-address-edit-panel__section">
+                      <div className="customer-address-edit-panel__section-title">聯絡方式</div>
+                      <div className="customer-address-edit-panel__grid">
+                        <label className="customer-address-field">
+                          <span>聯絡人</span>
+                          <input
+                            type="text"
+                            value={newAddrContactName}
+                            onChange={(e) => setNewAddrContactName(e.target.value)}
+                          />
+                        </label>
+                        <label className="customer-address-field">
+                          <span>手機</span>
+                          <input
+                            type="text"
+                            value={newAddrContactMobile}
+                            onChange={(e) => setNewAddrContactMobile(e.target.value)}
+                          />
+                        </label>
+                        <label className="customer-address-field">
+                          <span>電話</span>
+                          <input
+                            type="text"
+                            value={newAddrContactPhone}
+                            onChange={(e) => setNewAddrContactPhone(e.target.value)}
+                          />
+                        </label>
+                      </div>
                     </div>
-                    <div className="form-actions">
+
+                    <div className="customer-address-edit-panel__section">
+                      <div className="customer-address-edit-panel__section-title">送貨</div>
+                      <div className="customer-address-edit-panel__grid">
+                        <label className="customer-address-field">
+                          <span>送貨樓層（選填）</span>
+                          <input
+                            type="number"
+                            step={1}
+                            value={newAddrFloor}
+                            onChange={(e) => setNewAddrFloor(e.target.value)}
+                            placeholder="例：2、3、-1"
+                          />
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="customer-address-edit-panel__section">
+                      <div className="customer-address-edit-panel__section-title">週期巡查</div>
+                      <div className="customer-address-edit-panel__grid">
+                        <label className="customer-address-field">
+                          <span>巡查星期</span>
+                          <select
+                            value={newAddrPatrolWeekday}
+                            onChange={(e) => setNewAddrPatrolWeekday(e.target.value)}
+                          >
+                            <option value="">不參加週期巡查</option>
+                            {PATROL_WEEKDAY_OPTIONS.map((o) => (
+                              <option key={o.value} value={o.value}>
+                                {o.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="customer-address-field customer-address-field--sm">
+                          <span>目標水位（桶）</span>
+                          <input
+                            type="number"
+                            min={0}
+                            step={1}
+                            value={newAddrTargetWaterLevel}
+                            onChange={(e) => setNewAddrTargetWaterLevel(e.target.value)}
+                            placeholder="例：8"
+                          />
+                        </label>
+                        <label className="customer-address-field customer-address-field--wide">
+                          <span>巡查預設商品{newAddrPatrolWeekday ? "（必填）" : ""}</span>
+                          <select
+                            value={newAddrPatrolProductId}
+                            onChange={(e) => setNewAddrPatrolProductId(e.target.value)}
+                          >
+                            <option value="">—</option>
+                            {activeProducts.map((p) => (
+                              <option key={String(p.id)} value={String(p.id)}>
+                                {(p.productCode ? `${p.productCode} ` : "") + p.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                      <p className="customer-address-edit-panel__hint">
+                        一鍵產單用；結帳跟客戶主檔（目前：
+                        {billingTypeLabel(detail?.billingType ?? workspaceCustomer?.billingType)}）
+                      </p>
+                    </div>
+
+                    <div className="customer-address-edit-panel__actions">
                       <button type="submit" className="btn btn--primary btn--sm" disabled={addingAddr}>
                         {addingAddr ? "新增中…" : "新增地址"}
                       </button>
+                      <button
+                        type="button"
+                        className="btn btn--ghost btn--sm"
+                        onClick={() => setShowAddAddressForm(false)}
+                        disabled={addingAddr}
+                      >
+                        取消
+                      </button>
                       {addAddrMsg ? (
-                        <span className={addAddrMsg.includes("已") ? "feedback feedback--ok" : "feedback feedback--err"}>{addAddrMsg}</span>
+                        <span
+                          className={
+                            addAddrMsg.includes("已") ? "feedback feedback--ok" : "feedback feedback--err"
+                          }
+                        >
+                          {addAddrMsg}
+                        </span>
                       ) : null}
                     </div>
                   </form>

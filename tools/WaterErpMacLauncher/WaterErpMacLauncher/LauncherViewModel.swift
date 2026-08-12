@@ -239,6 +239,7 @@ final class LauncherViewModel: ObservableObject {
     func clearTransactionData() {
         let message = """
         將清空本機 water_erp 的交易資料（訂單、配送、收空桶、服務單、庫存異動、帳款、支出單據等），
+        以及舊庫轉換對照中的訂單／匯款對應，
         並把庫存現量與空桶數歸零。
 
         會保留：客戶、送貨地址、商品、司機、車輛、使用者、
@@ -313,23 +314,29 @@ final class LauncherViewModel: ObservableObject {
         legacyDatabaseURL = value
     }
 
-    private func executeNpmScript(_ script: String, label: String) async throws {
+    private func executeNpmScript(_ script: String, label: String, extraArgs: [String] = []) async throws {
         guard let npm = ShellRunner.which("npm") else {
             throw LauncherError.npmNotFound
         }
         logStore.info("開始\(label)…")
+        selectedTab = .logs
+        var arguments = ["run", script]
+        if !extraArgs.isEmpty {
+            arguments.append("--")
+            arguments.append(contentsOf: extraArgs)
+        }
         let result = await ShellRunner.run(
             npm,
-            arguments: ["run", script],
-            cwd: settings.projectRoot
+            arguments: arguments,
+            cwd: settings.projectRoot,
+            onLine: { [logStore] line in
+                logStore.info(line)
+            }
         )
         if result.ok {
             logStore.success("\(label)完成")
-            if !result.output.isEmpty {
-                logStore.info(result.output)
-            }
         } else {
-            logStore.error("\(label)失敗：\n\(result.output)")
+            logStore.error("\(label)失敗（結束代碼 \(result.exitCode)）")
             throw LauncherError.timeout("\(label)失敗")
         }
     }

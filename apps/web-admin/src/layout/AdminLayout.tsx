@@ -38,6 +38,8 @@ const navGroups: { id: string; title: string; items: { to: string; label: string
     title: "主檔資料",
     items: [
       { to: "/data/customers", label: "客戶資料" },
+      { to: "/data/legacy-orders", label: "舊系統歷史訂單" },
+      { to: "/data/legacy-cutover", label: "切換日開帳" },
       { to: "/data/drivers", label: "司機資料" },
       { to: "/data/products", label: "商品資料" },
       { to: "/data/vehicles", label: "車輛資料" },
