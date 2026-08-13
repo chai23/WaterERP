@@ -348,7 +348,7 @@ export function OrderDetailModal({ order, onClose }: { order: OrderRecord; onClo
             <div className="order-detail__meta-strip">
               {order.remark ? (
                 <div className="order-detail__meta-item">
-                  <span className="order-detail__meta-label">備註</span>
+                  <span className="order-detail__meta-label">商品／訂單備註（紙上）</span>
                   <span>{String(order.remark)}</span>
                 </div>
               ) : null}

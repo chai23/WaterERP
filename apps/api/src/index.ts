@@ -6227,6 +6227,116 @@ app.get("/api/sales-orders/:salesOrderId", async (req, res) => {
   }
 });
 
+/** 訂單套印補強：司機／預付剩餘桶／空桶／同地址上次配送摘要／稅額 */
+app.get("/api/sales-orders/:salesOrderId/print-enrichment", async (req, res) => {
+  try {
+    const salesOrderId = toBigInt(req.params.salesOrderId);
+    if (!salesOrderId) {
+      res.status(400).json({ ok: false, message: "參數錯誤" });
+      return;
+    }
+    const order = await prisma.salesOrder.findUnique({
+      where: { id: salesOrderId },
+      include: {
+        customer: { select: { id: true, mobile: true, phone: true, prepaidBarrelBalance: true } },
+        deliveryAddress: { select: { id: true, barrelsOnSite: true } },
+        assignments: {
+          where: { status: { not: "cancelled" } },
+          orderBy: { id: "desc" },
+          take: 5,
+          include: { driver: { include: { user: { select: { name: true } } } } },
+        },
+      },
+    });
+    if (!order) {
+      res.status(404).json({ ok: false, message: "找不到訂單" });
+      return;
+    }
+
+    /** 已派單才印司機；優先進行中派單，否則最近一筆非取消派單 */
+    const activeAssignment =
+      order.assignments.find((a) =>
+        (ACTIVE_DELIVERY_ASSIGNMENT_STATUSES as readonly string[]).includes(a.status),
+      ) ?? order.assignments[0] ?? null;
+    const driverName =
+      activeAssignment?.driver?.user?.name?.trim() ||
+      activeAssignment?.driver?.employeeCode?.trim() ||
+      null;
+
+    const invoiceMode = normalizeCashInvoiceMode(order.cashInvoiceMode);
+    const cashSub = new Prisma.Decimal(order.cashSubtotal ?? 0);
+    const taxBr = breakdownCashTaxInvoice(cashSub, invoiceMode);
+    const taxAmount = taxBr ? taxBr.taxAmount.toString() : null;
+
+    const candidates = await prisma.salesOrder.findMany({
+      where: {
+        deliveryAddressId: order.deliveryAddressId,
+        id: { not: order.id },
+        status: { notIn: ["cancelled", "draft"] },
+      },
+      select: {
+        id: true,
+        officeSettledAt: true,
+        scheduledDeliveryDate: true,
+        lines: {
+          select: {
+            qtyDelivered: true,
+            qtyOrdered: true,
+            linePurpose: true,
+          },
+        },
+        assignments: {
+          where: { status: { in: ["completed", "not_delivered", "pending_settlement"] } },
+          orderBy: [{ officeSettledAt: "desc" }, { completedAt: "desc" }, { id: "desc" }],
+          take: 1,
+          select: { driverReportedAt: true, assignmentDate: true },
+        },
+      },
+      orderBy: { id: "desc" },
+      take: 40,
+    });
+
+    let lastOrderDate: string | null = null;
+    let lastBottleQty: number | null = null;
+    let bestTs = -1;
+    for (const cand of candidates) {
+      const a = cand.assignments[0];
+      /** 需有實際配送／核銷痕跡，勿僅用排程日 */
+      const instantRaw = a?.driverReportedAt ?? a?.assignmentDate ?? cand.officeSettledAt ?? null;
+      if (!instantRaw) continue;
+      const instant = new Date(instantRaw);
+      const ts = instant.getTime();
+      if (!Number.isFinite(ts) || ts <= bestTs) continue;
+      bestTs = ts;
+      lastOrderDate = toLocalYmd(instant);
+      lastBottleQty = cand.lines
+        .filter((l) => (l.linePurpose ?? "delivery") !== "prepaid_barrel_topup")
+        .reduce((sum, l) => {
+          const delivered = l.qtyDelivered > 0 ? l.qtyDelivered : l.qtyOrdered > 0 && a ? l.qtyOrdered : 0;
+          return sum + Math.max(0, delivered);
+        }, 0);
+    }
+
+    res.json({
+      ok: true,
+      data: {
+        customerMobile: order.customer.mobile?.trim() || null,
+        taxAmount,
+        cashInvoiceMode: invoiceMode === "none" ? null : invoiceMode,
+        driverName,
+        /** 預付剩餘桶（扣桶在核銷；開單當下即為不含本張配送扣桶） */
+        prepaidBarrelBalance: order.customer.prepaidBarrelBalance,
+        /** 本送貨點未回收空桶 */
+        barrelsOnSite: order.deliveryAddress?.barrelsOnSite ?? 0,
+        lastOrderDate,
+        lastBottleQty,
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
 app.get("/api/completed-deliveries", async (_req, res) => {
   try {
     const rows = await prisma.deliveryAssignment.findMany({

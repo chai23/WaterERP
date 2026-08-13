@@ -9,7 +9,14 @@ export function slipFromDashboardOrder(row: Record<string, unknown>): OrderSlipS
     const L = ln as Record<string, unknown>;
     const p = (L.product ?? {}) as Record<string, unknown>;
     return {
-      productCode: L.productCode != null ? String(L.productCode) : L.sku != null ? String(L.sku) : undefined,
+      productCode:
+        L.productCode != null
+          ? String(L.productCode)
+          : p.productCode != null
+            ? String(p.productCode)
+            : L.sku != null
+              ? String(L.sku)
+              : undefined,
       qtyOrdered: Math.floor(Number(L.qtyOrdered ?? 0)) || 0,
       unitPrice: L.unitPrice != null ? (typeof L.unitPrice === "number" ? L.unitPrice : String(L.unitPrice)) : undefined,
       lineAmount: L.lineAmount != null ? (typeof L.lineAmount === "number" ? L.lineAmount : String(L.lineAmount)) : undefined,
@@ -37,7 +44,8 @@ export function slipFromDashboardOrder(row: Record<string, unknown>): OrderSlipS
     totalAmount,
     billingTypeAtOrder: row.billingTypeAtOrder != null ? String(row.billingTypeAtOrder) : null,
     cashInvoiceMode: row.cashInvoiceMode != null ? String(row.cashInvoiceMode) : null,
-    productRemark: strOpt(row.productRemark),
+    // 開單「備註」存 sales_orders.remark，套印對應「商品／訂單備註（紙上）」
+    productRemark: strOpt(row.productRemark) ?? strOpt(row.remark),
     announcement: strOpt(row.announcement),
     driverName: strOpt(row.driverName),
     remainBalance: strOpt(row.remainBalance),
@@ -48,6 +56,7 @@ export function slipFromDashboardOrder(row: Record<string, unknown>): OrderSlipS
       customerCode: cust.customerCode != null ? String(cust.customerCode) : undefined,
       name: cust.name != null ? String(cust.name) : undefined,
       phone: cust.phone != null ? String(cust.phone) : undefined,
+      mobile: cust.mobile != null ? String(cust.mobile) : undefined,
       billingType: cust.billingType != null ? String(cust.billingType) : undefined,
       businessTaxId: strOpt(cust.businessTaxId ?? cust.taxId ?? cust.customerInvoice ?? cust.invoice),
       standingRemark: strOpt(cust.standingRemark),
@@ -55,7 +64,13 @@ export function slipFromDashboardOrder(row: Record<string, unknown>): OrderSlipS
     deliveryAddress: {
       label: addr.label != null ? String(addr.label) : undefined,
       addressLine: addr.addressLine != null ? String(addr.addressLine) : "",
-      contactPhone: addr.contactPhone != null ? String(addr.contactPhone) : undefined,
+      /** 優先客戶手機（送貨點電話欄位語意） */
+      contactPhone:
+        cust.mobile != null
+          ? String(cust.mobile)
+          : addr.contactPhone != null
+            ? String(addr.contactPhone)
+            : undefined,
     },
     lines,
   };

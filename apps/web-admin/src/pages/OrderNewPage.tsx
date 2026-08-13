@@ -1517,12 +1517,12 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
 
           <div className="order-new__footer-row">
           <div className="field order-new__field--remark">
-            <label htmlFor="order-new-remark">備註（選填）</label>
+            <label htmlFor="order-new-remark">商品／訂單備註（紙上，選填）</label>
             <textarea
               id="order-new-remark"
               className="order-new__input-remark"
               rows={2}
-              placeholder="例如：代收貨款、指定時段…；亦可點選下方標語快速加入"
+              placeholder="例如：代收貨款、指定時段、請放管理室…；亦可點選下方標語快速加入"
               value={form.remark}
               onChange={(e) => setForm({ ...form, remark: e.target.value })}
             />

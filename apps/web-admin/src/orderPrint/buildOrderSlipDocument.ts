@@ -127,27 +127,35 @@ export function buildOrderSlipHtml(order: OrderSlipSource, layout: OrderPrintLay
   absField("businessTaxId", escHtml(cust?.businessTaxId ?? ""), fields.businessTaxId);
   absField("addressLabel", escHtml(addr?.label ? `${addr.label}` : "送貨地址"), fields.addressLabel);
   absField("addressLine", escHtml(addr?.addressLine ?? "—"), fields.addressLine);
-  absField("addressPhone", escHtml(addr?.contactPhone ?? ""), fields.addressPhone);
+  /** 送貨點電話＝客戶手機（主檔無地址聯絡電話可填） */
+  absIf("addressPhone", cust?.mobile ?? addr?.contactPhone, fields.addressPhone);
   absField("scheduledDate", escHtml(sched === "—" ? "" : sched), fields.scheduledDate);
   absField(
     "remark",
-    escHtml(cust?.standingRemark ?? order.remark ?? ""),
+    escHtml(cust?.standingRemark ?? ""),
     fields.remark,
     "slip-field--wrap",
   );
-  absIf("productRemark", order.productRemark, fields.productRemark, "slip-field--wrap");
-  absField("totalAmount", escHtml(moneyStr(order.totalAmount)), fields.totalAmount);
-  absField(
-    "taxLine",
-    escHtml(`稅金：${order.taxAmount != null && order.taxAmount !== "" ? moneyStr(order.taxAmount) : ""}`),
-    fields.taxLine,
+  absIf(
+    "productRemark",
+    order.productRemark ?? order.remark,
+    fields.productRemark,
+    "slip-field--wrap",
   );
+  absField("totalAmount", escHtml(moneyStr(order.totalAmount)), fields.totalAmount);
+  /** 僅含稅／稅外加才印稅金行 */
+  if (order.taxAmount != null && order.taxAmount !== "" && Number(order.taxAmount) !== 0) {
+    absIf("taxLine", `稅金：${moneyStr(order.taxAmount)}`, fields.taxLine);
+  }
   absField("billingType", escHtml(`${bill}${cashNote ? ` ${cashNote}` : ""}`), fields.billingType, "slip-field--small");
   absIf("announcement", order.announcement, fields.announcement, "slip-field--wrap");
   absIf("driverName", order.driverName, fields.driverName);
   absIf("remainBalance", order.remainBalance, fields.remainBalance);
   absIf("bucketCount", order.bucketCount, fields.bucketCount);
-  absIf("lastOrderDate", order.lastOrderDate, fields.lastOrderDate);
+  {
+    const lastYmd = order.lastOrderDate ? fmtLocalYmd(order.lastOrderDate) : "";
+    absIf("lastOrderDate", lastYmd === "—" ? null : lastYmd, fields.lastOrderDate);
+  }
   absIf("lastBottleQty", order.lastBottleQty, fields.lastBottleQty);
 
   const lines = Array.isArray(order.lines) ? [...order.lines] : [];

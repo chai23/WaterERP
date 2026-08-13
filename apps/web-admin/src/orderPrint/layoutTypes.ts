@@ -56,9 +56,9 @@ export type OrderPrintLayoutV1 = {
     addressLine: FieldPos;
     addressPhone: FieldPos;
     scheduledDate: FieldPos;
-    /** 客戶常態備註（舊版 Customer_remark 位置） */
+    /** 客戶常態備註（主檔 standingRemark；套印「客戶常態備註」） */
     remark: FieldPos;
-    /** 紙上商品／訂單備註（舊版 Product_remark） */
+    /** 紙上商品／訂單備註（開單備註／sales_orders.remark；舊版 Product_remark） */
     productRemark: FieldPos;
     totalAmount: FieldPos;
     /** 顯示為「稅金：」+ 金額（舊版 Tex） */
@@ -89,6 +89,7 @@ export type OrderPrintLayoutV1 = {
 export type OrderSlipSource = {
   orderNo: string;
   scheduledDeliveryDate?: string | null;
+  /** 開單備註（sales_orders.remark）；套印時對應 productRemark */
   remark?: string | null;
   totalAmount?: string | number;
   /** 稅金（舊版 Tex）；列印為「稅金：」+ 格式化金額 */
@@ -99,17 +100,21 @@ export type OrderSlipSource = {
     customerCode?: string | null;
     name?: string | null;
     phone?: string | null;
+    /** 客戶手機；紙上「送貨點電話」用此欄 */
+    mobile?: string | null;
     billingType?: string | null;
     /** 統一編號（舊版 Customer_invoice） */
     businessTaxId?: string | null;
+    /** 客戶主檔常態備註；套印「客戶常態備註」 */
     standingRemark?: string | null;
   } | null;
   deliveryAddress?: {
     label?: string | null;
     addressLine?: string;
+    /** 實際套印時由 enrichment 覆寫為客戶手機 */
     contactPhone?: string | null;
   } | null;
-  /** 紙上商品／訂單備註（舊版 Product_remark） */
+  /** 紙上商品／訂單備註；缺省時可由 remark 帶入 */
   productRemark?: string | null;
   announcement?: string | null;
   driverName?: string | null;
