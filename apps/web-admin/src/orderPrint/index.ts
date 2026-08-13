@@ -1,6 +1,6 @@
 export type { OrderPrintLayoutV1, OrderSlipSource, FieldPos, LineColumnPos, FooterNoticeLineBlock, OrderNoBarcodeLayout } from "./layoutTypes";
 export { DEFAULT_ORDER_PRINT_LAYOUT } from "./defaultLayout";
-export { ORDER_PRINT_STORAGE_KEY, loadOrderPrintLayout, saveOrderPrintLayout } from "./loadSaveLayout";
+export { ORDER_PRINT_STORAGE_KEY, loadOrderPrintLayout, saveOrderPrintLayout, sanitizeOrderPrintLayout } from "./loadSaveLayout";
 export { buildOrderSlipHtml } from "./buildOrderSlipDocument";
 export { openOrderPrintWindow } from "./openOrderPrintWindow";
 export { SAMPLE_ORDER_SLIP } from "./sampleOrder";

@@ -7,9 +7,10 @@ import {
   openOrderPrintWindow,
   saveOrderPrintLayout,
   SAMPLE_ORDER_SLIP,
+  sanitizeOrderPrintLayout,
   slipWithOrderAnnouncement,
 } from "../orderPrint";
-import type { FieldPos, OrderPrintLayoutV1 } from "../orderPrint";
+import type { FieldPos, LineColumnPos, OrderPrintLayoutV1 } from "../orderPrint";
 import { DesktopOnlyNotice } from "../components/DesktopOnlyNotice";
 
 /** 設定頁預覽縮放（僅螢幕；列印仍 1:1）。0.9 為螢幕略縮小預覽；1 為與版面 mm 同比例。 */
@@ -38,12 +39,56 @@ const FIELD_LABELS: { key: keyof OrderPrintLayoutV1["fields"]; label: string }[]
   { key: "lastOrderDate", label: "上次訂單日" },
 ];
 
-function updateField(layout: OrderPrintLayoutV1, key: keyof OrderPrintLayoutV1["fields"], patch: Partial<FieldPos>): OrderPrintLayoutV1 {
+/** 必填數值：空字串暫時維持舊值，避免輸入中被當成 0／無資料 */
+function parseRequiredNumber(raw: string, fallback: number): number {
+  const t = raw.trim();
+  if (t === "") return fallback;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/** 選填字級／寬度：空白＝沿用預設（undefined） */
+function parseOptionalPositive(raw: string): number | undefined {
+  const t = raw.trim();
+  if (t === "") return undefined;
+  const n = Number(t);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return n;
+}
+
+function patchFieldPos(base: FieldPos, patch: Partial<FieldPos>): FieldPos {
+  const next: FieldPos = {
+    leftMm: patch.leftMm ?? base.leftMm,
+    topMm: patch.topMm ?? base.topMm,
+  };
+  const fs = "fontSizePt" in patch ? patch.fontSizePt : base.fontSizePt;
+  const mw = "maxWidthMm" in patch ? patch.maxWidthMm : base.maxWidthMm;
+  if (fs != null && Number.isFinite(fs) && fs > 0) next.fontSizePt = fs;
+  if (mw != null && Number.isFinite(mw) && mw > 0) next.maxWidthMm = mw;
+  return next;
+}
+
+function patchLineCol(base: LineColumnPos, patch: Partial<LineColumnPos>): LineColumnPos {
+  const next: LineColumnPos = {
+    leftMm: patch.leftMm ?? base.leftMm,
+  };
+  const fs = "fontSizePt" in patch ? patch.fontSizePt : base.fontSizePt;
+  const mw = "maxWidthMm" in patch ? patch.maxWidthMm : base.maxWidthMm;
+  if (fs != null && Number.isFinite(fs) && fs > 0) next.fontSizePt = fs;
+  if (mw != null && Number.isFinite(mw) && mw > 0) next.maxWidthMm = mw;
+  return next;
+}
+
+function updateField(
+  layout: OrderPrintLayoutV1,
+  key: keyof OrderPrintLayoutV1["fields"],
+  patch: Partial<FieldPos>,
+): OrderPrintLayoutV1 {
   return {
     ...layout,
     fields: {
       ...layout.fields,
-      [key]: { ...layout.fields[key], ...patch },
+      [key]: patchFieldPos(layout.fields[key], patch),
     },
   };
 }
@@ -65,7 +110,9 @@ export default function SettingsOrderPrintPage() {
   const previewSlip = useMemo(() => ({ ...SAMPLE_ORDER_SLIP }), []);
 
   const persist = useCallback((next: OrderPrintLayoutV1) => {
-    saveOrderPrintLayout(next);
+    const clean = sanitizeOrderPrintLayout(next);
+    saveOrderPrintLayout(clean);
+    setLayout(clean);
     setSavedMsg("已儲存於此瀏覽器（localStorage）。");
     setTimeout(() => setSavedMsg(""), 2500);
   }, []);
@@ -125,7 +172,7 @@ export default function SettingsOrderPrintPage() {
 
   const resetDefault = () => {
     if (!window.confirm("確定重設為系統預設版面？（會一併重設自動列印開關為關）")) return;
-    const next = { ...DEFAULT_ORDER_PRINT_LAYOUT };
+    const next = sanitizeOrderPrintLayout({ ...DEFAULT_ORDER_PRINT_LAYOUT });
     setLayout(next);
     persist(next);
   };
@@ -163,7 +210,9 @@ export default function SettingsOrderPrintPage() {
               type="number"
               step="0.1"
               value={layout.pageWidthMm}
-              onChange={(e) => setLayout((L) => ({ ...L, pageWidthMm: Number(e.target.value) || L.pageWidthMm }))}
+              onChange={(e) =>
+                setLayout((L) => ({ ...L, pageWidthMm: parseRequiredNumber(e.target.value, L.pageWidthMm) }))
+              }
             />
           </div>
           <div className="field">
@@ -173,7 +222,9 @@ export default function SettingsOrderPrintPage() {
               type="number"
               step="0.1"
               value={layout.pageHeightMm}
-              onChange={(e) => setLayout((L) => ({ ...L, pageHeightMm: Number(e.target.value) || L.pageHeightMm }))}
+              onChange={(e) =>
+                setLayout((L) => ({ ...L, pageHeightMm: parseRequiredNumber(e.target.value, L.pageHeightMm) }))
+              }
             />
           </div>
         </div>
@@ -193,7 +244,9 @@ export default function SettingsOrderPrintPage() {
             type="number"
             step="0.5"
             value={layout.baseFontPt}
-            onChange={(e) => setLayout((L) => ({ ...L, baseFontPt: Number(e.target.value) || L.baseFontPt }))}
+              onChange={(e) =>
+                setLayout((L) => ({ ...L, baseFontPt: parseRequiredNumber(e.target.value, L.baseFontPt) }))
+              }
           />
         </div>
         <div className="field" style={{ marginTop: "0.75rem" }}>
@@ -393,7 +446,10 @@ export default function SettingsOrderPrintPage() {
               onChange={(e) =>
                 setLayout((L) => ({
                   ...L,
-                  orderNoBarcode: { ...L.orderNoBarcode, leftMm: Number(e.target.value) || 0 },
+                  orderNoBarcode: {
+                    ...L.orderNoBarcode,
+                    leftMm: parseRequiredNumber(e.target.value, L.orderNoBarcode.leftMm),
+                  },
                 }))
               }
             />
@@ -408,7 +464,10 @@ export default function SettingsOrderPrintPage() {
               onChange={(e) =>
                 setLayout((L) => ({
                   ...L,
-                  orderNoBarcode: { ...L.orderNoBarcode, topMm: Number(e.target.value) || 0 },
+                  orderNoBarcode: {
+                    ...L.orderNoBarcode,
+                    topMm: parseRequiredNumber(e.target.value, L.orderNoBarcode.topMm),
+                  },
                 }))
               }
             />
@@ -426,7 +485,7 @@ export default function SettingsOrderPrintPage() {
                   ...L,
                   orderNoBarcode: {
                     ...L.orderNoBarcode,
-                    widthMm: Math.max(12, Number(e.target.value) || L.orderNoBarcode.widthMm),
+                    widthMm: Math.max(12, parseRequiredNumber(e.target.value, L.orderNoBarcode.widthMm)),
                   },
                 }))
               }
@@ -445,7 +504,7 @@ export default function SettingsOrderPrintPage() {
                   ...L,
                   orderNoBarcode: {
                     ...L.orderNoBarcode,
-                    heightMm: Math.max(6, Number(e.target.value) || L.orderNoBarcode.heightMm),
+                    heightMm: Math.max(6, parseRequiredNumber(e.target.value, L.orderNoBarcode.heightMm)),
                   },
                 }))
               }
@@ -467,7 +526,7 @@ export default function SettingsOrderPrintPage() {
                 <th>欄位</th>
                 <th className="num">左 mm</th>
                 <th className="num">上 mm</th>
-                <th className="num">字級 pt</th>
+                <th className="num">字級 pt（空白＝預設）</th>
                 <th className="num">最大寬 mm</th>
               </tr>
             </thead>
@@ -483,7 +542,11 @@ export default function SettingsOrderPrintPage() {
                         step="0.5"
                         className="table-inline-num"
                         value={f.leftMm}
-                        onChange={(e) => setLayout((L) => updateField(L, key, { leftMm: Number(e.target.value) || 0 }))}
+                        onChange={(e) =>
+                          setLayout((L) =>
+                            updateField(L, key, { leftMm: parseRequiredNumber(e.target.value, L.fields[key].leftMm) }),
+                          )
+                        }
                       />
                     </td>
                     <td>
@@ -492,7 +555,11 @@ export default function SettingsOrderPrintPage() {
                         step="0.5"
                         className="table-inline-num"
                         value={f.topMm}
-                        onChange={(e) => setLayout((L) => updateField(L, key, { topMm: Number(e.target.value) || 0 }))}
+                        onChange={(e) =>
+                          setLayout((L) =>
+                            updateField(L, key, { topMm: parseRequiredNumber(e.target.value, L.fields[key].topMm) }),
+                          )
+                        }
                       />
                     </td>
                     <td>
@@ -503,10 +570,7 @@ export default function SettingsOrderPrintPage() {
                         placeholder="預設"
                         value={f.fontSizePt ?? ""}
                         onChange={(e) => {
-                          const v = e.target.value.trim();
-                          setLayout((L) =>
-                            updateField(L, key, v === "" ? { fontSizePt: undefined } : { fontSizePt: Number(v) || undefined }),
-                          );
+                          setLayout((L) => updateField(L, key, { fontSizePt: parseOptionalPositive(e.target.value) }));
                         }}
                       />
                     </td>
@@ -518,10 +582,7 @@ export default function SettingsOrderPrintPage() {
                         placeholder="—"
                         value={f.maxWidthMm ?? ""}
                         onChange={(e) => {
-                          const v = e.target.value.trim();
-                          setLayout((L) =>
-                            updateField(L, key, v === "" ? { maxWidthMm: undefined } : { maxWidthMm: Number(v) || undefined }),
-                          );
+                          setLayout((L) => updateField(L, key, { maxWidthMm: parseOptionalPositive(e.target.value) }));
                         }}
                       />
                     </td>
@@ -545,7 +606,10 @@ export default function SettingsOrderPrintPage() {
               onChange={(e) =>
                 setLayout((L) => ({
                   ...L,
-                  linesBlock: { ...L.linesBlock, startTopMm: Number(e.target.value) || 0 },
+                  linesBlock: {
+                    ...L.linesBlock,
+                    startTopMm: parseRequiredNumber(e.target.value, L.linesBlock.startTopMm),
+                  },
                 }))
               }
             />
@@ -559,7 +623,10 @@ export default function SettingsOrderPrintPage() {
               onChange={(e) =>
                 setLayout((L) => ({
                   ...L,
-                  linesBlock: { ...L.linesBlock, rowHeightMm: Number(e.target.value) || 0 },
+                  linesBlock: {
+                    ...L.linesBlock,
+                    rowHeightMm: parseRequiredNumber(e.target.value, L.linesBlock.rowHeightMm),
+                  },
                 }))
               }
             />
@@ -574,7 +641,10 @@ export default function SettingsOrderPrintPage() {
               onChange={(e) =>
                 setLayout((L) => ({
                   ...L,
-                  linesBlock: { ...L.linesBlock, maxRows: Math.max(1, Math.min(40, Math.floor(Number(e.target.value) || 1))) },
+                  linesBlock: {
+                    ...L.linesBlock,
+                    maxRows: Math.max(1, Math.min(40, Math.floor(parseRequiredNumber(e.target.value, L.linesBlock.maxRows)))),
+                  },
                 }))
               }
             />
@@ -589,7 +659,7 @@ export default function SettingsOrderPrintPage() {
               <tr>
                 <th>欄</th>
                 <th className="num">左 mm</th>
-                <th className="num">字級 pt</th>
+                <th className="num">字級 pt（空白＝預設）</th>
                 <th className="num">最大寬 mm</th>
               </tr>
             </thead>
@@ -610,7 +680,9 @@ export default function SettingsOrderPrintPage() {
                             ...L,
                             linesBlock: {
                               ...L.linesBlock,
-                              [k]: { ...L.linesBlock[k], leftMm: Number(e.target.value) || 0 },
+                              [k]: patchLineCol(L.linesBlock[k], {
+                                leftMm: parseRequiredNumber(e.target.value, L.linesBlock[k].leftMm),
+                              }),
                             },
                           }))
                         }
@@ -624,12 +696,11 @@ export default function SettingsOrderPrintPage() {
                         placeholder="預設"
                         value={c.fontSizePt ?? ""}
                         onChange={(e) => {
-                          const v = e.target.value.trim();
                           setLayout((L) => ({
                             ...L,
                             linesBlock: {
                               ...L.linesBlock,
-                              [k]: { ...L.linesBlock[k], fontSizePt: v === "" ? undefined : Number(v) || undefined },
+                              [k]: patchLineCol(L.linesBlock[k], { fontSizePt: parseOptionalPositive(e.target.value) }),
                             },
                           }));
                         }}
@@ -643,12 +714,11 @@ export default function SettingsOrderPrintPage() {
                         placeholder="—"
                         value={c.maxWidthMm ?? ""}
                         onChange={(e) => {
-                          const v = e.target.value.trim();
                           setLayout((L) => ({
                             ...L,
                             linesBlock: {
                               ...L.linesBlock,
-                              [k]: { ...L.linesBlock[k], maxWidthMm: v === "" ? undefined : Number(v) || undefined },
+                              [k]: patchLineCol(L.linesBlock[k], { maxWidthMm: parseOptionalPositive(e.target.value) }),
                             },
                           }));
                         }}
@@ -678,7 +748,10 @@ export default function SettingsOrderPrintPage() {
                   ...L,
                   linesBlock: {
                     ...L.linesBlock,
-                    footerNotice: { ...L.linesBlock.footerNotice, startTopMm: Number(e.target.value) || 0 },
+                    footerNotice: {
+                      ...L.linesBlock.footerNotice,
+                      startTopMm: parseRequiredNumber(e.target.value, L.linesBlock.footerNotice.startTopMm),
+                    },
                   },
                 }))
               }
@@ -695,7 +768,10 @@ export default function SettingsOrderPrintPage() {
                   ...L,
                   linesBlock: {
                     ...L.linesBlock,
-                    footerNotice: { ...L.linesBlock.footerNotice, rowHeightMm: Number(e.target.value) || 0 },
+                    footerNotice: {
+                      ...L.linesBlock.footerNotice,
+                      rowHeightMm: parseRequiredNumber(e.target.value, L.linesBlock.footerNotice.rowHeightMm),
+                    },
                   },
                 }))
               }
@@ -715,7 +791,10 @@ export default function SettingsOrderPrintPage() {
                     ...L.linesBlock,
                     footerNotice: {
                       ...L.linesBlock.footerNotice,
-                      maxRows: Math.max(1, Math.min(20, Math.floor(Number(e.target.value) || 1))),
+                      maxRows: Math.max(
+                        1,
+                        Math.min(20, Math.floor(parseRequiredNumber(e.target.value, L.linesBlock.footerNotice.maxRows))),
+                      ),
                     },
                   },
                 }))
@@ -729,7 +808,7 @@ export default function SettingsOrderPrintPage() {
               <tr>
                 <th>欄</th>
                 <th className="num">左 mm</th>
-                <th className="num">字級 pt</th>
+                <th className="num">字級 pt（空白＝預設）</th>
                 <th className="num">最大寬 mm</th>
               </tr>
             </thead>
@@ -757,7 +836,9 @@ export default function SettingsOrderPrintPage() {
                               ...L.linesBlock,
                               footerNotice: {
                                 ...L.linesBlock.footerNotice,
-                                [key]: { ...L.linesBlock.footerNotice[key], leftMm: Number(e.target.value) || 0 },
+                                [key]: patchLineCol(L.linesBlock.footerNotice[key], {
+                                  leftMm: parseRequiredNumber(e.target.value, L.linesBlock.footerNotice[key].leftMm),
+                                }),
                               },
                             },
                           }))
@@ -772,17 +853,15 @@ export default function SettingsOrderPrintPage() {
                         placeholder="預設"
                         value={c.fontSizePt ?? ""}
                         onChange={(e) => {
-                          const v = e.target.value.trim();
                           setLayout((L) => ({
                             ...L,
                             linesBlock: {
                               ...L.linesBlock,
                               footerNotice: {
                                 ...L.linesBlock.footerNotice,
-                                [key]: {
-                                  ...L.linesBlock.footerNotice[key],
-                                  fontSizePt: v === "" ? undefined : Number(v) || undefined,
-                                },
+                                [key]: patchLineCol(L.linesBlock.footerNotice[key], {
+                                  fontSizePt: parseOptionalPositive(e.target.value),
+                                }),
                               },
                             },
                           }));
@@ -797,17 +876,15 @@ export default function SettingsOrderPrintPage() {
                         placeholder="—"
                         value={c.maxWidthMm ?? ""}
                         onChange={(e) => {
-                          const v = e.target.value.trim();
                           setLayout((L) => ({
                             ...L,
                             linesBlock: {
                               ...L.linesBlock,
                               footerNotice: {
                                 ...L.linesBlock.footerNotice,
-                                [key]: {
-                                  ...L.linesBlock.footerNotice[key],
-                                  maxWidthMm: v === "" ? undefined : Number(v) || undefined,
-                                },
+                                [key]: patchLineCol(L.linesBlock.footerNotice[key], {
+                                  maxWidthMm: parseOptionalPositive(e.target.value),
+                                }),
                               },
                             },
                           }));
