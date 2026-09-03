@@ -31,7 +31,10 @@ const navGroups: { id: string; title: string; items: { to: string; label: string
   {
     id: "service-tickets",
     title: "飲水機服務",
-    items: [{ to: "/orders/service-tickets", label: "服務單管理" }],
+    items: [
+      { to: "/orders/service-tickets/new", label: "建立服務單" },
+      { to: "/orders/service-tickets", label: "服務單管理" },
+    ],
   },
   {
     id: "data",

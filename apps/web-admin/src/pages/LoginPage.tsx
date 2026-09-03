@@ -88,7 +88,7 @@ export default function LoginPage() {
           ) : null}
           <label className="field">
             <span>密碼</span>
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete={mode === "login" ? "current-password" : "new-password"} required minLength={6} />
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete={mode === "login" ? "current-password" : "new-password"} required />
           </label>
 
           {message ? <div className="alert alert--error">{message}</div> : null}

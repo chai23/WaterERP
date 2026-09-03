@@ -423,6 +423,9 @@ export default function OrderCompletePage() {
           </div>
         ) : null}
         {err ? <div className="alert alert--error" style={{ marginTop: "0.75rem" }}>{err}</div> : null}
+        {!loading && filtered.length === 0 ? (
+          <p className="card__hint" style={{ marginTop: "0.75rem" }}>沒有符合條件的紀錄。</p>
+        ) : (
         <div className="table-wrap" style={{ marginTop: "0.75rem" }}>
           <table className="data-table data-table--order-complete">
             <thead>
@@ -577,7 +580,7 @@ export default function OrderCompletePage() {
             </tbody>
           </table>
         </div>
-        {!loading && filtered.length === 0 ? <p className="card__hint">沒有符合條件的紀錄。</p> : null}
+        )}
       </section>
     </>
   );

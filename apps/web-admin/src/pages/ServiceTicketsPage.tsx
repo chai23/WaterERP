@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { useDashboard } from "../DashboardContext";
 import { todayLocalYmd } from "../adminUtils";
 import ServiceTicketDetailModal, { type ServiceTicketDetail } from "../components/ServiceTicketDetailModal";
@@ -70,12 +71,13 @@ function panelState(stepNo: number, currentStep: number): "is-active" | "is-done
 
 export default function ServiceTicketsPage() {
   const { drivers, vehicles } = useDashboard();
+  const [searchParams] = useSearchParams();
   const [rows, setRows] = useState<ServiceTicketRow[]>([]);
   const [status, setStatus] = useState("reported");
   const [q, setQ] = useState("");
   const [msg, setMsg] = useState("");
   const [loading, setLoading] = useState(false);
-  const [selectedId, setSelectedId] = useState("");
+  const [selectedId, setSelectedId] = useState(() => searchParams.get("selected")?.trim() ?? "");
   const [driverId, setDriverId] = useState("");
   const [vehicleId, setVehicleId] = useState("");
   const [assessDate, setAssessDate] = useState(todayLocalYmd);
@@ -120,6 +122,11 @@ export default function ServiceTicketsPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    const id = searchParams.get("selected")?.trim();
+    if (id) setSelectedId(id);
+  }, [searchParams]);
 
   useEffect(() => {
     if (!driverId) return;
@@ -356,6 +363,32 @@ export default function ServiceTicketsPage() {
     }
   };
 
+  const quoteRespond = async (accept: boolean) => {
+    if (!selectedId) return;
+    const action = accept ? "同意" : "拒絕";
+    if (!window.confirm(`確定代客戶${action}此報價？`)) return;
+    setSaving(true);
+    setMsg("");
+    try {
+      const res = await fetch(`/api/service-tickets/${selectedId}/quote-respond`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accept }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setMsg(data.message ?? `${action}報價失敗`);
+        return;
+      }
+      setMsg(accept ? `已代客戶同意報價：${data.data?.ticketNo ?? ""}` : `已代客戶拒絕報價：${data.data?.ticketNo ?? ""}`);
+      await load({ clearMsg: false });
+    } catch {
+      setMsg(`${action}報價時發生錯誤`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const assignReturn = async () => {
     if (!selectedId || !driverId || !returnDate) {
       setMsg("派送回請選擇司機與日期");
@@ -461,32 +494,41 @@ export default function ServiceTicketsPage() {
     <div className="page">
       <header className="page__header">
         <h2 className="page__title">飲水機服務單</h2>
-        <p className="page__desc text-muted">客戶從 LINE 回報清洗／維修後，於列表選擇服務單，依流程步驟處理。</p>
+        <p className="page__desc text-muted">
+          處理 LINE 回報或後台代開的清洗／維修單；來電開單可點「建立服務單」。
+        </p>
       </header>
 
-      <section className="card">
-        <div className="toolbar" style={{ flexWrap: "wrap", gap: "0.75rem" }}>
-          <label className="field field--inline">
-            <span>狀態</span>
-            <select value={status} onChange={(e) => setStatus(e.target.value)}>
-              {STATUS_FILTERS.map((s) => (
-                <option key={s.value || "all"} value={s.value}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="field field--inline">
-            <span>搜尋</span>
-            <input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="單號／客戶／手機／問題"
-            />
-          </label>
-          <button type="button" className="btn btn--secondary" onClick={() => void load()} disabled={loading}>
-            {loading ? "載入中…" : "重新整理"}
-          </button>
+      <section className="card svc-list-toolbar-card">
+        <div className="svc-list-toolbar">
+          <div className="svc-list-toolbar__row">
+            <Link to="/orders/service-tickets/new" className="btn btn--primary">
+              建立服務單
+            </Link>
+            <label className="svc-list-toolbar__search">
+              <span className="sr-only">搜尋</span>
+              <input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="搜尋單號、客戶、手機、問題…"
+              />
+            </label>
+            <button type="button" className="btn btn--secondary" onClick={() => void load()} disabled={loading}>
+              {loading ? "載入中…" : "重新整理"}
+            </button>
+          </div>
+          <div className="svc-list-toolbar__filters" role="group" aria-label="依狀態篩選">
+            {STATUS_FILTERS.map((s) => (
+              <button
+                key={s.value || "all"}
+                type="button"
+                className={`svc-status-chip${status === s.value ? " is-active" : ""}`}
+                onClick={() => setStatus(s.value)}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
         </div>
         {msg ? <p className="form-msg">{msg}</p> : null}
       </section>
@@ -786,7 +828,9 @@ export default function ServiceTicketsPage() {
               <section className={`svc-panel ${panelState(4, currentStep)}`}>
                 <header className="svc-panel__head">
                   <h4 className="svc-panel__title">④ 廠內進度與報價</h4>
-                  <p className="svc-panel__desc">僅後台可更新廠內進度；完工後開報價供客戶 LINE 回覆。</p>
+                  <p className="svc-panel__desc">
+                    僅後台可更新廠內進度；完工後開報價。客戶可從 LINE 回覆，或由客服代為確認（電話進線適用）。
+                  </p>
                 </header>
                 {hasQuote ? (
                   <div className="svc-alert" style={{ marginBottom: "0.75rem" }}>
@@ -795,7 +839,9 @@ export default function ServiceTicketsPage() {
                         ? "客戶已同意報價"
                         : selected?.quoteStatus === "rejected"
                           ? "客戶已拒絕前次報價"
-                          : "目前報價"}
+                          : selected?.status === "quote_pending"
+                            ? "待確認報價"
+                            : "目前報價"}
                     </strong>
                     <span>
                       金額：{selected?.quoteAmount ?? "—"}
@@ -839,6 +885,26 @@ export default function ServiceTicketsPage() {
                   >
                     {quoteLocked ? "客戶已同意報價" : hasQuote ? "重新報價" : "送出報價"}
                   </button>
+                  {selected.status === "quote_pending" ? (
+                    <>
+                      <button
+                        type="button"
+                        className="btn btn--primary"
+                        disabled={saving}
+                        onClick={() => void quoteRespond(true)}
+                      >
+                        代客戶同意報價
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn--danger"
+                        disabled={saving}
+                        onClick={() => void quoteRespond(false)}
+                      >
+                        代客戶拒絕報價
+                      </button>
+                    </>
+                  ) : null}
                 </div>
               </section>
 

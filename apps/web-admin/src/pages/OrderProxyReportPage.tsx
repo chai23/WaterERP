@@ -56,6 +56,13 @@ type DriverBillingHints = {
   prepaidBarrelBalance?: number;
   allowPrepaidOverdraft?: boolean;
   accountBalance?: string | number;
+  cashTaxInvoice?: {
+    mode: "tax_inclusive" | "tax_exclusive";
+    taxRate?: string;
+    untaxedAmount?: string;
+    taxAmount?: string;
+    totalWithTax?: string;
+  } | null;
   lastCompletedDelivery?: {
     orderNo?: string;
     expectedAmount?: string | number | null;
@@ -632,6 +639,13 @@ export default function OrderProxyReportPage() {
 
               const goodsPreview = goodsSummaryFromJob(job);
               const expanded = expandedJobId === id;
+              const deliveryLines = deliveryLinesFromJob(job);
+              const floorBonusLines = floorBonusLinesFromJob(job);
+              const hasDeliveryLines = deliveryLines.length > 0;
+              const hasFloorBonus = floorBonusLines.length > 0;
+              const stepQty = 2;
+              const stepFloor = 3;
+              const stepCollect = hasFloorBonus ? 4 : 3;
 
               return (
                 <article
@@ -694,38 +708,84 @@ export default function OrderProxyReportPage() {
 
                   {expanded ? (
                     <div className="proxy-report-card__body">
-                  {hints ? (
+                  {hints ? (() => {
+                    const orderTotal = Number(hints.orderTotal ?? job.salesOrder?.totalAmount ?? 0);
+                    const cashSub = Number(hints.cashSubtotal ?? 0);
+                    const monthlySub = Number(hints.monthlySubtotal ?? 0);
+                    const prepaidSub = Number(hints.prepaidLineTotal ?? 0);
+                    const priorBal = Number(hints.cashPriorBalance ?? 0);
+                    const taxInv = hints.cashTaxInvoice;
+                    const taxAmt = taxInv ? Number(taxInv.taxAmount ?? 0) : 0;
+                    const isTaxExclusive = taxInv?.mode === "tax_exclusive";
+                    const fmtMoney = (n: number) => n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+                    return (
                     <div className="proxy-report-card__billing">
-                      <div>
-                        <strong>結帳</strong>：{billingTypeLabel(hints.billingType)} · 訂單總額{" "}
-                        <strong>${String(hints.orderTotal ?? job.salesOrder?.totalAmount ?? "—")}</strong>
+                      <div className="proxy-report-card__billing-row">
+                        <span>結帳方式</span>
+                        <strong>{billingTypeLabel(hints.billingType)}</strong>
                       </div>
-                      {cashDue != null && cashDue > 0 ? (
-                        <div style={{ marginTop: "0.2rem" }}>
-                          <strong className="proxy-report-card__cash-due">本趟建議收款 ${cashDue}</strong>
-                          {Number(hints.cashPriorBalance ?? 0) > 0 ? (
-                            <span className="proxy-report-card__cash-muted">
-                              {" "}
-                              （含前期未清 ${hints.cashPriorBalance}）
-                            </span>
+                      <div className="proxy-report-card__billing-row">
+                        <span>訂單總額</span>
+                        <strong>${fmtMoney(orderTotal)}</strong>
+                      </div>
+
+                      {(monthlySub > 0 || prepaidSub > 0 || cashSub !== orderTotal) ? (
+                        <div className="proxy-report-card__billing-breakdown">
+                          {cashSub > 0 ? (
+                            <div className="proxy-report-card__billing-item">
+                              <span>現金列小計</span>
+                              <span>${fmtMoney(cashSub)}</span>
+                            </div>
                           ) : null}
-                          {feeEst > 0 ? (
-                            <div className="proxy-report-card__cash-muted" style={{ marginTop: "0.15rem" }}>
-                              預估搬運費 ${feeEst.toFixed(0)}
-                              {floorFeeBillingIsCash(job) ? "（已計入建議收款）" : "（併入月結）"}
+                          {monthlySub > 0 ? (
+                            <div className="proxy-report-card__billing-item">
+                              <span>月結列小計</span>
+                              <span>${fmtMoney(monthlySub)}</span>
+                            </div>
+                          ) : null}
+                          {prepaidSub > 0 ? (
+                            <div className="proxy-report-card__billing-item">
+                              <span>預付列小計</span>
+                              <span>${fmtMoney(prepaidSub)}</span>
                             </div>
                           ) : null}
                         </div>
+                      ) : null}
+
+                      {taxAmt > 0 ? (
+                        <div className="proxy-report-card__billing-item">
+                          <span>稅金{isTaxExclusive ? "（外加）" : "（含稅）"}</span>
+                          <span>${fmtMoney(taxAmt)}</span>
+                        </div>
+                      ) : null}
+
+                      {priorBal > 0 ? (
+                        <div className="proxy-report-card__billing-item proxy-report-card__billing-item--warn">
+                          <span>前期現金未清</span>
+                          <span>${fmtMoney(priorBal)}</span>
+                        </div>
+                      ) : null}
+
+                      {feeEst > 0 ? (
+                        <div className="proxy-report-card__billing-item">
+                          <span>預估搬運費{floorFeeBillingIsCash(job) ? "" : "（併入月結）"}</span>
+                          <span>${feeEst.toFixed(0)}</span>
+                        </div>
+                      ) : null}
+
+                      {cashDue != null && cashDue > 0 ? (
+                        <div className="proxy-report-card__billing-row proxy-report-card__billing-row--due">
+                          <span>本趟建議收款</span>
+                          <strong className="proxy-report-card__cash-due">${fmtMoney(cashDue)}</strong>
+                        </div>
                       ) : (
-                        <div className="proxy-report-card__cash-muted" style={{ marginTop: "0.2rem" }}>
-                          本趟應收現金 $0（月結或無現金列；若客戶臨付請照實填寫實收）
-                          {feeEst > 0 && !floorFeeBillingIsCash(job) ? (
-                            <div style={{ marginTop: "0.15rem" }}>預估搬運費 ${feeEst.toFixed(0)}（併入月結）</div>
-                          ) : null}
+                        <div className="proxy-report-card__billing-note">
+                          本趟應收現金 $0（月結或無現金列；臨付請照實填實收）
                         </div>
                       )}
                     </div>
-                  ) : null}
+                    );
+                  })() : null}
 
                   {locked ? (
                     <p className="card__hint" style={{ margin: 0 }}>
@@ -739,291 +799,381 @@ export default function OrderProxyReportPage() {
                           已代登回報、待核銷。若與紙本不符可修正後重新提交；核銷後即鎖定。
                         </p>
                       ) : null}
-                      <fieldset disabled={savingId === id} style={{ margin: 0, padding: 0, border: "none" }}>
-                        <div className="proxy-report-card__form-row proxy-report-card__radio-row">
-                          <label>
-                            <input
-                              type="radio"
-                              name={`del-${id}`}
-                              checked={form.delivered}
-                              onChange={() => updateForm(id, { delivered: true })}
-                            />
-                            已送達
-                          </label>
-                          <label>
-                            <input
-                              type="radio"
-                              name={`del-${id}`}
-                              checked={!form.delivered}
-                              onChange={() => updateForm(id, { delivered: false })}
-                            />
-                            未送達
-                          </label>
-                        </div>
-
-                        {!form.delivered ? (
-                          <div className="field proxy-report-card__field-spaced">
-                            <span>未送達原因</span>
-                            <textarea
-                              rows={2}
-                              value={form.failureReason}
-                              onChange={(e) => updateForm(id, { failureReason: e.target.value })}
-                              placeholder="例如：客戶不在、地址錯誤、拒收…"
-                            />
+                      <fieldset className="proxy-report-steps" disabled={savingId === id}>
+                        <section className="proxy-report-step">
+                          <header className="proxy-report-step__head">
+                            <span className="proxy-report-step__num" aria-hidden="true">
+                              1
+                            </span>
+                            <div>
+                              <h4 className="proxy-report-step__title">配送結果</h4>
+                              <p className="proxy-report-step__hint">先選結果；未送達請填原因</p>
+                            </div>
+                          </header>
+                          <div className="proxy-report-outcome" role="radiogroup" aria-label="配送結果">
+                            <label
+                              className={`proxy-report-outcome__opt${form.delivered ? " is-active" : ""}`}
+                            >
+                              <input
+                                type="radio"
+                                name={`del-${id}`}
+                                checked={form.delivered}
+                                onChange={() => updateForm(id, { delivered: true })}
+                              />
+                              <span>已送達</span>
+                            </label>
+                            <label
+                              className={`proxy-report-outcome__opt${!form.delivered ? " is-active is-fail" : ""}`}
+                            >
+                              <input
+                                type="radio"
+                                name={`del-${id}`}
+                                checked={!form.delivered}
+                                onChange={() => updateForm(id, { delivered: false })}
+                              />
+                              <span>未送達</span>
+                            </label>
                           </div>
-                        ) : (
+                          {!form.delivered ? (
+                            <div className="field proxy-report-step__block">
+                              <span>未送達原因</span>
+                              <textarea
+                                rows={2}
+                                value={form.failureReason}
+                                onChange={(e) => updateForm(id, { failureReason: e.target.value })}
+                                placeholder="例如：客戶不在、地址錯誤、拒收…"
+                              />
+                            </div>
+                          ) : null}
+                        </section>
+
+                        {form.delivered ? (
                           <>
-                            {deliveryLinesFromJob(job).length > 0 ? (
-                              <div className="proxy-report-card__lines" style={{ marginBottom: "0.65rem" }}>
-                                <div className="proxy-report-card__lines-title" style={{ fontSize: "0.84rem", marginBottom: "0.35rem" }}>
-                                  <strong>實際配送桶數</strong>
-                                  <span className="proxy-report-card__cash-muted" style={{ marginLeft: "0.35rem" }}>
-                                    （開單 0 表示待定，請填實際數量）
-                                  </span>
-                                </div>
-                                <div className="proxy-report-card__lines-grid" style={{ display: "grid", gap: "0.4rem" }}>
-                                  {deliveryLinesFromJob(job).map((line) => {
-                                    const lineId = String(line.id);
-                                    const ordered = line.qtyOrdered ?? 0;
-                                    return (
-                                      <div
-                                        key={lineId}
-                                        className="proxy-report-card__line-row"
-                                        style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}
-                                      >
-                                        <span style={{ flex: "1 1 8rem", fontSize: "0.84rem" }}>
-                                          {orderLineDisplayName(line)}
-                                          {ordered > 0 ? (
-                                            <span className="proxy-report-card__cash-muted">（開單 {ordered}）</span>
-                                          ) : (
-                                            <span className="proxy-report-card__cash-muted">（開單待定）</span>
-                                          )}
-                                        </span>
-                                        <input
-                                          type="number"
-                                          min={0}
-                                          step={1}
-                                          className="field field--sm"
-                                          style={{ width: "4.5rem" }}
-                                          value={form.lineQtyDelivered[lineId] ?? ordered}
-                                          onChange={(e) =>
-                                            updateForm(id, {
-                                              lineQtyDelivered: {
-                                                ...form.lineQtyDelivered,
-                                                [lineId]: Math.max(0, Math.floor(Number(e.target.value) || 0)),
-                                              },
-                                            })
-                                          }
-                                          aria-label={`${orderLineDisplayName(line)} 實際配送桶數`}
-                                        />
-                                        <span style={{ fontSize: "0.78rem", color: "var(--text-muted)" }}>桶</span>
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                                <div style={{ marginTop: "0.45rem", display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
-                                  <button
-                                    type="button"
-                                    className="btn btn--secondary btn--sm"
-                                    disabled={confirmingLineId === id || savingId === id}
-                                    onClick={() => void confirmLineQty(id)}
-                                  >
-                                    {confirmingLineId === id ? "確認中…" : "確認配送數量"}
-                                  </button>
-                                  {lineQtyConfirmedByJob[id] ? (
-                                    <span className="feedback feedback--ok" style={{ margin: 0, padding: "0.2rem 0.5rem", fontSize: "0.8rem" }}>
-                                      已確認（訂單金額／應收已更新）
-                                    </span>
-                                  ) : (
-                                    <span className="proxy-report-card__cash-muted" style={{ fontSize: "0.8rem" }}>
-                                      修改桶數後請先確認，再填收款並提交回報
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            ) : null}
-                          {floorBonusLinesFromJob(job).length > 0 ? (
-                            <div style={{ marginBottom: "0.65rem", padding: "0.65rem", border: "1px dashed var(--border)", borderRadius: 8 }}>
-                              <div style={{ fontSize: "0.84rem", marginBottom: "0.35rem" }}>
-                                <strong>搬運紀錄</strong>
-                                <span className="proxy-report-card__cash-muted" style={{ marginLeft: "0.35rem" }}>
-                                  （二樓以上或地下樓才填；可新增多筆）
+                            <section className="proxy-report-step">
+                              <header className="proxy-report-step__head">
+                                <span className="proxy-report-step__num" aria-hidden="true">
+                                  {stepQty}
                                 </span>
-                              </div>
-                              <div className="proxy-report-card__cash-muted" style={{ fontSize: "0.8rem", marginBottom: "0.45rem" }}>
-                                送貨點主檔樓層：{formatFloor(job.salesOrder?.deliveryAddress?.deliveryFloor)}
-                              </div>
-                              {form.floorBonusRecords.map((record) => (
-                                <div
-                                  key={record.key}
-                                  style={{
-                                    display: "grid",
-                                    gridTemplateColumns: "minmax(8rem, 1fr) 4.5rem 4.5rem auto",
-                                    gap: "0.4rem",
-                                    alignItems: "center",
-                                    marginBottom: "0.35rem",
-                                  }}
-                                >
-                                  <select
-                                    value={record.lineId}
-                                    onChange={(e) =>
-                                      updateForm(id, {
-                                        floorBonusRecords: form.floorBonusRecords.map((r) =>
-                                          r.key === record.key ? { ...r, lineId: e.target.value } : r,
-                                        ),
-                                      })
-                                    }
-                                  >
-                                    <option value="">商品</option>
-                                    {floorBonusLinesFromJob(job).map((line) => (
-                                      <option key={String(line.id)} value={String(line.id)}>
-                                        {orderLineDisplayName(line)}
-                                      </option>
-                                    ))}
-                                  </select>
-                                  <input
-                                    type="number"
-                                    step={1}
-                                    value={record.floor}
-                                    onChange={(e) =>
-                                      updateForm(id, {
-                                        floorBonusRecords: form.floorBonusRecords.map((r) =>
-                                          r.key === record.key ? { ...r, floor: e.target.value } : r,
-                                        ),
-                                      })
-                                    }
-                                    placeholder="樓層"
-                                    aria-label="搬運樓層"
-                                  />
+                                <div>
+                                  <h4 className="proxy-report-step__title">配送桶數與空桶回收</h4>
+                                  <p className="proxy-report-step__hint">
+                                    對照開單填實際配送（開單 0 為待定，填完請確認數量）；下方一併填本次空桶回收
+                                  </p>
+                                </div>
+                              </header>
+                              {hasDeliveryLines ? (
+                                <>
+                                  <div className="proxy-report-qty">
+                                    <div className="proxy-report-qty__head" aria-hidden="true">
+                                      <span>商品</span>
+                                      <span>開單</span>
+                                      <span>實際</span>
+                                    </div>
+                                    {deliveryLines.map((line) => {
+                                      const lineId = String(line.id);
+                                      const ordered = line.qtyOrdered ?? 0;
+                                      const actual = form.lineQtyDelivered[lineId] ?? ordered;
+                                      const pendingOrder = ordered <= 0;
+                                      const changed = actual !== ordered;
+                                      return (
+                                        <div
+                                          key={lineId}
+                                          className={`proxy-report-qty__row${pendingOrder ? " is-pending" : ""}${
+                                            changed ? " is-changed" : ""
+                                          }`}
+                                        >
+                                          <span className="proxy-report-qty__name">{orderLineDisplayName(line)}</span>
+                                          <span className="proxy-report-qty__ordered">
+                                            {pendingOrder ? "待定" : ordered}
+                                          </span>
+                                          <div className="proxy-report-qty__actual">
+                                            <input
+                                              type="number"
+                                              min={0}
+                                              step={1}
+                                              value={actual}
+                                              onChange={(e) =>
+                                                updateForm(id, {
+                                                  lineQtyDelivered: {
+                                                    ...form.lineQtyDelivered,
+                                                    [lineId]: Math.max(0, Math.floor(Number(e.target.value) || 0)),
+                                                  },
+                                                })
+                                              }
+                                              aria-label={`${orderLineDisplayName(line)} 實際配送桶數`}
+                                            />
+                                            <span className="proxy-report-qty__unit">桶</span>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                  <div className="proxy-report-qty__actions">
+                                    <button
+                                      type="button"
+                                      className="btn btn--secondary btn--sm"
+                                      disabled={confirmingLineId === id || savingId === id}
+                                      onClick={() => void confirmLineQty(id)}
+                                    >
+                                      {confirmingLineId === id ? "確認中…" : "確認配送數量"}
+                                    </button>
+                                    {lineQtyConfirmedByJob[id] ? (
+                                      <span className="proxy-report-qty__status is-ok">已確認 · 金額／應收已更新</span>
+                                    ) : (
+                                      <span className="proxy-report-qty__status">請先確認，再填收款並提交</span>
+                                    )}
+                                  </div>
+                                </>
+                              ) : null}
+
+                              <div className="proxy-report-barrel-row">
+                                <div className="proxy-report-barrel-row__info">
+                                  <strong>空桶回收</strong>
+                                  {barrelsOnSite != null ? (
+                                    <span>
+                                      送貨點目前未回收：<em>{barrelsOnSite}</em> 桶
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <label className="proxy-report-barrel-row__input">
+                                  <span>本次回收</span>
                                   <input
                                     type="number"
                                     min={0}
-                                    step={1}
-                                    value={record.qty}
+                                    value={form.emptyBarrelsReturned}
+                                    onFocus={(e) => e.currentTarget.select()}
                                     onChange={(e) =>
                                       updateForm(id, {
-                                        floorBonusRecords: form.floorBonusRecords.map((r) =>
-                                          r.key === record.key ? { ...r, qty: e.target.value } : r,
-                                        ),
+                                        emptyBarrelsReturned: Math.max(0, Math.floor(Number(e.target.value) || 0)),
                                       })
                                     }
-                                    placeholder="桶數"
-                                    aria-label="搬運桶數"
                                   />
-                                  <button
-                                    type="button"
-                                    className="btn btn--ghost btn--sm"
-                                    onClick={() =>
-                                      updateForm(id, {
-                                        floorBonusRecords: form.floorBonusRecords.filter((r) => r.key !== record.key),
-                                      })
-                                    }
-                                  >
-                                    移除
-                                  </button>
-                                </div>
-                              ))}
-                              <button
-                                type="button"
-                                className="btn btn--secondary btn--sm"
-                                onClick={() =>
-                                  updateForm(id, {
-                                    floorBonusRecords: [
-                                      ...form.floorBonusRecords,
-                                      {
-                                        key: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-                                        lineId: String(floorBonusLinesFromJob(job)[0]?.id ?? ""),
-                                        floor:
-                                          job.salesOrder?.deliveryAddress?.deliveryFloor != null
-                                            ? String(job.salesOrder.deliveryAddress.deliveryFloor)
-                                            : "",
-                                        qty: "",
-                                      },
-                                    ],
-                                  })
-                                }
-                              >
-                                ＋ 新增搬運紀錄
-                              </button>
-                              <p className="card__hint" style={{ margin: "0.45rem 0 0" }}>
-                                送出後系統會自動把客戶搬運費加入訂單並重算應收（核銷後不可再改）。
-                              </p>
-                            </div>
-                          ) : null}
-                          <div className="proxy-report-card__form-row proxy-report-card__form-row--cash">
-                            <div className="field field--sm">
-                              <span>空桶回收</span>
-                              <input
-                                type="number"
-                                min={0}
-                                value={form.emptyBarrelsReturned}
-                                onFocus={(e) => e.currentTarget.select()}
-                                onChange={(e) =>
-                                  updateForm(id, { emptyBarrelsReturned: Math.max(0, Math.floor(Number(e.target.value) || 0)) })
-                                }
-                              />
-                            </div>
-                            <div className="field field--sm">
-                              <span>實收現金</span>
-                              <input
-                                type="number"
-                                min={0}
-                                step="0.01"
-                                value={form.cashReceived}
-                                onFocus={(e) => e.currentTarget.select()}
-                                onChange={(e) => updateForm(id, { cashReceived: Number(e.target.value) || 0 })}
-                              />
-                            </div>
-                            <div className="field field--sm">
-                              <span>實收支票</span>
-                              <input
-                                type="number"
-                                min={0}
-                                step="0.01"
-                                value={form.checkReceived}
-                                onFocus={(e) => e.currentTarget.select()}
-                                onChange={(e) => updateForm(id, { checkReceived: Number(e.target.value) || 0 })}
-                              />
-                            </div>
-                            {cashDue != null && form.delivered ? (
-                              <div className="field field--sm" style={{ alignSelf: "flex-end" }}>
-                                <span>與建議收款差額</span>
-                                <div className="proxy-report-card__variance">
-                                  {(form.cashReceived + form.checkReceived - cashDue).toFixed(2)}
-                                </div>
+                                  <em>桶</em>
+                                </label>
                               </div>
+                            </section>
+
+                            {hasFloorBonus ? (
+                              <section className="proxy-report-step">
+                                <header className="proxy-report-step__head">
+                                  <span className="proxy-report-step__num" aria-hidden="true">
+                                    {stepFloor}
+                                  </span>
+                                  <div>
+                                    <h4 className="proxy-report-step__title">
+                                      搬運紀錄 <span className="proxy-report-step__optional">選填</span>
+                                    </h4>
+                                    <p className="proxy-report-step__hint">
+                                      僅二樓以上或地下樓需填；可新增多筆。送出後自動加搬運費並重算應收
+                                    </p>
+                                  </div>
+                                </header>
+                                <p className="proxy-report-floor-meta">
+                                  送貨點主檔樓層：
+                                  <strong>{formatFloor(job.salesOrder?.deliveryAddress?.deliveryFloor)}</strong>
+                                </p>
+                                {form.floorBonusRecords.length > 0 ? (
+                                  <div className="proxy-report-floor-list">
+                                    {form.floorBonusRecords.map((record) => (
+                                      <div key={record.key} className="proxy-report-floor-row">
+                                        <label className="proxy-report-floor-field">
+                                          <span>商品</span>
+                                          <select
+                                            value={record.lineId}
+                                            onChange={(e) =>
+                                              updateForm(id, {
+                                                floorBonusRecords: form.floorBonusRecords.map((r) =>
+                                                  r.key === record.key ? { ...r, lineId: e.target.value } : r,
+                                                ),
+                                              })
+                                            }
+                                          >
+                                            <option value="">請選擇</option>
+                                            {floorBonusLines.map((line) => (
+                                              <option key={String(line.id)} value={String(line.id)}>
+                                                {orderLineDisplayName(line)}
+                                              </option>
+                                            ))}
+                                          </select>
+                                        </label>
+                                        <label className="proxy-report-floor-field">
+                                          <span>樓層</span>
+                                          <input
+                                            type="number"
+                                            step={1}
+                                            value={record.floor}
+                                            onChange={(e) =>
+                                              updateForm(id, {
+                                                floorBonusRecords: form.floorBonusRecords.map((r) =>
+                                                  r.key === record.key ? { ...r, floor: e.target.value } : r,
+                                                ),
+                                              })
+                                            }
+                                            placeholder="例：3"
+                                            aria-label="搬運樓層"
+                                          />
+                                        </label>
+                                        <label className="proxy-report-floor-field">
+                                          <span>桶數</span>
+                                          <input
+                                            type="number"
+                                            min={0}
+                                            step={1}
+                                            value={record.qty}
+                                            onChange={(e) =>
+                                              updateForm(id, {
+                                                floorBonusRecords: form.floorBonusRecords.map((r) =>
+                                                  r.key === record.key ? { ...r, qty: e.target.value } : r,
+                                                ),
+                                              })
+                                            }
+                                            placeholder="0"
+                                            aria-label="搬運桶數"
+                                          />
+                                        </label>
+                                        <button
+                                          type="button"
+                                          className="btn btn--ghost btn--sm proxy-report-floor-remove"
+                                          onClick={() =>
+                                            updateForm(id, {
+                                              floorBonusRecords: form.floorBonusRecords.filter((r) => r.key !== record.key),
+                                            })
+                                          }
+                                        >
+                                          移除
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <p className="proxy-report-floor-empty">此單尚無搬運紀錄</p>
+                                )}
+                                <button
+                                  type="button"
+                                  className="btn btn--secondary btn--sm"
+                                  onClick={() =>
+                                    updateForm(id, {
+                                      floorBonusRecords: [
+                                        ...form.floorBonusRecords,
+                                        {
+                                          key: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                                          lineId: String(floorBonusLines[0]?.id ?? ""),
+                                          floor:
+                                            job.salesOrder?.deliveryAddress?.deliveryFloor != null
+                                              ? String(job.salesOrder.deliveryAddress.deliveryFloor)
+                                              : "",
+                                          qty: "",
+                                        },
+                                      ],
+                                    })
+                                  }
+                                >
+                                  ＋ 新增搬運紀錄
+                                </button>
+                              </section>
                             ) : null}
-                          </div>
+
+                            <section className="proxy-report-step">
+                              <header className="proxy-report-step__head">
+                                <span className="proxy-report-step__num" aria-hidden="true">
+                                  {stepCollect}
+                                </span>
+                                <div>
+                                  <h4 className="proxy-report-step__title">收款</h4>
+                                  <p className="proxy-report-step__hint">依紙本填寫實收；差額供核對參考</p>
+                                </div>
+                              </header>
+
+                              <div className="proxy-report-collect-block">
+                                {cashDue != null ? (
+                                  <div className="proxy-report-collect__due">
+                                    <span>本趟建議收款</span>
+                                    <strong>${cashDue.toLocaleString()}</strong>
+                                  </div>
+                                ) : null}
+                                <div className="proxy-report-collect proxy-report-collect--money">
+                                  <label className="proxy-report-collect__field">
+                                    <span>實收現金</span>
+                                    <div className="proxy-report-collect__input">
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        step="0.01"
+                                        value={form.cashReceived}
+                                        onFocus={(e) => e.currentTarget.select()}
+                                        onChange={(e) => updateForm(id, { cashReceived: Number(e.target.value) || 0 })}
+                                      />
+                                      <em>元</em>
+                                    </div>
+                                  </label>
+                                  <label className="proxy-report-collect__field">
+                                    <span>實收支票</span>
+                                    <div className="proxy-report-collect__input">
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        step="0.01"
+                                        value={form.checkReceived}
+                                        onFocus={(e) => e.currentTarget.select()}
+                                        onChange={(e) => updateForm(id, { checkReceived: Number(e.target.value) || 0 })}
+                                      />
+                                      <em>元</em>
+                                    </div>
+                                  </label>
+                                </div>
+                                {cashDue != null ? (
+                                  <div
+                                    className={`proxy-report-collect__variance${
+                                      form.cashReceived + form.checkReceived - cashDue === 0
+                                        ? " is-zero"
+                                        : form.cashReceived + form.checkReceived - cashDue < 0
+                                          ? " is-short"
+                                          : " is-over"
+                                    }`}
+                                  >
+                                    <span>與建議差額</span>
+                                    <strong>
+                                      {(form.cashReceived + form.checkReceived - cashDue).toLocaleString(undefined, {
+                                        minimumFractionDigits: 0,
+                                        maximumFractionDigits: 2,
+                                      })}
+                                    </strong>
+                                  </div>
+                                ) : null}
+                              </div>
+                            </section>
                           </>
-                        )}
+                        ) : null}
 
-                        <div className="field proxy-report-card__field-spaced">
-                          <span>備註（選填）</span>
-                          <input
-                            type="text"
-                            value={form.note}
-                            onChange={(e) => updateForm(id, { note: e.target.value })}
-                            placeholder="特殊狀況說明"
-                          />
-                        </div>
-
-                        <button
-                          type="button"
-                          className="btn btn--primary btn--sm"
-                          disabled={
-                            savingId === id ||
-                            (form.delivered &&
-                              deliveryLinesFromJob(job).length > 0 &&
-                              !lineQtyConfirmedByJob[id])
-                          }
-                          onClick={() => void submitReport(id)}
-                        >
-                          {savingId === id
-                            ? "提交中…"
-                            : pendingOffice
-                              ? "更新代登回報"
-                              : "提交代登回報"}
-                        </button>
+                        <section className="proxy-report-step proxy-report-step--submit">
+                          <div className="field">
+                            <span>備註（選填）</span>
+                            <input
+                              type="text"
+                              value={form.note}
+                              onChange={(e) => updateForm(id, { note: e.target.value })}
+                              placeholder="特殊狀況說明"
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            className="btn btn--primary"
+                            disabled={
+                              savingId === id ||
+                              (form.delivered && hasDeliveryLines && !lineQtyConfirmedByJob[id])
+                            }
+                            onClick={() => void submitReport(id)}
+                          >
+                            {savingId === id
+                              ? "提交中…"
+                              : pendingOffice
+                                ? "更新代登回報"
+                                : "提交代登回報"}
+                          </button>
+                          {form.delivered && hasDeliveryLines && !lineQtyConfirmedByJob[id] ? (
+                            <p className="proxy-report-step__submit-hint">須先完成「確認配送數量」才能提交</p>
+                          ) : null}
+                        </section>
                       </fieldset>
                     </>
                   ) : null}

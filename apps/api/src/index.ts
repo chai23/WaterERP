@@ -20,6 +20,8 @@ import {
   notifyCustomerViaLine,
 } from "./line/messaging.js";
 import {
+  createServiceTicket,
+  isServiceType,
   serializeServiceTicketAdmin,
   serviceTicketAdminInclude,
   serviceTicketStatusLabel,
@@ -5526,6 +5528,49 @@ app.patch("/api/products/:productId", async (req, res) => {
   }
 });
 
+app.post("/api/products/:productId/inventory-adjust", async (req, res) => {
+  try {
+    const productId = toBigInt(req.params.productId);
+    if (!productId) {
+      res.status(400).json({ ok: false, message: "參數錯誤：productId" });
+      return;
+    }
+    const { qtyDelta, note } = req.body as { qtyDelta?: unknown; note?: unknown };
+    const delta = Number(qtyDelta);
+    if (!Number.isFinite(delta) || delta === 0 || !Number.isInteger(delta)) {
+      res.status(400).json({ ok: false, message: "數量須為非零整數" });
+      return;
+    }
+    const existing = await prisma.product.findUnique({ where: { id: productId } });
+    if (!existing) {
+      res.status(404).json({ ok: false, message: "找不到商品" });
+      return;
+    }
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.inventoryBalance.upsert({
+        where: { productId },
+        create: { productId, qtyOnHand: delta },
+        update: { qtyOnHand: { increment: delta } },
+      });
+      await tx.stockMovement.create({
+        data: {
+          productId,
+          movementType: delta > 0 ? "inbound" : "adjust",
+          qtyDelta: delta,
+          refType: "manual",
+          refId: productId,
+          note: typeof note === "string" && note.trim() ? note.trim().slice(0, 500) : (delta > 0 ? "手動入庫" : "手動調整"),
+          createdByUserId: DEFAULT_CREATOR_USER_ID,
+        },
+      });
+      return tx.inventoryBalance.findUnique({ where: { productId } });
+    });
+    res.json({ ok: true, data: result });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
 app.get("/api/vehicles", async (_req, res) => {
   try {
     const rows = await prisma.vehicle.findMany({
@@ -5646,10 +5691,6 @@ app.post("/api/auth/bootstrap", async (req, res) => {
       res.status(400).json({ ok: false, message: "姓名、帳號、密碼為必填" });
       return;
     }
-    if (password.length < 6) {
-      res.status(400).json({ ok: false, message: "密碼至少 6 字元" });
-      return;
-    }
     const user = await prisma.user.create({
       data: {
         name,
@@ -5709,10 +5750,6 @@ app.post("/api/users", async (req, res) => {
       res.status(400).json({ ok: false, message: "姓名、帳號、密碼為必填" });
       return;
     }
-    if (password.length < 6) {
-      res.status(400).json({ ok: false, message: "密碼至少 6 字元" });
-      return;
-    }
     const row = await prisma.user.create({
       data: {
         name,
@@ -5765,10 +5802,6 @@ app.patch("/api/users/:userId", async (req, res) => {
       data.isActive = body.isActive;
     }
     if (typeof body.password === "string" && body.password !== "") {
-      if (body.password.length < 6) {
-        res.status(400).json({ ok: false, message: "密碼至少 6 字元" });
-        return;
-      }
       data.passwordHash = await hashPassword(body.password);
     }
     const row = await prisma.user.update({ where: { id: userId }, data, include: { driver: true } });
@@ -5788,8 +5821,8 @@ app.patch("/api/auth/password", async (req, res) => {
     const body = req.body as { oldPassword?: unknown; newPassword?: unknown };
     const oldPassword = typeof body.oldPassword === "string" ? body.oldPassword : "";
     const newPassword = typeof body.newPassword === "string" ? body.newPassword : "";
-    if (!oldPassword || newPassword.length < 6) {
-      res.status(400).json({ ok: false, message: "請輸入原密碼，且新密碼至少 6 字元" });
+    if (!oldPassword || !newPassword) {
+      res.status(400).json({ ok: false, message: "請輸入原密碼與新密碼" });
       return;
     }
     const user = await prisma.user.findUnique({ where: { id: auth.id } });
@@ -5828,10 +5861,6 @@ app.post("/api/drivers", async (req, res) => {
 
     if (!name || !employeeCode || !password) {
       res.status(400).json({ ok: false, message: "姓名、員編、密碼為必填" });
-      return;
-    }
-    if (password.length < 6) {
-      res.status(400).json({ ok: false, message: "密碼至少 6 字元" });
       return;
     }
 
@@ -5993,10 +6022,6 @@ app.patch("/api/drivers/:driverId", async (req, res) => {
       const password = typeof body.password === "string" ? body.password : "";
       if (password === "") {
         res.status(400).json({ ok: false, message: "密碼不可為空" });
-        return;
-      }
-      if (password.length < 6) {
-        res.status(400).json({ ok: false, message: "密碼至少 6 字元" });
         return;
       }
       passwordHash = await hashPassword(password);
@@ -12653,6 +12678,90 @@ app.get("/api/service-tickets/:ticketId", async (req, res) => {
       return;
     }
     res.json({ ok: true, data: serializeServiceTicketAdmin(row) });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: String(e) });
+  }
+});
+
+/** 後台手動建立飲水機服務單（電話進線等） */
+app.post("/api/service-tickets", async (req, res) => {
+  try {
+    const serviceTypeRaw = req.body?.serviceType;
+    if (!isServiceType(serviceTypeRaw)) {
+      res.status(400).json({ ok: false, message: "請選擇服務類型（清洗／維修／兩者）" });
+      return;
+    }
+    const customerId = toBigInt(req.body?.customerId);
+    const deliveryAddressId = toBigInt(req.body?.deliveryAddressId);
+    if (!customerId || !deliveryAddressId) {
+      res.status(400).json({ ok: false, message: "請選擇客戶與服務地址" });
+      return;
+    }
+    const addr = await prisma.deliveryAddress.findFirst({
+      where: { id: deliveryAddressId, customerId },
+      select: { id: true },
+    });
+    if (!addr) {
+      res.status(400).json({ ok: false, message: "地址不屬於此客戶" });
+      return;
+    }
+
+    const preferredDateRaw =
+      typeof req.body?.preferredDate === "string" ? req.body.preferredDate.trim() : "";
+    let preferredDate: Date | null = null;
+    if (preferredDateRaw) {
+      const range = parseLocalYmdRange(preferredDateRaw);
+      if (!range) {
+        res.status(400).json({ ok: false, message: "希望日期格式須為 YYYY-MM-DD" });
+        return;
+      }
+      const [y, mo, d] = preferredDateRaw.split("-").map(Number);
+      preferredDate = new Date(Date.UTC(y, mo - 1, d));
+    }
+
+    const preferredSlot =
+      typeof req.body?.preferredSlot === "string" ? req.body.preferredSlot.trim() || null : null;
+    const problemNote =
+      typeof req.body?.problemNote === "string" ? req.body.problemNote.trim() || null : null;
+    const customerNote =
+      typeof req.body?.customerNote === "string" ? req.body.customerNote.trim() || null : null;
+    const needLoaner =
+      req.body?.needLoaner === true || req.body?.needLoaner === "true" || req.body?.needLoaner === 1;
+    const loanerNote =
+      typeof req.body?.loanerNote === "string" ? req.body.loanerNote.trim() || null : null;
+
+    if (!problemNote) {
+      res.status(400).json({ ok: false, message: "請填寫問題說明（來電內容）" });
+      return;
+    }
+
+    const created = await createServiceTicket(prisma, {
+      customerId,
+      deliveryAddressId,
+      serviceType: serviceTypeRaw,
+      preferredDate,
+      preferredSlot,
+      problemNote,
+      customerNote,
+      needLoaner,
+      loanerNote: needLoaner
+        ? loanerNote ?? "後台代開：若需載回廠維修，請提供備用機"
+        : null,
+      source: "admin",
+    });
+
+    void notifyCustomerViaLine(prisma, {
+      customerId,
+      eventType: "service_ticket_created",
+      text: `已為您建立飲水機服務單（${created.ticketNo}｜${serviceTypeLabel(created.serviceType)}），客服受理後會安排人員評估，謝謝。`,
+      payload: { serviceTicketId: created.id.toString(), ticketNo: created.ticketNo },
+    }).catch((err) => console.error("[line-notify] service_ticket_created(admin)", err));
+
+    const full = await prisma.serviceTicket.findUniqueOrThrow({
+      where: { id: created.id },
+      include: serviceTicketAdminInclude,
+    });
+    res.status(201).json({ ok: true, data: serializeServiceTicketAdmin(full) });
   } catch (e) {
     res.status(500).json({ ok: false, message: String(e) });
   }

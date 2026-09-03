@@ -642,62 +642,41 @@ export default function FloorDeliveryBonusQueryPage() {
               <p className="card__hint" style={{ marginTop: 0, marginBottom: "0.75rem" }}>
                 此為<strong>司機薪資</strong>單價，與下方「客戶搬運費」分開。預設 3／2／-1 樓；地上用正數、地下用負數（-1＝地下一樓）。一樓不計。
               </p>
-              <div className="table-wrap payroll-rates__table">
-                <table className="data-table data-table--compact">
-                  <thead>
-                    <tr>
-                      <th style={{ width: "8rem" }}>樓層</th>
-                      <th className="num" style={{ width: "10rem" }}>
-                        單價（元／桶）
-                      </th>
-                      <th style={{ width: "5rem" }}>操作</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {floorRatesDraft.length === 0 ? (
-                      <tr>
-                        <td colSpan={3} className="text-muted">
-                          尚未設定樓層單價，請下方新增。
-                        </td>
-                      </tr>
-                    ) : (
-                      floorRatesDraft.map((row, idx) => (
-                        <tr key={`${row.floor}-${idx}`}>
-                          <td>
-                            <strong>{formatDeliveryFloor(Number(row.floor))}</strong>
-                            <span className="text-muted" style={{ marginLeft: "0.4rem", fontSize: "0.78em" }}>
-                              ({row.floor})
-                            </span>
-                          </td>
-                          <td className="num">
-                            <input
-                              type="number"
-                              min={0}
-                              step="0.01"
-                              className="input--compact"
-                              style={{ width: "7rem", textAlign: "right" }}
-                              value={row.wage}
-                              onChange={(e) =>
-                                setFloorRatesDraft((rows) =>
-                                  rows.map((r, i) => (i === idx ? { ...r, wage: e.target.value } : r)),
-                                )
-                              }
-                            />
-                          </td>
-                          <td>
-                            <button
-                              type="button"
-                              className="btn btn--danger btn--sm"
-                              onClick={() => setFloorRatesDraft((rows) => rows.filter((_, i) => i !== idx))}
-                            >
-                              移除
-                            </button>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
+              <div className="payroll-rates__table">
+                {floorRatesDraft.length === 0 ? (
+                  <p className="text-muted">尚未設定樓層單價，請下方新增。</p>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "0.375rem" }}>
+                    {floorRatesDraft.map((row, idx) => (
+                      <div key={`${row.floor}-${idx}`} style={{ display: "flex", alignItems: "center", gap: "0.75rem", padding: "0.375rem 0.5rem", background: "var(--bg-muted, #f7f8fa)", borderRadius: 6 }}>
+                        <strong style={{ minWidth: "5rem" }}>{formatDeliveryFloor(Number(row.floor))}</strong>
+                        <span style={{ flex: 1 }}>
+                          <input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            className="input--compact"
+                            style={{ width: "6rem", textAlign: "right" }}
+                            value={row.wage}
+                            onChange={(e) =>
+                              setFloorRatesDraft((rows) =>
+                                rows.map((r, i) => (i === idx ? { ...r, wage: e.target.value } : r)),
+                              )
+                            }
+                          />
+                          <span className="text-muted" style={{ marginLeft: "0.25rem", fontSize: "0.85em" }}>元／桶</span>
+                        </span>
+                        <button
+                          type="button"
+                          className="btn btn--danger btn--sm"
+                          onClick={() => setFloorRatesDraft((rows) => rows.filter((_, i) => i !== idx))}
+                        >
+                          移除
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="payroll-rates__add">
@@ -734,62 +713,41 @@ export default function FloorDeliveryBonusQueryPage() {
               <p className="card__hint" style={{ marginTop: 0, marginBottom: "0.75rem" }}>
                 與上方「司機獎金」分開。預設二樓 $10、三樓 $20、地下一樓 $10。司機回報上樓桶數後，系統會依此單價自動加入訂單（月結併入月結；現金／預付收現金）。
               </p>
-              <div className="table-wrap payroll-rates__table">
-                <table className="data-table data-table--compact">
-                  <thead>
-                    <tr>
-                      <th style={{ width: "8rem" }}>樓層</th>
-                      <th className="num" style={{ width: "10rem" }}>
-                        客戶單價（元／桶）
-                      </th>
-                      <th style={{ width: "5rem" }}>操作</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {customerFeeDraft.length === 0 ? (
-                      <tr>
-                        <td colSpan={3} className="text-muted">
-                          尚未設定客戶搬運費，請下方新增。
-                        </td>
-                      </tr>
-                    ) : (
-                      customerFeeDraft.map((row, idx) => (
-                        <tr key={`fee-${row.floor}-${idx}`}>
-                          <td>
-                            <strong>{formatDeliveryFloor(Number(row.floor))}</strong>
-                            <span className="text-muted" style={{ marginLeft: "0.4rem", fontSize: "0.78em" }}>
-                              ({row.floor})
-                            </span>
-                          </td>
-                          <td className="num">
-                            <input
-                              type="number"
-                              min={0}
-                              step="0.01"
-                              className="input--compact"
-                              style={{ width: "7rem", textAlign: "right" }}
-                              value={row.unitPrice}
-                              onChange={(e) =>
-                                setCustomerFeeDraft((rows) =>
-                                  rows.map((r, i) => (i === idx ? { ...r, unitPrice: e.target.value } : r)),
-                                )
-                              }
-                            />
-                          </td>
-                          <td>
-                            <button
-                              type="button"
-                              className="btn btn--danger btn--sm"
-                              onClick={() => setCustomerFeeDraft((rows) => rows.filter((_, i) => i !== idx))}
-                            >
-                              移除
-                            </button>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
+              <div className="payroll-rates__table">
+                {customerFeeDraft.length === 0 ? (
+                  <p className="text-muted">尚未設定客戶搬運費，請下方新增。</p>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "0.375rem" }}>
+                    {customerFeeDraft.map((row, idx) => (
+                      <div key={`fee-${row.floor}-${idx}`} style={{ display: "flex", alignItems: "center", gap: "0.75rem", padding: "0.375rem 0.5rem", background: "var(--bg-muted, #f7f8fa)", borderRadius: 6 }}>
+                        <strong style={{ minWidth: "5rem" }}>{formatDeliveryFloor(Number(row.floor))}</strong>
+                        <span style={{ flex: 1 }}>
+                          <input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            className="input--compact"
+                            style={{ width: "6rem", textAlign: "right" }}
+                            value={row.unitPrice}
+                            onChange={(e) =>
+                              setCustomerFeeDraft((rows) =>
+                                rows.map((r, i) => (i === idx ? { ...r, unitPrice: e.target.value } : r)),
+                              )
+                            }
+                          />
+                          <span className="text-muted" style={{ marginLeft: "0.25rem", fontSize: "0.85em" }}>元／桶</span>
+                        </span>
+                        <button
+                          type="button"
+                          className="btn btn--danger btn--sm"
+                          onClick={() => setCustomerFeeDraft((rows) => rows.filter((_, i) => i !== idx))}
+                        >
+                          移除
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
               <div className="payroll-rates__add">
                 <div className="field" style={{ margin: 0 }}>
@@ -884,54 +842,7 @@ export default function FloorDeliveryBonusQueryPage() {
             </table>
           </div>
 
-          <h3 className="card__title" style={{ fontSize: "1rem" }}>
-            商品配送單價
-          </h3>
-          <div className="table-wrap">
-            <table className="data-table data-table--compact">
-              <thead>
-                <tr>
-                  <th>編號</th>
-                  <th>商品</th>
-                  <th>單位</th>
-                  <th className="num">配送薪資（元／單位）</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(payroll?.products ?? []).map((p) => (
-                  <tr key={p.id}>
-                    <td>
-                      <code style={{ fontSize: "0.8em" }}>{p.productCode ?? "—"}</code>
-                    </td>
-                    <td>{p.name}</td>
-                    <td>{p.unit}</td>
-                    <td className="num">
-                      <input
-                        type="number"
-                        min={0}
-                        step="0.01"
-                        className="input--compact"
-                        style={{ width: "7rem", textAlign: "right" }}
-                        value={wageDraft[p.id] ?? p.driverDeliveryWage}
-                        onChange={(e) => setWageDraft((m) => ({ ...m, [p.id]: e.target.value }))}
-                      />
-                    </td>
-                    <td>
-                      <button
-                        type="button"
-                        className="btn btn--primary btn--sm"
-                        disabled={rowSaving === `p-${p.id}`}
-                        onClick={() => void saveProductWage(p.id)}
-                      >
-                        {rowSaving === `p-${p.id}` ? "…" : "儲存"}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+{/* 商品配送單價已移至主檔商品頁面編輯 */}
         </>
       ) : null}
     </section>

@@ -113,8 +113,8 @@ export default function DataDriversPage() {
   const resetPassword = async (d: Driver) => {
     const id = String(d.id);
     const password = passwordByDriver[id] ?? "";
-    if (password.length < 6) {
-      setListMessage("新密碼至少 6 字元");
+    if (!password) {
+      setListMessage("請輸入新密碼");
       return;
     }
     try {
@@ -166,7 +166,7 @@ export default function DataDriversPage() {
               <input type="text" value={driverForm.phone} onChange={(e) => setDriverForm({ ...driverForm, phone: e.target.value })} placeholder="可留空" />
             </div>
             <div className="field">
-              <span>初始密碼（至少 6 字元）</span>
+              <span>初始密碼</span>
               <input
                 type="password"
                 value={driverForm.password}

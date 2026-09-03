@@ -74,8 +74,8 @@ export default function DataUsersPage() {
 
   const resetPassword = async (u: AuthUser) => {
     const password = passwordByUser[u.id] ?? "";
-    if (password.length < 6) {
-      setMessage("新密碼至少 6 字元");
+    if (!password) {
+      setMessage("請輸入新密碼");
       return;
     }
     await patchUser(u.id, { password });
@@ -119,7 +119,7 @@ export default function DataUsersPage() {
             </label>
             <label className="field">
               <span>初始密碼</span>
-              <input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} minLength={6} required />
+              <input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required />
             </label>
             <div className="field field--actions">
               <button type="submit" className="btn btn--primary" disabled={saving}>

@@ -52,6 +52,7 @@ const PATH_PERMISSION: Record<string, PermModule> = {
   "/orders/barrel-pickup/new": "barrelPickup",
   "/orders/barrel-pickup/settle": "barrelPickup",
   "/orders/barrel-pickup/query": "barrelPickup",
+  "/orders/service-tickets/new": "serviceTickets",
   "/orders/service-tickets": "serviceTickets",
   "/orders/floor-bonus": "accounting",
   "/data/customers": "masters",

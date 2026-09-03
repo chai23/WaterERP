@@ -29,6 +29,15 @@ export default function DataProductsPage() {
   const [codeDraftById, setCodeDraftById] = useState<Record<string, string>>({});
   const [codeSavingId, setCodeSavingId] = useState<string | null>(null);
 
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [editForm, setEditForm] = useState({ name: "", unit: "", salePrice: "", costPrice: "", driverDeliveryWage: "" });
+  const [editSaving, setEditSaving] = useState(false);
+
+  const [invProduct, setInvProduct] = useState<Product | null>(null);
+  const [invQty, setInvQty] = useState("");
+  const [invNote, setInvNote] = useState("");
+  const [invSaving, setInvSaving] = useState(false);
+
   useEffect(() => {
     void refreshMasters(["products"], false);
   }, [refreshMasters]);
@@ -36,6 +45,11 @@ export default function DataProductsPage() {
   const createHasValidCode = normalizeProductCodeUi(productForm.productCode) != null;
   const createHasName = productForm.name.trim().length > 0;
   const createFormReady = createHasValidCode && createHasName;
+
+  const visibleProducts = useMemo(
+    () => products.filter((p) => !(p.sku ?? "").startsWith("SYS-")),
+    [products],
+  );
 
   const marginPreview = useMemo(() => {
     const sale = Number(productForm.salePrice);
@@ -148,6 +162,68 @@ export default function DataProductsPage() {
     } finally {
       setPatchingId(null);
     }
+  };
+
+  const openEditDialog = (p: Product) => {
+    setEditingProduct(p);
+    setEditForm({
+      name: p.name,
+      unit: p.unit ?? "",
+      salePrice: p.salePrice ?? "0",
+      costPrice: p.costPrice ?? "0",
+      driverDeliveryWage: p.driverDeliveryWage ?? "0",
+    });
+  };
+
+  const saveEditProduct = async () => {
+    if (!editingProduct) return;
+    const n = editForm.name.trim();
+    if (!n) { window.alert("名稱不可為空"); return; }
+    setEditSaving(true);
+    try {
+      const res = await fetch(`/api/products/${editingProduct.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: n,
+          unit: editForm.unit.trim() || undefined,
+          salePrice: Number(editForm.salePrice),
+          costPrice: Number(editForm.costPrice),
+          driverDeliveryWage: Number(editForm.driverDeliveryWage),
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok || !body.ok) { window.alert(body.message ?? "更新失敗"); return; }
+      setEditingProduct(null);
+      await refreshMasters(["products"], true);
+    } catch { window.alert("無法連線 API"); } finally { setEditSaving(false); }
+  };
+
+  const openInvDialog = (p: Product) => {
+    setInvProduct(p);
+    setInvQty("");
+    setInvNote("");
+  };
+
+  const saveInvAdjust = async () => {
+    if (!invProduct) return;
+    const delta = Number(invQty);
+    if (!Number.isFinite(delta) || delta === 0 || !Number.isInteger(delta)) {
+      window.alert("數量須為非零整數");
+      return;
+    }
+    setInvSaving(true);
+    try {
+      const res = await fetch(`/api/products/${invProduct.id}/inventory-adjust`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ qtyDelta: delta, note: invNote.trim() || undefined }),
+      });
+      const body = await res.json();
+      if (!res.ok || !body.ok) { window.alert(body.message ?? "調整失敗"); return; }
+      setInvProduct(null);
+      await refreshMasters(["products"], true);
+    } catch { window.alert("無法連線 API"); } finally { setInvSaving(false); }
   };
 
   const toggleAvailableOnLiff = async (productId: string, next: boolean) => {
@@ -411,14 +487,13 @@ export default function DataProductsPage() {
 
       <section className="card">
         <h2 className="card__title">
-          商品總覽 <span className="card__title-count">{products.length} 筆</span>
+          商品總覽 <span className="card__title-count">{visibleProducts.length} 筆</span>
         </h2>
         <div className="table-wrap">
           <table className="data-table">
             <thead>
               <tr>
                 <th>編號</th>
-                <th>SKU</th>
                 <th>名稱</th>
                 <th>單位</th>
                 <th>計入押桶</th>
@@ -428,37 +503,13 @@ export default function DataProductsPage() {
                 <th className="num">成本</th>
                 <th className="num">配送薪資</th>
                 <th className="num">庫存</th>
+                <th>操作</th>
               </tr>
             </thead>
             <tbody>
-              {products.map((p) => (
+              {visibleProducts.map((p) => (
                 <tr key={String(p.id)}>
-                  <td style={{ minWidth: "6.5rem" }}>
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      maxLength={3}
-                      className="mono-text"
-                      style={{ width: "4rem" }}
-                      disabled={codeSavingId === String(p.id)}
-                      value={codeDisplay(p)}
-                      onChange={(e) =>
-                        setCodeDraftById((m) => ({
-                          ...m,
-                          [String(p.id)]: e.target.value.replace(/\D/g, "").slice(0, 3),
-                        }))
-                      }
-                      onBlur={() => void saveProductCode(p)}
-                      title="3 碼數字；離開欄位時儲存，留空則清除編號"
-                      aria-label={`商品 ${p.name} 的編號`}
-                    />
-                    {codeSavingId === String(p.id) ? (
-                      <small className="text-muted" style={{ display: "block" }}>
-                        儲存中…
-                      </small>
-                    ) : null}
-                  </td>
-                  <td>{p.sku ?? "—"}</td>
+                  <td className="mono-text">{p.productCode ?? "—"}</td>
                   <td>
                     <strong>{p.name}</strong>
                   </td>
@@ -516,12 +567,96 @@ export default function DataProductsPage() {
                   >
                     {p.inventory?.qtyOnHand ?? 0}
                   </td>
+                  <td style={{ whiteSpace: "nowrap" }}>
+                    <button type="button" className="btn btn--primary btn--sm" onClick={() => openEditDialog(p)}>
+                      編輯
+                    </button>
+                    <button type="button" className="btn btn--secondary btn--sm" onClick={() => openInvDialog(p)} style={{ marginLeft: 4 }}>
+                      入庫
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       </section>
+
+      {editingProduct && (
+        <div className="modal-backdrop" onClick={() => !editSaving && setEditingProduct(null)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <h3 className="modal-card__title">編輯商品：{editingProduct.name}</h3>
+            <div className="form-grid" style={{ gap: "0.75rem" }}>
+              <div className="field">
+                <span>商品名稱</span>
+                <input type="text" value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} />
+              </div>
+              <div className="field">
+                <span>單位</span>
+                <input type="text" value={editForm.unit} onChange={(e) => setEditForm({ ...editForm, unit: e.target.value })} />
+              </div>
+              <div className="form-row-2">
+                <div className="field">
+                  <span>售價</span>
+                  <input type="number" min={0} step="0.01" value={editForm.salePrice} onChange={(e) => setEditForm({ ...editForm, salePrice: e.target.value })} />
+                </div>
+                <div className="field">
+                  <span>參考成本</span>
+                  <input type="number" min={0} step="0.01" value={editForm.costPrice} onChange={(e) => setEditForm({ ...editForm, costPrice: e.target.value })} />
+                </div>
+              </div>
+              <div className="field">
+                <span>司機配送薪資（元／單位）</span>
+                <input type="number" min={0} step="0.01" value={editForm.driverDeliveryWage} onChange={(e) => setEditForm({ ...editForm, driverDeliveryWage: e.target.value })} />
+              </div>
+            </div>
+            <div className="modal-card__actions">
+              <button type="button" className="btn btn--primary" disabled={editSaving} onClick={() => void saveEditProduct()}>
+                {editSaving ? "儲存中…" : "儲存"}
+              </button>
+              <button type="button" className="btn btn--ghost" disabled={editSaving} onClick={() => setEditingProduct(null)}>
+                取消
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {invProduct && (
+        <div className="modal-backdrop" onClick={() => !invSaving && setInvProduct(null)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <h3 className="modal-card__title">庫存調整：{invProduct.name}</h3>
+            <p style={{ margin: "0 0 0.75rem", color: "var(--text-muted)" }}>
+              目前庫存：<strong>{invProduct.inventory?.qtyOnHand ?? 0}</strong> {invProduct.unit ?? ""}
+            </p>
+            <div className="form-grid" style={{ gap: "0.75rem" }}>
+              <div className="field">
+                <span>調整數量（正數入庫、負數扣減）</span>
+                <input
+                  type="number"
+                  step={1}
+                  value={invQty}
+                  onChange={(e) => setInvQty(e.target.value)}
+                  placeholder="例如 100 或 -5"
+                  style={{ fontSize: "1.125rem" }}
+                />
+              </div>
+              <div className="field">
+                <span>備註（選填）</span>
+                <input type="text" value={invNote} onChange={(e) => setInvNote(e.target.value)} placeholder="例如：進貨補庫" />
+              </div>
+            </div>
+            <div className="modal-card__actions">
+              <button type="button" className="btn btn--primary" disabled={invSaving || !invQty || Number(invQty) === 0} onClick={() => void saveInvAdjust()}>
+                {invSaving ? "調整中…" : "確認調整"}
+              </button>
+              <button type="button" className="btn btn--ghost" disabled={invSaving} onClick={() => setInvProduct(null)}>
+                取消
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
