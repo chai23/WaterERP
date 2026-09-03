@@ -124,7 +124,6 @@ export default function FloorDeliveryBonusQueryPage() {
   const [ratesMsg, setRatesMsg] = useState("");
   const [ratesSaving, setRatesSaving] = useState(false);
   const [baseDraft, setBaseDraft] = useState<Record<string, string>>({});
-  const [wageDraft, setWageDraft] = useState<Record<string, string>>({});
   const [rowSaving, setRowSaving] = useState<string | null>(null);
 
   const loadPayroll = useCallback(async () => {
@@ -156,9 +155,6 @@ export default function FloorDeliveryBonusQueryPage() {
       const base: Record<string, string> = {};
       for (const d of data.drivers) base[d.driverId] = d.baseSalary;
       setBaseDraft(base);
-      const wages: Record<string, string> = {};
-      for (const p of data.products) wages[p.id] = p.driverDeliveryWage;
-      setWageDraft(wages);
     } catch {
       setPayrollErr("載入薪資統計失敗");
       setPayroll(null);
@@ -280,30 +276,6 @@ export default function FloorDeliveryBonusQueryPage() {
       void refreshMasters(["drivers", "products"], true);
     } catch {
       setRatesMsg("儲存底薪失敗");
-    } finally {
-      setRowSaving(null);
-    }
-  };
-
-  const saveProductWage = async (productId: string) => {
-    setRowSaving(`p-${productId}`);
-    setRatesMsg("");
-    try {
-      const res = await fetch(`/api/products/${productId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ driverDeliveryWage: Number(wageDraft[productId] ?? 0) }),
-      });
-      const payload = await res.json();
-      if (!res.ok || !payload.ok) {
-        setRatesMsg(payload.message ?? "儲存配送單價失敗");
-        return;
-      }
-      setRatesMsg("已儲存商品配送單價");
-      await loadPayroll();
-      void refreshMasters(["drivers", "products"], true);
-    } catch {
-      setRatesMsg("儲存配送單價失敗");
     } finally {
       setRowSaving(null);
     }

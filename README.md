@@ -59,6 +59,7 @@ npm run dev:driver   # http://localhost:5174
 | [`docs/BILLING.md`](docs/BILLING.md) | 三種結帳、流水帳、核銷規則（技術向） |
 | [`docs/USER_GUIDE_CASH_AND_SETTLEMENT.md`](docs/USER_GUIDE_CASH_AND_SETTLEMENT.md) | **現金往來／司機收款／櫃台沖帳**操作教學 |
 | [`tools/WaterErpLauncher/README.md`](tools/WaterErpLauncher/README.md) | Windows 正式機啟動器、服務管理與建置說明 |
+| [`docs/NEW_SERVER_DOMAIN_CUTOVER.md`](docs/NEW_SERVER_DOMAIN_CUTOVER.md) | **把現有網域切到新伺服器**（固定 IP、舊庫轉換、改 DNS） |
 
 ## Windows 正式機啟動器
 

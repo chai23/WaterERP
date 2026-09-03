@@ -26,8 +26,6 @@ const DEFAULT_PRODUCT_FORM = {
 export default function DataProductsPage() {
   const { products, productSaving, productMessage, productForm, setProductForm, onSubmitNewProduct, refreshMasters } = useDashboard();
   const [patchingId, setPatchingId] = useState<string | null>(null);
-  const [codeDraftById, setCodeDraftById] = useState<Record<string, string>>({});
-  const [codeSavingId, setCodeSavingId] = useState<string | null>(null);
 
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [editForm, setEditForm] = useState({ name: "", unit: "", salePrice: "", costPrice: "", driverDeliveryWage: "" });
@@ -66,60 +64,6 @@ export default function DataProductsPage() {
 
   const resetProductForm = () => {
     setProductForm(DEFAULT_PRODUCT_FORM);
-  };
-
-  const codeDisplay = (p: Product) => {
-    const id = String(p.id);
-    return codeDraftById[id] !== undefined ? codeDraftById[id]! : (p.productCode ?? "");
-  };
-
-  const saveProductCode = async (p: Product) => {
-    const draftRaw = codeDisplay(p);
-    const trimmed = draftRaw.trim();
-    let payload: { productCode: string | null };
-    if (trimmed === "") {
-      payload = { productCode: null };
-    } else {
-      const norm = normalizeProductCodeUi(trimmed);
-      if (!norm) {
-        window.alert("商品編號須為 3 碼數字，或留空以清除編號。");
-        return;
-      }
-      payload = { productCode: norm };
-    }
-    const prev = (p.productCode ?? "").trim();
-    const next = payload.productCode ?? "";
-    if (prev === next) {
-      setCodeDraftById((m) => {
-        const n = { ...m };
-        delete n[String(p.id)];
-        return n;
-      });
-      return;
-    }
-    setCodeSavingId(String(p.id));
-    try {
-      const res = await fetch(`/api/products/${p.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const body = await res.json();
-      if (!res.ok || !body.ok) {
-        window.alert(body.message ?? "更新編號失敗");
-        return;
-      }
-      setCodeDraftById((m) => {
-        const n = { ...m };
-        delete n[String(p.id)];
-        return n;
-      });
-      await refreshMasters(["products"], true);
-    } catch {
-      window.alert("無法連線 API");
-    } finally {
-      setCodeSavingId(null);
-    }
   };
 
   const toggleConsumesPrepaidBarrel = async (productId: string, next: boolean) => {
@@ -295,7 +239,7 @@ export default function DataProductsPage() {
           <section id="product-identity" className="customer-edit-section">
             <header className="customer-edit-section__head">
               <h4 className="customer-edit-section__title">基本識別</h4>
-              <p className="customer-edit-section__desc">商品編號為 3 碼數字，建立後仍可在下方總覽調整。</p>
+              <p className="customer-edit-section__desc">商品編號為 3 碼數字，建立後不可於此頁直接改號。</p>
             </header>
             <div className="customer-edit-section__body form-grid form-grid--wide">
               <div className="field">
