@@ -3,6 +3,10 @@
 --   CREATE DATABASE water_erp CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 --   USE water_erp;
 --   SOURCE schema.sql;
+--
+-- 若要「整庫刪光重來」（資料會全部消失）：
+--   macOS/Linux: CONFIRM=YES npm run db:rebuild-empty
+--   Windows CMD: set CONFIRM=YES&& npm run db:rebuild-empty
 
 SET NAMES utf8mb4;
 SET FOREIGN_KEY_CHECKS = 0;
@@ -15,6 +19,7 @@ DROP TABLE IF EXISTS `expense_vouchers`;
 DROP TABLE IF EXISTS `expense_categories`;
 DROP TABLE IF EXISTS `barrel_pickup_events`;
 DROP TABLE IF EXISTS `barrel_pickups`;
+DROP TABLE IF EXISTS `schema_migrations`;
 DROP TABLE IF EXISTS `delivery_events`;
 DROP TABLE IF EXISTS `delivery_assignments`;
 DROP TABLE IF EXISTS `delivery_plan_unassigned`;
@@ -1419,3 +1424,65 @@ VALUES
   ('patrol.early_shifts', '1'),
   ('patrol.late_shifts', '1')
 ON DUPLICATE KEY UPDATE `setting_value` = VALUES(`setting_value`);
+
+-- ---------------------------------------------------------------------------
+-- 結構版本追蹤（匯入完整 schema.sql 後視為已齊最新）
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `schema_migrations` (
+  `id` VARCHAR(64) NOT NULL,
+  `applied_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT INTO `schema_migrations` (`id`) VALUES
+  ('003_delivery_settlement.sql'),
+  ('005_customer_barrels_on_site.sql'),
+  ('006_office_settlement_gate.sql'),
+  ('007_product_counts_deposit_barrel.sql'),
+  ('009_customer_billing_three_ways.sql'),
+  ('010_monthly_cutoff_fifo.sql'),
+  ('011_line_billing_subtotals.sql'),
+  ('012_ar_sop_rebuild.sql'),
+  ('013_prepaid_barrel_semantics.sql'),
+  ('014_pending_prepaid_topup_barrels.sql'),
+  ('015_prepaid_product_balances.sql'),
+  ('016_customer_code.sql'),
+  ('017_product_code.sql'),
+  ('018_billing_statements_tax_invoices.sql'),
+  ('020_customer_master_extended.sql'),
+  ('021_address_zones_affiliated_companies.sql'),
+  ('022_customer_master_fk_complete.sql'),
+  ('023_address_barrels_on_site.sql'),
+  ('024_driver_capacity_limits.sql'),
+  ('025_print_slogans.sql'),
+  ('026_barrel_pickups.sql'),
+  ('027_order_announcements.sql'),
+  ('028_expense_vouchers.sql'),
+  ('029_tax_invoices_extended.sql'),
+  ('030_floor_delivery_bonus.sql'),
+  ('031_floor_bonus_multiple_records.sql'),
+  ('032_delivery_check_received.sql'),
+  ('033_barrel_movements.sql'),
+  ('034_promotion_rules.sql'),
+  ('035_line_liff_ordering.sql'),
+  ('036_product_available_on_liff.sql'),
+  ('037_sales_order_line_replenishment.sql'),
+  ('038_delivery_address_patrol.sql'),
+  ('039_driver_payroll.sql'),
+  ('040_floor_bonus_rates_by_floor.sql'),
+  ('041_floor_bonus_default_floors.sql'),
+  ('042_customer_floor_fee_rates.sql'),
+  ('043_service_tickets.sql'),
+  ('044_service_ticket_billing.sql'),
+  ('045_service_ticket_driver_collection.sql'),
+  ('046_drop_floor_bonus_wage.sql'),
+  ('047_customer_lifecycle.sql'),
+  ('048_drop_legacy_cash_ledger_entries.sql'),
+  ('049_test_orders_and_audit.sql'),
+  ('050_day_close.sql'),
+  ('051_delivery_planning_geo.sql'),
+  ('052_delivery_planning_settings.sql'),
+  ('053_delivery_planning_plans.sql'),
+  ('054_delivery_shift_dispatch.sql'),
+  ('055_driver_attendance_run_zones.sql')
+ON DUPLICATE KEY UPDATE `id` = VALUES(`id`);
