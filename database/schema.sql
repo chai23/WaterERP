@@ -24,6 +24,14 @@ DROP TABLE IF EXISTS `delivery_planning_audit_logs`;
 DROP TABLE IF EXISTS `delivery_plans`;
 DROP TABLE IF EXISTS `delivery_planning_settings`;
 DROP TABLE IF EXISTS `driver_attendance`;
+DROP TABLE IF EXISTS `service_ticket_events`;
+DROP TABLE IF EXISTS `service_tickets`;
+DROP TABLE IF EXISTS `day_close_locks`;
+DROP TABLE IF EXISTS `operation_audit_logs`;
+DROP TABLE IF EXISTS `customer_lifecycle_events`;
+DROP TABLE IF EXISTS `customer_churn_reasons`;
+DROP TABLE IF EXISTS `customer_floor_fee_rates`;
+DROP TABLE IF EXISTS `floor_delivery_bonus_records`;
 DROP TABLE IF EXISTS `credit_note_allocations`;
 DROP TABLE IF EXISTS `credit_notes`;
 DROP TABLE IF EXISTS `prepayment_txns`;
@@ -332,16 +340,69 @@ CREATE TABLE `customers` (
   `allow_prepaid_overdraft` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '預付不足時是否仍允許核銷',
   `line_user_id` VARCHAR(64) NULL DEFAULT NULL COMMENT 'LINE userId（LIFF 綁定）',
   `line_bound_at` DATETIME(3) NULL DEFAULT NULL COMMENT 'LINE 綁定時間',
+  `lifecycle_status` VARCHAR(24) NOT NULL DEFAULT 'active' COMMENT 'active|churned',
+  `churned_at` DATE NULL DEFAULT NULL COMMENT '決定不再服務日',
+  `churn_reason_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `churn_reason_note` VARCHAR(500) NULL DEFAULT NULL,
   `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_customers_customer_code` (`customer_code`),
   UNIQUE KEY `uk_customers_line_user_id` (`line_user_id`),
   KEY `idx_customers_name` (`name`),
+  KEY `idx_customers_lifecycle` (`lifecycle_status`, `churned_at`),
   KEY `fk_customers_address_zone` (`address_zone_id`),
   KEY `fk_customers_affiliated_company` (`affiliated_company_id`),
+  KEY `fk_customers_churn_reason` (`churn_reason_id`),
   CONSTRAINT `fk_customers_address_zone` FOREIGN KEY (`address_zone_id`) REFERENCES `address_zones` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
   CONSTRAINT `fk_customers_affiliated_company` FOREIGN KEY (`affiliated_company_id`) REFERENCES `affiliated_companies` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `customer_churn_reasons` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `code` VARCHAR(40) NOT NULL,
+  `label` VARCHAR(100) NOT NULL,
+  `sort_order` INT NOT NULL DEFAULT 0,
+  `is_active` TINYINT(1) NOT NULL DEFAULT 1,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_churn_reason_code` (`code`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT INTO `customer_churn_reasons` (`code`, `label`, `sort_order`) VALUES
+  ('competitor', '轉用他牌', 10),
+  ('business_closed', '歇業／倒閉', 20),
+  ('relocated', '搬遷（超出配送範圍）', 30),
+  ('price', '價格因素', 40),
+  ('service', '服務不滿意', 50),
+  ('no_demand', '無需求／改喝自來水', 60),
+  ('credit', '帳款／信用問題', 70),
+  ('internal', '公司整併／內部調整', 80),
+  ('other', '其他', 90);
+
+ALTER TABLE `customers`
+  ADD CONSTRAINT `fk_customers_churn_reason`
+    FOREIGN KEY (`churn_reason_id`) REFERENCES `customer_churn_reasons` (`id`)
+    ON DELETE SET NULL ON UPDATE CASCADE;
+
+CREATE TABLE `customer_lifecycle_events` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `customer_id` BIGINT UNSIGNED NOT NULL,
+  `event_type` VARCHAR(24) NOT NULL COMMENT 'created|churned|reactivated',
+  `effective_at` DATE NOT NULL COMMENT '事件生效日',
+  `churn_reason_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `note` VARCHAR(500) NULL DEFAULT NULL,
+  `recorded_by_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  KEY `idx_cle_customer_effective` (`customer_id`, `effective_at`),
+  KEY `idx_cle_event_effective` (`event_type`, `effective_at`),
+  KEY `fk_cle_churn_reason` (`churn_reason_id`),
+  KEY `fk_cle_user` (`recorded_by_user_id`),
+  CONSTRAINT `fk_cle_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_cle_churn_reason` FOREIGN KEY (`churn_reason_id`) REFERENCES `customer_churn_reasons` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_cle_user` FOREIGN KEY (`recorded_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `delivery_addresses` (
@@ -413,6 +474,21 @@ CREATE TABLE `payroll_floor_bonus_rates` (
   UNIQUE KEY `uk_payroll_floor_bonus_rates_floor` (`floor`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE `customer_floor_fee_rates` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `floor` SMALLINT NOT NULL COMMENT '樓層：2=二樓、3=三樓、-1=地下一樓',
+  `unit_price` DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '該樓層每桶向客戶收取金額',
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_customer_floor_fee_rates_floor` (`floor`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT INTO `customer_floor_fee_rates` (`floor`, `unit_price`) VALUES
+  (2, 10.00),
+  (3, 20.00),
+  (-1, 10.00);
+
 ALTER TABLE `delivery_addresses`
   ADD CONSTRAINT `fk_addr_patrol_product` FOREIGN KEY (`patrol_product_id`) REFERENCES `products` (`id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
@@ -455,6 +531,8 @@ CREATE TABLE `sales_orders` (
   `pending_prepaid_topup_barrels` INT NOT NULL DEFAULT 0 COMMENT '預付桶儲值待入帳桶數（本單現金AR全沖清後入餘額）',
   `cash_invoice_mode` VARCHAR(32) NULL DEFAULT NULL COMMENT 'none | tax_inclusive | tax_exclusive',
   `source` VARCHAR(16) NOT NULL DEFAULT 'admin' COMMENT 'admin | liff',
+  `is_test` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '測試資料標記；報表預設排除',
+  `test_batch_id` VARCHAR(64) NULL DEFAULT NULL COMMENT '測試批次 ID（可選）',
   `created_by_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
   `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
@@ -467,6 +545,8 @@ CREATE TABLE `sales_orders` (
   KEY `idx_so_billing_period` (`billing_period_key`, `customer_id`),
   KEY `idx_so_customer_office_settled` (`customer_id`, `office_settled_at`),
   KEY `idx_so_source` (`source`),
+  KEY `idx_sales_orders_is_test` (`is_test`),
+  KEY `idx_sales_orders_test_batch` (`test_batch_id`, `is_test`),
   KEY `idx_so_order_kind` (`order_kind`),
   KEY `idx_so_latest_shift` (`latest_date`, `latest_shift`),
   KEY `idx_so_preferred_driver` (`preferred_driver_id`),
@@ -1022,6 +1102,135 @@ ALTER TABLE `payments`
 
 ALTER TABLE `customer_ledger_entries`
   ADD CONSTRAINT `fk_cle_receipt_voucher` FOREIGN KEY (`receipt_voucher_id`) REFERENCES `receipt_vouchers` (`id`) ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- ---------------------------------------------------------------------------
+-- 飲水機服務單／關帳／稽核
+-- ---------------------------------------------------------------------------
+CREATE TABLE `service_tickets` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `ticket_no` VARCHAR(24) NOT NULL COMMENT 'ST+YYYYMMDD+序號',
+  `customer_id` BIGINT UNSIGNED NOT NULL,
+  `delivery_address_id` BIGINT UNSIGNED NOT NULL,
+  `service_type` VARCHAR(32) NOT NULL COMMENT 'cleaning|repair|both',
+  `status` VARCHAR(32) NOT NULL DEFAULT 'reported',
+  `preferred_date` DATE NULL DEFAULT NULL,
+  `preferred_slot` VARCHAR(120) NULL DEFAULT NULL,
+  `problem_note` TEXT NULL,
+  `customer_note` VARCHAR(500) NULL DEFAULT NULL,
+  `need_loaner` TINYINT(1) NOT NULL DEFAULT 0,
+  `loaner_requested_at` DATETIME(3) NULL DEFAULT NULL,
+  `loaner_note` VARCHAR(500) NULL DEFAULT NULL,
+  `accepted_by_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `accepted_at` DATETIME(3) NULL DEFAULT NULL,
+  `assess_driver_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `assess_vehicle_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `assess_date` DATE NULL DEFAULT NULL,
+  `assess_slot` VARCHAR(120) NULL DEFAULT NULL,
+  `assess_assigned_by_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `assess_assigned_at` DATETIME(3) NULL DEFAULT NULL,
+  `assess_outcome` VARCHAR(40) NULL DEFAULT NULL,
+  `assess_driver_note` VARCHAR(500) NULL DEFAULT NULL,
+  `assess_fee_amount` DECIMAL(14, 2) NULL DEFAULT NULL,
+  `assess_customer_agreed` TINYINT(1) NULL DEFAULT NULL,
+  `assess_reported_at` DATETIME(3) NULL DEFAULT NULL,
+  `workshop_status` VARCHAR(40) NULL DEFAULT NULL,
+  `workshop_note` TEXT NULL,
+  `workshop_updated_at` DATETIME(3) NULL DEFAULT NULL,
+  `workshop_updated_by_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `quote_amount` DECIMAL(14, 2) NULL DEFAULT NULL,
+  `quote_detail` TEXT NULL,
+  `quote_status` VARCHAR(32) NULL DEFAULT NULL,
+  `quote_sent_at` DATETIME(3) NULL DEFAULT NULL,
+  `quote_responded_at` DATETIME(3) NULL DEFAULT NULL,
+  `return_driver_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `return_vehicle_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `return_date` DATE NULL DEFAULT NULL,
+  `return_assigned_by_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `return_assigned_at` DATETIME(3) NULL DEFAULT NULL,
+  `returned_at` DATETIME(3) NULL DEFAULT NULL,
+  `billing_type` VARCHAR(32) NULL DEFAULT NULL COMMENT 'cash|monthly',
+  `charge_amount` DECIMAL(14, 2) NULL DEFAULT NULL,
+  `sales_order_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `collector_driver_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `collection_date` DATE NULL DEFAULT NULL,
+  `driver_cash_received` DECIMAL(14,2) NULL DEFAULT NULL,
+  `driver_check_received` DECIMAL(14,2) NULL DEFAULT NULL,
+  `closed_at` DATETIME(3) NULL DEFAULT NULL,
+  `cancelled_reason` VARCHAR(500) NULL DEFAULT NULL,
+  `source` VARCHAR(16) NOT NULL DEFAULT 'liff' COMMENT 'liff|admin',
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_service_tickets_ticket_no` (`ticket_no`),
+  UNIQUE KEY `uq_service_tickets_sales_order` (`sales_order_id`),
+  KEY `idx_service_tickets_customer_status` (`customer_id`, `status`),
+  KEY `idx_service_tickets_status_created` (`status`, `created_at`),
+  KEY `idx_service_tickets_assess_driver_date` (`assess_driver_id`, `assess_date`),
+  KEY `idx_service_tickets_collector_date` (`collector_driver_id`, `collection_date`),
+  CONSTRAINT `fk_service_tickets_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`),
+  CONSTRAINT `fk_service_tickets_address` FOREIGN KEY (`delivery_address_id`) REFERENCES `delivery_addresses` (`id`),
+  CONSTRAINT `fk_service_tickets_accepted_by` FOREIGN KEY (`accepted_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_service_tickets_assess_driver` FOREIGN KEY (`assess_driver_id`) REFERENCES `drivers` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_service_tickets_assess_vehicle` FOREIGN KEY (`assess_vehicle_id`) REFERENCES `vehicles` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_service_tickets_assess_assigned_by` FOREIGN KEY (`assess_assigned_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_service_tickets_workshop_by` FOREIGN KEY (`workshop_updated_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_service_tickets_return_driver` FOREIGN KEY (`return_driver_id`) REFERENCES `drivers` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_service_tickets_return_vehicle` FOREIGN KEY (`return_vehicle_id`) REFERENCES `vehicles` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_service_tickets_return_assigned_by` FOREIGN KEY (`return_assigned_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_service_tickets_sales_order` FOREIGN KEY (`sales_order_id`) REFERENCES `sales_orders` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_service_tickets_collector_driver` FOREIGN KEY (`collector_driver_id`) REFERENCES `drivers` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='飲水機清洗／維修服務單';
+
+CREATE TABLE `service_ticket_events` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `service_ticket_id` BIGINT UNSIGNED NOT NULL,
+  `event_type` VARCHAR(40) NOT NULL,
+  `payload_json` JSON NULL,
+  `created_by_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  KEY `idx_service_ticket_events_ticket` (`service_ticket_id`),
+  CONSTRAINT `fk_service_ticket_events_ticket` FOREIGN KEY (`service_ticket_id`) REFERENCES `service_tickets` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_service_ticket_events_user` FOREIGN KEY (`created_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `operation_audit_logs` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `actor_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `action` VARCHAR(64) NOT NULL,
+  `entity_type` VARCHAR(64) NULL DEFAULT NULL,
+  `entity_id` VARCHAR(64) NULL DEFAULT NULL,
+  `before_json` JSON NULL DEFAULT NULL,
+  `after_json` JSON NULL DEFAULT NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  KEY `idx_oal_action_created` (`action`, `created_at`),
+  KEY `idx_oal_entity` (`entity_type`, `entity_id`),
+  KEY `idx_oal_actor` (`actor_user_id`),
+  CONSTRAINT `fk_oal_actor` FOREIGN KEY (`actor_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `day_close_locks` (
+  `business_date` DATE NOT NULL COMMENT '營業日（本地日）',
+  `locked_at` DATETIME(3) NOT NULL,
+  `locked_by_user_id` BIGINT UNSIGNED NOT NULL,
+  `unlocked_at` DATETIME(3) NULL DEFAULT NULL,
+  `unlocked_by_user_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `note` VARCHAR(500) NULL DEFAULT NULL,
+  PRIMARY KEY (`business_date`),
+  KEY `idx_day_close_locked_by` (`locked_by_user_id`),
+  KEY `idx_day_close_unlocked_by` (`unlocked_by_user_id`),
+  CONSTRAINT `fk_day_close_locked_by` FOREIGN KEY (`locked_by_user_id`) REFERENCES `users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_day_close_unlocked_by` FOREIGN KEY (`unlocked_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT INTO `products` (
+  `sku`, `name`, `unit`, `counts_deposit_barrel`, `consumes_prepaid_barrel`,
+  `available_on_liff`, `sale_price`, `cost_price`, `driver_delivery_wage`, `is_active`,
+  `created_at`, `updated_at`
+) VALUES
+  ('SYS-FLOOR-FEE', '樓層搬運費', '桶', 0, 0, 0, 0.00, 0.00, 0.00, 1, CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3)),
+  ('SYS-SERVICE-FEE', '飲水機服務費', '式', 0, 0, 0, 0.00, 0.00, 0.00, 1, CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3));
 
 -- ---------------------------------------------------------------------------
 -- AI 派單（MVP-A／B）：出勤、設定、方案草稿

@@ -112,6 +112,10 @@ const MIGRATION_PROBES: Record<string, MigrationProbe> = {
   "032_delivery_check_received.sql": (p) => columnExists(p, "delivery_assignments", "check_received"),
   "033_barrel_movements.sql": (p) => tableExists(p, "barrel_movements"),
   "034_promotion_rules.sql": (p) => tableExists(p, "promotion_rules"),
+  "035_line_liff_ordering.sql": (p) => columnExists(p, "sales_orders", "source"),
+  "036_product_available_on_liff.sql": (p) => columnExists(p, "products", "available_on_liff"),
+  "037_sales_order_line_replenishment.sql": (p) => columnExists(p, "sales_order_lines", "is_replenishment"),
+  "038_delivery_address_patrol.sql": (p) => columnExists(p, "delivery_addresses", "patrol_product_id"),
   "039_driver_payroll.sql": (p) => tableExists(p, "payroll_settings"),
   "040_floor_bonus_rates_by_floor.sql": (p) => tableExists(p, "payroll_floor_bonus_rates"),
   "041_floor_bonus_default_floors.sql": async (p) => {
@@ -127,25 +131,20 @@ const MIGRATION_PROBES: Record<string, MigrationProbe> = {
   "044_service_ticket_billing.sql": (p) => indexExists(p, "service_tickets", "uq_service_tickets_sales_order"),
   "045_service_ticket_driver_collection.sql": (p) => columnExists(p, "service_tickets", "collector_driver_id"),
   "046_drop_floor_bonus_wage.sql": async (p) =>
-    !(await columnExists(p, "payroll_settings", "floor_bonus_wage")),
+    (await tableExists(p, "payroll_settings")) && !(await columnExists(p, "payroll_settings", "floor_bonus_wage")),
   "047_customer_lifecycle.sql": (p) => tableExists(p, "customer_lifecycle_events"),
   "048_drop_legacy_cash_ledger_entries.sql": async (p) => {
-    if (!(await tableExists(p, "customer_ledger_entries"))) return false;
-    const rows = await p.$queryRaw<{ cnt: bigint }[]>`
-      SELECT COUNT(*) AS cnt FROM customer_ledger_entries
-      WHERE entry_type IN (
-        'cash_ar_accrual',
-        'cash_receipt_alloc',
-        'cash_variance_over',
-        'cash_variance_short',
-        'cash_offset_order'
-      )
-    `;
-    return Number(rows[0]?.cnt ?? 0) === 0;
+    // 不可用「沒有舊類型資料」當已套用依據（空庫也會通過）；改以追蹤表為準
+    return false;
   },
   "049_test_orders_and_audit.sql": async (p) =>
     (await columnExists(p, "sales_orders", "is_test")) && (await tableExists(p, "operation_audit_logs")),
   "050_day_close.sql": (p) => tableExists(p, "day_close_locks"),
+  "051_delivery_planning_geo.sql": (p) => columnExists(p, "delivery_addresses", "latitude"),
+  "052_delivery_planning_settings.sql": (p) => tableExists(p, "delivery_planning_settings"),
+  "053_delivery_planning_plans.sql": (p) => tableExists(p, "delivery_plans"),
+  "054_delivery_shift_dispatch.sql": (p) => columnExists(p, "sales_orders", "order_kind"),
+  "055_driver_attendance_run_zones.sql": (p) => columnExists(p, "driver_attendance", "run_zone_ids_json"),
 };
 
 async function bootstrapFromExistingDb(prisma: PrismaClient): Promise<void> {
@@ -154,20 +153,13 @@ async function bootstrapFromExistingDb(prisma: PrismaClient): Promise<void> {
   if (Number(countRows[0]?.cnt ?? 0) > 0) return;
   if (!(await tableExists(prisma, "users"))) return;
 
+  // 只標記「探測通過」的 migration；不可一次連號標到某檔，避免空庫誤判已齊全
   const all = listMigrations();
-  let markThrough = -1;
-  for (let i = all.length - 1; i >= 0; i--) {
-    const file = all[i]!;
+  for (const file of all) {
     const probe = MIGRATION_PROBES[file];
     if (probe && (await probe(prisma))) {
-      markThrough = i;
-      break;
+      await recordApplied(prisma, file);
     }
-  }
-  if (markThrough < 0) return;
-
-  for (let i = 0; i <= markThrough; i++) {
-    await recordApplied(prisma, all[i]!);
   }
 }
 
@@ -206,6 +198,24 @@ async function recordApplied(prisma: PrismaClient, filename: string): Promise<vo
   );
 }
 
+async function repairFalseApplied(prisma: PrismaClient): Promise<string[]> {
+  await ensureTrackingTable(prisma);
+  const applied = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM schema_migrations ORDER BY id ASC`;
+  const removed: string[] = [];
+  for (const row of applied) {
+    const probe = MIGRATION_PROBES[row.id];
+    if (!probe) continue;
+    const ok = await probe(prisma);
+    if (!ok) {
+      await prisma.$executeRawUnsafe(
+        `DELETE FROM \`schema_migrations\` WHERE \`id\` = '${row.id.replace(/'/g, "''")}'`,
+      );
+      removed.push(row.id);
+    }
+  }
+  return removed;
+}
+
 function printJson(payload: StatusPayload): void {
   console.log(JSON.stringify(payload));
 }
@@ -213,18 +223,35 @@ function printJson(payload: StatusPayload): void {
 const args = process.argv.slice(2);
 const apply = args.includes("--apply");
 const dryRun = args.includes("--dry-run");
+const repair = args.includes("--repair");
 
 const prisma = new PrismaClient();
 
 try {
   const all = listMigrations();
+  let repaired: string[] = [];
+  if (repair) {
+    repaired = await repairFalseApplied(prisma);
+  }
+
   const applied = await getApplied(prisma);
   const appliedSet = new Set(applied);
   const pending = all.filter((name) => !appliedSet.has(name));
   const latest = all.length > 0 ? all[all.length - 1]! : null;
 
   if (!apply) {
-    printJson({ ok: true, applied, pending, latest });
+    printJson({
+      ok: true,
+      applied,
+      pending,
+      latest,
+      message: repair
+        ? repaired.length > 0
+          ? `已清除 ${repaired.length} 筆誤標紀錄，請再執行升級結構`
+          : "未發現誤標紀錄"
+        : undefined,
+      ...(repair ? { appliedNow: repaired } : {}),
+    });
     process.exit(0);
   }
 
