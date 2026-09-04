@@ -286,6 +286,7 @@ export default function AdminLayout() {
                           <NavLink
                             key={item.to}
                             to={item.to}
+                            end
                             className={({ isActive }) => `admin-nav__sublink${isActive ? " admin-nav__sublink--active" : ""}`}
                             onClick={closeNav}
                           >
