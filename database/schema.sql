@@ -67,7 +67,8 @@ DROP TABLE IF EXISTS `drivers`;
 DROP TABLE IF EXISTS `vehicles`;
 DROP TABLE IF EXISTS `users`;
 
-SET FOREIGN_KEY_CHECKS = 1;
+-- 匯入期間關閉外鍵檢查，避免建表順序導致失敗
+-- （整份檔案結尾再設回 1）
 
 CREATE TABLE `users` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -1486,3 +1487,5 @@ INSERT INTO `schema_migrations` (`id`) VALUES
   ('054_delivery_shift_dispatch.sql'),
   ('055_driver_attendance_run_zones.sql')
 ON DUPLICATE KEY UPDATE `id` = VALUES(`id`);
+
+SET FOREIGN_KEY_CHECKS = 1;
