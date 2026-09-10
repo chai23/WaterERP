@@ -147,7 +147,7 @@ struct LegacyMigrationView: View {
 
                 GroupBox("資料庫結構（water_erp）") {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("檢查並套用 `database/migrations/` 內未執行的 SQL，補上新表／新欄位（例如支出功能 028）。")
+                        Text("檢查並套用 `database/migrations/` 內未執行的 SQL。新庫請先匯入 `database/schema.sql`（基線 001）。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Text(vm.schemaStatusSummary)

@@ -5,8 +5,8 @@
 -- 執行後：訂單、客戶、司機、商品、車輛、庫存異動、配送、收款、使用者等皆清空。
 -- 登入帳號請於「轉換使用者資料」後取得（會建立 id=1 的 admin）。
 --
--- 用法：mysql -u... -p water_erp < 004_reset_data_keep_single_admin.sql
--- 或：npm run db:reset -w apps/api
+-- 用法：mysql -u... -p water_erp < database/maintenance/reset_data_keep_single_admin.sql
+-- 或：npm run db:reset
 -- =============================================================================
 
 SET NAMES utf8mb4;

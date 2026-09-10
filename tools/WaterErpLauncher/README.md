@@ -31,7 +31,7 @@ Windows 啟動器只提供正式部署模式，API 使用 `apps\api\dist\index.j
 
 啟動器分成五個分頁：
 
-- **服務總覽**：每 3 秒監控 MySQL、API、Nginx 及三個網站端點；可個別啟停服務。
+- **服務總覽**：一鍵啟動服務、Git 同步狀態、每 3 秒監控 MySQL、API、Nginx 及三個網站端點。
 - **資料維護**：資料庫結構、清空資料與舊庫轉換。
 - **進階工具**：Git pull、正式建置、Prisma generate、LINE 設定檢查。
 - **日誌**：完整部署與服務輸出。
@@ -41,9 +41,9 @@ MySQL 必須安裝為 Windows Service，預設服務名稱為 **`MySQL80`**。�
 請到「設定」分頁修改並儲存。啟停 Windows Service 通常需要權限，請在正式機上以
 **系統管理員身分執行** `WaterErpLauncher.exe`；權限不足時啟動器會顯示明確提示。
 
-「啟動全部」依序啟動 MySQL、API、Nginx。「停止應用」只停止 API 與 Nginx，刻意保留
+「一鍵啟動服務」依序啟動 MySQL、API、Nginx。「停止應用」只停止 API 與 Nginx，刻意保留
 MySQL 運行，供部署、結構升級與資料維護使用。停止 MySQL 只能從 MySQL 服務卡個別操作，
-且會再次確認。
+且會再次確認。服務總覽會比對 GitHub，若落後遠端會提示按「更新並部署」。
 
 「更新並部署」會停止應用（保留 MySQL），依序執行 Git pull、`npm install`、
 Prisma generate、資料庫結構套用、正式建置、Nginx 設定產生，最後重新啟動 API 與 Nginx。
@@ -56,7 +56,7 @@ Prisma generate、資料庫結構套用、正式建置、Nginx 設定產生，�
 
 | 功能 | 用途 |
 |------|------|
-| **資料庫結構升級** | 在本機 `water_erp` 補上新表／新欄位（執行 `database/migrations/*.sql`） |
+| **資料庫結構升級** | 在本機 `water_erp` 補上新表／新欄位（執行 `database/migrations/*.sql`；目前基線為 `001_baseline.sql`） |
 | **舊庫轉換** | 從遠端舊庫 `database` **唯讀**匯入客戶、商品等**主檔**（不含訂單） |
 
 舊系統訂單請在後台 **主檔資料 → 舊系統歷史訂單** 唯讀查看；切換上線時用 **切換日開帳** 帶入未收款與同步空桶／預付桶，**不要**匯入新系統訂單／應收流水。若曾用腳本匯入過，可用「清空交易資料」清掉。
@@ -73,7 +73,7 @@ npm run db:generate        # 升級後更新 Prisma Client
 
 1. **正式環境升級前務必備份**（`mysqldump`）
 2. **不要**對已有資料的庫執行整份 `database/schema.sql`（會 DROP TABLE）
-3. 清空資料的腳本（`004_reset_*`、`008_clear_*`、`019_clear_*` 等）不會被自動升級執行
+3. 清空資料的腳本在 `database/maintenance/`，不會被自動升級執行
    - 啟動器另有「清空交易資料（保留主檔）」→ `npm run db:clear-transactions`
    - 「清空全部業務資料」→ `npm run db:reset`
 4. 若資料庫是用 `schema.sql` 建的，腳本會自動偵測既有結構並寫入 `schema_migrations` 追蹤表，避免重複執行

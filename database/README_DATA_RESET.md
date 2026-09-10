@@ -4,7 +4,7 @@
 
 ## 1. 清空交易資料（保留主檔）— 建議日常測試用
 
-腳本：`migrations/019_clear_transaction_data_keep_masters.sql`
+腳本：`maintenance/clear_transaction_data_keep_masters.sql`
 
 ### 會清掉什麼
 
@@ -30,7 +30,7 @@ npm run db:clear-transactions
 
 ## 2. 清空全部業務資料（含主檔／使用者）
 
-腳本：`migrations/004_reset_data_keep_single_admin.sql`（檔名沿用；行為為**全清空**）
+腳本：`maintenance/reset_data_keep_single_admin.sql`
 
 ### 會清掉什麼
 
@@ -49,7 +49,7 @@ npm run db:clear-transactions
 ### 執行方式
 
 ```bash
-mysql -u YOUR_USER -p water_erp < database/migrations/004_reset_data_keep_single_admin.sql
+mysql -u YOUR_USER -p water_erp < database/maintenance/reset_data_keep_single_admin.sql
 ```
 
 或在啟動器按「清空全部業務資料」，或：

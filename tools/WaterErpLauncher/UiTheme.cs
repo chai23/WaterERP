@@ -14,23 +14,27 @@ internal static class UiTheme
     public static readonly Color Danger = Color.FromArgb(220, 38, 38);
     public static readonly Color Unknown = Color.FromArgb(148, 163, 184);
 
-    public static Button Button(string text, bool primary = false, bool danger = false)
+    public static Button Button(string text, bool primary = false, bool danger = false, bool success = false, bool large = false)
     {
+        var back = danger ? Danger : success ? Success : primary ? Primary : Surface;
+        var hover = danger
+            ? Color.FromArgb(185, 28, 28)
+            : success ? Color.FromArgb(21, 128, 61)
+            : primary ? PrimaryDark
+            : Color.FromArgb(248, 250, 252);
         var button = new Button
         {
             Text = text,
             AutoSize = true,
-            MinimumSize = new Size(96, 36),
-            Padding = new Padding(12, 4, 12, 4),
+            MinimumSize = large ? new Size(156, 42) : new Size(96, 36),
+            Padding = new Padding(large ? 16 : 12, 4, large ? 16 : 12, 4),
             FlatStyle = FlatStyle.Flat,
             Cursor = Cursors.Hand,
-            BackColor = danger ? Danger : primary ? Primary : Surface,
-            ForeColor = danger || primary ? Color.White : Text
+            BackColor = back,
+            ForeColor = danger || primary || success ? Color.White : Text
         };
-        button.FlatAppearance.BorderColor = danger ? Danger : primary ? Primary : Border;
-        button.FlatAppearance.MouseOverBackColor = danger
-            ? Color.FromArgb(185, 28, 28)
-            : primary ? PrimaryDark : Color.FromArgb(248, 250, 252);
+        button.FlatAppearance.BorderColor = back;
+        button.FlatAppearance.MouseOverBackColor = hover;
         return button;
     }
 

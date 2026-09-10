@@ -34,7 +34,7 @@ internal sealed class MainForm : Form
     {
         Text = "正在取得服務狀態…",
         AutoSize = true,
-        Font = new Font("Segoe UI", 10f, FontStyle.Bold),
+        Font = new Font("Segoe UI", 13f, FontStyle.Bold),
         ForeColor = UiTheme.Muted
     };
     private readonly Label _recentLog = new()
@@ -50,11 +50,40 @@ internal sealed class MainForm : Form
         AutoSize = true,
         ForeColor = UiTheme.Muted
     };
+    private readonly Label _gitDot = new()
+    {
+        Text = "●",
+        AutoSize = true,
+        Font = new Font("Segoe UI", 13f),
+        ForeColor = UiTheme.Unknown
+    };
+    private readonly Label _gitHeadline = new()
+    {
+        Text = "尚未檢查 Git 同步",
+        AutoSize = true,
+        Font = new Font("Segoe UI", 12f, FontStyle.Bold),
+        ForeColor = UiTheme.Unknown
+    };
+    private readonly Label _gitDetail = new()
+    {
+        Text = "啟動後會向 GitHub 比對目前分支。",
+        AutoSize = true,
+        MaximumSize = new Size(860, 0),
+        ForeColor = UiTheme.Muted
+    };
+    private readonly Label _gitHint = new()
+    {
+        Text = "請按「檢查同步」確認是否有新版本。",
+        AutoSize = true,
+        MaximumSize = new Size(860, 0),
+        ForeColor = UiTheme.Muted
+    };
 
     private readonly Button _deployButton = UiTheme.Button("更新並部署", primary: true);
     private readonly Button _refreshButton = UiTheme.Button("重新整理");
-    private readonly Button _startAllButton = UiTheme.Button("啟動全部", primary: true);
+    private readonly Button _startAllButton = UiTheme.Button("一鍵啟動服務", success: true, large: true);
     private readonly Button _stopAppsButton = UiTheme.Button("停止應用");
+    private readonly Button _gitCheckButton = UiTheme.Button("檢查同步");
     private readonly Button _gitPullButton = UiTheme.Button("Git pull");
     private readonly Button _buildButton = UiTheme.Button("建置正式版");
     private readonly Button _prismaButton = UiTheme.Button("Prisma generate");
@@ -68,8 +97,10 @@ internal sealed class MainForm : Form
     private readonly Button _browseNginxButton = UiTheme.Button("瀏覽…");
 
     private readonly System.Windows.Forms.Timer _healthTimer = new() { Interval = 3000 };
+    private readonly System.Windows.Forms.Timer _gitTimer = new() { Interval = 120_000 };
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(4) };
     private readonly SemaphoreSlim _healthGate = new(1, 1);
+    private readonly SemaphoreSlim _gitGate = new(1, 1);
     private readonly List<Control> _busyControls = new();
 
     private ServiceCard _mysqlCard = null!;
@@ -91,8 +122,8 @@ internal sealed class MainForm : Form
         BackColor = UiTheme.Background;
         ForeColor = UiTheme.Text;
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(980, 720);
-        Size = new Size(1180, 850);
+        MinimumSize = new Size(1040, 760);
+        Size = new Size(1220, 900);
 
         _tabs = new TabControl
         {
@@ -116,47 +147,88 @@ internal sealed class MainForm : Form
     {
         var page = NewTab("服務總覽");
         var scroll = NewScrollPanel();
-        var content = NewContentTable(7);
+        var content = NewContentTable(8);
 
-        var brand = new Panel { Dock = DockStyle.Fill, Height = 102, BackColor = UiTheme.Primary, Padding = new Padding(24, 16, 24, 16) };
-        var brandTitle = new Label
+        var version = typeof(Program).Assembly.GetName().Version;
+        var versionText = version is null ? "啟動器" : $"啟動器 v{version.Major}.{version.Minor}.{version.Build}";
+        var brand = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            Height = 108,
+            BackColor = UiTheme.Primary,
+            ColumnCount = 2,
+            RowCount = 2,
+            Padding = new Padding(22, 16, 22, 16),
+            Margin = new Padding(0, 0, 0, 12)
+        };
+        brand.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        brand.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        brand.Controls.Add(new Label
         {
             Text = "超好企業進銷存系統",
             AutoSize = true,
             ForeColor = Color.White,
-            Font = new Font("Segoe UI", 22f, FontStyle.Bold),
-            Location = new Point(22, 14)
-        };
-        var brandSubtitle = new Label
+            Font = new Font("Segoe UI", 22f, FontStyle.Bold)
+        }, 0, 0);
+        brand.Controls.Add(new Label
         {
             Text = "Windows 正式環境服務中心",
             AutoSize = true,
             ForeColor = Color.FromArgb(219, 234, 254),
-            Font = new Font("Segoe UI", 10.5f),
-            Location = new Point(25, 58)
-        };
-        brand.Controls.Add(brandTitle);
-        brand.Controls.Add(brandSubtitle);
+            Font = new Font("Segoe UI", 10.5f)
+        }, 0, 1);
+        brand.Controls.Add(new Label
+        {
+            Text = versionText,
+            AutoSize = true,
+            ForeColor = Color.FromArgb(191, 219, 254),
+            Anchor = AnchorStyles.Top | AnchorStyles.Right,
+            Margin = new Padding(12, 8, 0, 0)
+        }, 1, 0);
 
         var actionCard = UiTheme.Card();
         actionCard.Dock = DockStyle.Fill;
-        actionCard.Height = 92;
-        var actionLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2 };
-        actionLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        actionLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        actionLayout.Controls.Add(_summary, 0, 0);
-        var buttons = NewButtonRow(_deployButton, _refreshButton, _startAllButton, _stopAppsButton);
-        actionLayout.Controls.Add(buttons, 1, 0);
-        actionLayout.SetRowSpan(buttons, 2);
+        actionCard.AutoSize = true;
+        var actionLayout = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1 };
+        actionLayout.Controls.Add(_summary);
         actionLayout.Controls.Add(new Label
         {
-            Text = "停止應用只會停止 API 與 Nginx，MySQL 會保持運行。",
+            Text = "一鍵啟動會依序開啟 MySQL、API、Nginx。「停止應用」只停網站，資料庫保持運行。",
             AutoSize = true,
-            ForeColor = UiTheme.Muted
-        }, 0, 1);
+            ForeColor = UiTheme.Muted,
+            Margin = new Padding(0, 4, 0, 10)
+        });
+        actionLayout.Controls.Add(NewButtonRow(_startAllButton, _stopAppsButton, _deployButton, _refreshButton));
         actionCard.Controls.Add(actionLayout);
 
-        var serviceTitle = SectionTitle("核心服務", "每 3 秒自動監控，可個別啟動或停止。");
+        var gitCard = UiTheme.Card();
+        gitCard.Dock = DockStyle.Fill;
+        gitCard.AutoSize = true;
+        var gitLayout = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1 };
+        gitLayout.Controls.Add(new Label
+        {
+            Text = "Git 同步狀態",
+            AutoSize = true,
+            Font = new Font("Segoe UI", 13f, FontStyle.Bold),
+            ForeColor = UiTheme.Text
+        });
+        var gitStatusRow = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            WrapContents = false,
+            Margin = new Padding(0, 8, 0, 4)
+        };
+        gitStatusRow.Controls.Add(_gitDot);
+        _gitHeadline.Margin = new Padding(6, 1, 0, 0);
+        gitStatusRow.Controls.Add(_gitHeadline);
+        gitLayout.Controls.Add(gitStatusRow);
+        gitLayout.Controls.Add(_gitDetail);
+        _gitHint.Margin = new Padding(0, 6, 0, 10);
+        gitLayout.Controls.Add(_gitHint);
+        gitLayout.Controls.Add(NewButtonRow(_gitCheckButton));
+        gitCard.Controls.Add(gitLayout);
+
+        var serviceTitle = SectionTitle("核心服務", "每 3 秒自動監控，也可個別啟動或停止。");
         var serviceGrid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, AutoSize = true };
         for (var i = 0; i < 3; i++)
             serviceGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.333f));
@@ -193,6 +265,7 @@ internal sealed class MainForm : Form
 
         AddContentRow(content, brand);
         AddContentRow(content, actionCard);
+        AddContentRow(content, gitCard);
         AddContentRow(content, serviceTitle);
         AddContentRow(content, serviceGrid);
         AddContentRow(content, endpointTitle);
@@ -213,7 +286,7 @@ internal sealed class MainForm : Form
 
         var schemaCard = BuildToolCard(
             "資料庫結構",
-            "檢查或套用 database/migrations。正式機操作前請先備份資料庫。",
+            "檢查或套用 database/migrations（目前基線為 001）。正式機操作前請先備份資料庫。",
             NewButtonRow(_schemaCheckButton, _schemaApplyButton),
             _schemaStatus);
         AddContentRow(content, schemaCard);
@@ -255,7 +328,7 @@ internal sealed class MainForm : Form
         AddContentRow(content, PageHeader("進階工具", "供管理員分步執行部署工作；完整更新請使用服務總覽的「更新並部署」。"));
         AddContentRow(content, BuildToolCard(
             "程式與建置",
-            "分別執行 Git 拉取、正式建置或 Prisma Client 產生。",
+            "分別執行 Git 拉取、正式建置或 Prisma Client 產生。服務總覽會顯示是否已與 GitHub 同步。",
             NewButtonRow(_gitPullButton, _buildButton, _prismaButton)));
         AddContentRow(content, BuildToolCard(
             "LINE 正式設定",
@@ -339,8 +412,9 @@ internal sealed class MainForm : Form
     {
         _deployButton.Click += async (_, _) => await SafeUiActionAsync(PullAndDeployAsync);
         _refreshButton.Click += async (_, _) => await CheckHealthAsync(force: true);
-        _startAllButton.Click += async (_, _) => await RunBusyAsync(StartAllCoreAsync);
+        _startAllButton.Click += async (_, _) => await SafeUiActionAsync(StartAllServicesAsync);
         _stopAppsButton.Click += async (_, _) => await RunBusyAsync(StopApplicationServicesCoreAsync);
+        _gitCheckButton.Click += async (_, _) => await SafeUiActionAsync(() => RefreshGitStatusAsync(fetch: true, logResult: true));
         _mysqlCard.Start.Click += async (_, _) => await RunBusyAsync(StartMySqlAsync);
         _mysqlCard.Stop.Click += async (_, _) => await RunBusyAsync(StopMySqlAsync);
         _apiCard.Start.Click += async (_, _) => await RunBusyAsync(StartApiAsync);
@@ -372,10 +446,15 @@ internal sealed class MainForm : Form
         _browseProjectButton.Click += (_, _) => BrowseFolder(_projectRoot, "選擇專案根目錄（含 package.json）");
         _browseNginxButton.Click += (_, _) => BrowseFolder(_nginxRoot, "選擇 Nginx 目錄（含 nginx.exe）");
         _healthTimer.Tick += async (_, _) => await CheckHealthAsync();
+        _gitTimer.Tick += async (_, _) =>
+        {
+            if (!_uiBusy)
+                await RefreshGitStatusAsync(fetch: true, logResult: false);
+        };
 
         _busyControls.AddRange(new Control[]
         {
-            _deployButton, _startAllButton, _stopAppsButton, _gitPullButton, _buildButton, _prismaButton,
+            _deployButton, _startAllButton, _stopAppsButton, _gitCheckButton, _gitPullButton, _buildButton, _prismaButton,
             _lineCheckButton, _schemaCheckButton, _schemaApplyButton, _clearTransactionsButton,
             _resetDataButton, _saveSettingsButton, _browseProjectButton, _browseNginxButton,
             _mysqlCard.Start, _mysqlCard.Stop, _apiCard.Start, _apiCard.Stop, _nginxCard.Start, _nginxCard.Stop
@@ -397,14 +476,17 @@ internal sealed class MainForm : Form
         AppendLog("啟動器已就緒。正式模式固定使用 API dist + Nginx 靜態網站。");
         AppendLog($"MySQL Windows Service：{_mysqlServiceName.Text}");
         _healthTimer.Start();
+        _gitTimer.Start();
         await CheckHealthAsync(force: true);
         _ = CheckSchemaQuietlyAsync();
+        _ = RefreshGitStatusAsync(fetch: true, logResult: false);
     }
 
     private void OnFormClosing(object? sender, FormClosingEventArgs e)
     {
         _closing = true;
         _healthTimer.Stop();
+        _gitTimer.Stop();
         SaveSettingsFromUi();
         DetachApiEvents();
         TryKillAndDisposeApi(_apiProcess);
@@ -414,13 +496,23 @@ internal sealed class MainForm : Form
         _http.Dispose();
     }
 
-    private async Task StartAllCoreAsync()
+    private async Task StartAllServicesAsync()
+    {
+        await RunBusyAsync(async () =>
+        {
+            if (!await StartAllCoreAsync())
+                return;
+            MessageBox.Show(this, "MySQL、API 與 Nginx 已啟動。", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+        });
+    }
+
+    private async Task<bool> StartAllCoreAsync()
     {
         ValidateProjectRoot();
         ValidateProductionOutputs(includeApi: true);
-        if (!ConfirmLineProductionReady(requireBuiltDist: true, "啟動全部"))
-            return;
-        AppendLog("=== 啟動全部：MySQL → API → Nginx ===");
+        if (!ConfirmLineProductionReady(requireBuiltDist: true, "一鍵啟動服務"))
+            return false;
+        AppendLog("=== 一鍵啟動服務：MySQL → API → Nginx ===");
         if (!await StartMySqlAsync())
             throw new InvalidOperationException("MySQL 未成功啟動，已中止後續服務啟動。");
         if (!await StartApiAsync())
@@ -429,6 +521,7 @@ internal sealed class MainForm : Form
             throw new InvalidOperationException("Nginx 未成功啟動。");
         AppendLog("全部服務已啟動。");
         await CheckHealthAsync(force: true);
+        return true;
     }
 
     private async Task<bool> StartMySqlAsync()
@@ -621,6 +714,7 @@ internal sealed class MainForm : Form
             if (!await StartNginxAsync())
                 throw new InvalidOperationException("Nginx 啟動失敗。");
             AppendLog("=== 更新並部署完成 ===");
+            await RefreshGitStatusAsync(fetch: true, logResult: false);
             MessageBox.Show(this, "更新並部署完成。", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
         });
     }
@@ -633,6 +727,7 @@ internal sealed class MainForm : Form
         {
             if (await RunGitCommandCoreAsync(_projectRoot.Text.Trim(), $"pull origin {GetGitBranch()}") != 0)
                 throw new InvalidOperationException("Git pull 失敗，請查看日誌。");
+            await RefreshGitStatusAsync(fetch: true, logResult: false);
         });
     }
 
@@ -752,7 +847,7 @@ internal sealed class MainForm : Form
         ValidateProjectRoot();
         if (!ValidateApiEnvExists() || !await EnsureMySqlRunningAsync("清空交易資料"))
             return;
-        var script = Path.Combine(_projectRoot.Text.Trim(), "database", "migrations", "019_clear_transaction_data_keep_masters.sql");
+        var script = Path.Combine(_projectRoot.Text.Trim(), "database", "maintenance", "clear_transaction_data_keep_masters.sql");
         if (!File.Exists(script))
             throw new InvalidOperationException($"找不到清空腳本：\n{script}");
         var confirm = MessageBox.Show(
@@ -774,7 +869,7 @@ internal sealed class MainForm : Form
         ValidateProjectRoot();
         if (!ValidateApiEnvExists() || !await EnsureMySqlRunningAsync("清空全部資料"))
             return;
-        var script = Path.Combine(_projectRoot.Text.Trim(), "database", "migrations", "004_reset_data_keep_single_admin.sql");
+        var script = Path.Combine(_projectRoot.Text.Trim(), "database", "maintenance", "reset_data_keep_single_admin.sql");
         if (!File.Exists(script))
             throw new InvalidOperationException($"找不到清空腳本：\n{script}");
         var confirm = MessageBox.Show(
@@ -851,10 +946,21 @@ internal sealed class MainForm : Form
                 .Count(snapshot => snapshot.Health == ServiceHealth.Running);
             var endpointHealthy = new[] { adminTask.Result, driverTask.Result, liffTask.Result }
                 .Count(snapshot => snapshot.Health == ServiceHealth.Running);
-            _summary.Text = coreHealthy == 3 && endpointHealthy == 3
-                ? "所有核心服務與網站端點皆正常"
-                : $"核心服務 {coreHealthy}/3 正常 · 網站端點 {endpointHealthy}/3 正常";
-            _summary.ForeColor = coreHealthy == 3 && endpointHealthy == 3 ? UiTheme.Success : UiTheme.Warning;
+            if (coreHealthy == 3 && endpointHealthy == 3)
+            {
+                _summary.Text = "所有核心服務與網站端點皆正常";
+                _summary.ForeColor = UiTheme.Success;
+            }
+            else if (coreHealthy == 0)
+            {
+                _summary.Text = "服務尚未啟動，請按「一鍵啟動服務」";
+                _summary.ForeColor = UiTheme.Warning;
+            }
+            else
+            {
+                _summary.Text = $"核心服務 {coreHealthy}/3 正常 · 網站端點 {endpointHealthy}/3 正常";
+                _summary.ForeColor = UiTheme.Warning;
+            }
         }
         catch (Exception ex)
         {
@@ -1225,6 +1331,67 @@ internal sealed class MainForm : Form
             _schemaStatus.Text = $"結構：待升級 {status.pending.Length} 支";
             _schemaStatus.ForeColor = UiTheme.Warning;
         }
+    }
+
+    private async Task RefreshGitStatusAsync(bool fetch, bool logResult)
+    {
+        if (_closing || IsDisposed)
+            return;
+        if (!await _gitGate.WaitAsync(0))
+            return;
+        try
+        {
+            ScheduleOnUiThread(() =>
+            {
+                _gitHeadline.Text = fetch ? "正在向 GitHub 檢查同步…" : "正在檢查本機 Git 狀態…";
+                _gitHeadline.ForeColor = UiTheme.Muted;
+                _gitDot.ForeColor = UiTheme.Unknown;
+            });
+            var root = _projectRoot.Text.Trim();
+            var snapshot = await GitStatusHelper.QueryAsync(root, GetGitBranch(), fetch);
+            if (_closing || IsDisposed)
+                return;
+            ApplyGitSnapshot(snapshot);
+            if (logResult)
+            {
+                AppendLog($"Git：{snapshot.Headline}");
+                if (!string.IsNullOrWhiteSpace(snapshot.Detail))
+                    AppendLog(snapshot.Detail.Replace('\n', ' '));
+            }
+        }
+        catch (Exception ex)
+        {
+            ApplyGitSnapshot(new GitStatusSnapshot
+            {
+                Headline = "Git 檢查失敗",
+                Detail = ex.Message,
+                Hint = "請確認已安裝 Git，且專案根目錄正確。",
+                Accent = UiTheme.Danger
+            });
+            if (logResult)
+                AppendLogWarning("Git 檢查失敗：" + ex.Message);
+        }
+        finally
+        {
+            _gitGate.Release();
+        }
+    }
+
+    private void ApplyGitSnapshot(GitStatusSnapshot snapshot)
+    {
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => ApplyGitSnapshot(snapshot));
+            return;
+        }
+        _gitDot.ForeColor = snapshot.Accent;
+        _gitHeadline.Text = snapshot.Headline;
+        _gitHeadline.ForeColor = snapshot.Accent;
+        _gitDetail.Text = snapshot.Detail;
+        _gitHint.Text = snapshot.Hint;
+        _deployButton.Text = snapshot.Behind > 0
+            ? $"更新並部署（落後 {snapshot.Behind} 筆）"
+            : "更新並部署";
     }
 
     private void ShowLineProductionCheck(bool requireBuiltDist)

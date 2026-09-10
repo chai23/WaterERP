@@ -9,12 +9,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const apiRoot = path.resolve(__dirname, "..");
 const repoRoot = path.resolve(apiRoot, "../..");
 const migrationsDir = path.join(repoRoot, "database", "migrations");
-
-const EXCLUDED = new Set([
-  "004_reset_data_keep_single_admin.sql",
-  "008_clear_all_sales_orders.sql",
-  "019_clear_transaction_data_keep_masters.sql",
-]);
+const BASELINE = "001_baseline.sql";
 
 type StatusPayload = {
   ok: boolean;
@@ -28,8 +23,7 @@ type StatusPayload = {
 };
 
 function isExcluded(filename: string): boolean {
-  if (EXCLUDED.has(filename)) return true;
-  return filename.toLowerCase().includes("clear");
+  return filename.toLowerCase().includes("clear") || filename.toLowerCase().includes("reset_data");
 }
 
 function listMigrations(): string[] {
@@ -62,112 +56,44 @@ async function tableExists(prisma: PrismaClient, table: string): Promise<boolean
   return Number(rows[0]?.cnt ?? 0) > 0;
 }
 
-async function columnExists(prisma: PrismaClient, table: string, column: string): Promise<boolean> {
-  const rows = await prisma.$queryRaw<{ cnt: bigint }[]>`
-    SELECT COUNT(*) AS cnt
-    FROM information_schema.columns
-    WHERE table_schema = DATABASE() AND table_name = ${table} AND column_name = ${column}
-  `;
-  return Number(rows[0]?.cnt ?? 0) > 0;
+async function recordApplied(prisma: PrismaClient, filename: string): Promise<void> {
+  await prisma.$executeRawUnsafe(
+    `INSERT IGNORE INTO schema_migrations (id) VALUES ('${filename.replace(/'/g, "''")}')`,
+  );
 }
 
-async function indexExists(prisma: PrismaClient, table: string, indexName: string): Promise<boolean> {
-  const rows = await prisma.$queryRaw<{ cnt: bigint }[]>`
-    SELECT COUNT(*) AS cnt
-    FROM information_schema.statistics
-    WHERE table_schema = DATABASE() AND table_name = ${table} AND index_name = ${indexName}
-  `;
-  return Number(rows[0]?.cnt ?? 0) > 0;
-}
-
-type MigrationProbe = (prisma: PrismaClient) => Promise<boolean>;
-
-const MIGRATION_PROBES: Record<string, MigrationProbe> = {
-  "003_delivery_settlement.sql": (p) => columnExists(p, "delivery_assignments", "settlement_outcome"),
-  "005_customer_barrels_on_site.sql": (p) => columnExists(p, "customers", "barrels_on_site"),
-  "006_office_settlement_gate.sql": (p) => columnExists(p, "delivery_assignments", "driver_reported_at"),
-  "007_product_counts_deposit_barrel.sql": (p) => columnExists(p, "products", "counts_deposit_barrel"),
-  "009_customer_billing_three_ways.sql": (p) => tableExists(p, "customer_ledger_entries"),
-  "010_monthly_cutoff_fifo.sql": (p) => columnExists(p, "sales_orders", "monthly_received_amount"),
-  "011_line_billing_subtotals.sql": (p) => columnExists(p, "sales_orders", "cash_subtotal"),
-  "012_ar_sop_rebuild.sql": (p) => tableExists(p, "ar_documents"),
-  "013_prepaid_barrel_semantics.sql": (p) => columnExists(p, "products", "consumes_prepaid_barrel"),
-  "014_pending_prepaid_topup_barrels.sql": (p) => columnExists(p, "sales_orders", "pending_prepaid_topup_barrels"),
-  "015_prepaid_product_balances.sql": (p) => tableExists(p, "customer_prepaid_product_balances"),
-  "016_customer_code.sql": (p) => columnExists(p, "customers", "customer_code"),
-  "017_product_code.sql": (p) => columnExists(p, "products", "product_code"),
-  "018_billing_statements_tax_invoices.sql": (p) => tableExists(p, "billing_statements"),
-  "020_customer_master_extended.sql": (p) => columnExists(p, "customers", "contact_name"),
-  "021_address_zones_affiliated_companies.sql": (p) => tableExists(p, "address_zones"),
-  "022_customer_master_fk_complete.sql": (p) => columnExists(p, "customers", "address_zone_id"),
-  "023_address_barrels_on_site.sql": (p) => columnExists(p, "delivery_addresses", "barrels_on_site"),
-  "024_driver_capacity_limits.sql": (p) => columnExists(p, "drivers", "max_order_count"),
-  "025_print_slogans.sql": (p) => tableExists(p, "print_slogans"),
-  "026_barrel_pickups.sql": (p) => tableExists(p, "barrel_pickups"),
-  "027_order_announcements.sql": (p) => tableExists(p, "order_announcements"),
-  "028_expense_vouchers.sql": (p) => tableExists(p, "expense_vouchers"),
-  "029_tax_invoices_extended.sql": (p) => columnExists(p, "tax_invoices", "external_invoice_no"),
-  "030_floor_delivery_bonus.sql": (p) => tableExists(p, "floor_delivery_bonus_records"),
-  "031_floor_bonus_multiple_records.sql": (p) => indexExists(p, "floor_delivery_bonus_records", "idx_floor_bonus_line_assignment_floor"),
-  "032_delivery_check_received.sql": (p) => columnExists(p, "delivery_assignments", "check_received"),
-  "033_barrel_movements.sql": (p) => tableExists(p, "barrel_movements"),
-  "034_promotion_rules.sql": (p) => tableExists(p, "promotion_rules"),
-  "035_line_liff_ordering.sql": (p) => columnExists(p, "sales_orders", "source"),
-  "036_product_available_on_liff.sql": (p) => columnExists(p, "products", "available_on_liff"),
-  "037_sales_order_line_replenishment.sql": (p) => columnExists(p, "sales_order_lines", "is_replenishment"),
-  "038_delivery_address_patrol.sql": (p) => columnExists(p, "delivery_addresses", "patrol_product_id"),
-  "039_driver_payroll.sql": (p) => tableExists(p, "payroll_settings"),
-  "040_floor_bonus_rates_by_floor.sql": (p) => tableExists(p, "payroll_floor_bonus_rates"),
-  "041_floor_bonus_default_floors.sql": async (p) => {
-    if (!(await tableExists(p, "payroll_floor_bonus_rates"))) return false;
-    const rows = await p.$queryRaw<{ cnt: bigint }[]>`
-      SELECT COUNT(*) AS cnt FROM payroll_floor_bonus_rates
-      WHERE floor NOT IN (2, 3, -1)
-    `;
-    return Number(rows[0]?.cnt ?? 0) === 0;
-  },
-  "042_customer_floor_fee_rates.sql": (p) => tableExists(p, "customer_floor_fee_rates"),
-  "043_service_tickets.sql": (p) => tableExists(p, "service_tickets"),
-  "044_service_ticket_billing.sql": (p) => indexExists(p, "service_tickets", "uq_service_tickets_sales_order"),
-  "045_service_ticket_driver_collection.sql": (p) => columnExists(p, "service_tickets", "collector_driver_id"),
-  "046_drop_floor_bonus_wage.sql": async (p) =>
-    (await tableExists(p, "payroll_settings")) && !(await columnExists(p, "payroll_settings", "floor_bonus_wage")),
-  "047_customer_lifecycle.sql": (p) => tableExists(p, "customer_lifecycle_events"),
-  "048_drop_legacy_cash_ledger_entries.sql": async (p) => {
-    // 不可用「沒有舊類型資料」當已套用依據（空庫也會通過）；改以追蹤表為準
-    return false;
-  },
-  "049_test_orders_and_audit.sql": async (p) =>
-    (await columnExists(p, "sales_orders", "is_test")) && (await tableExists(p, "operation_audit_logs")),
-  "050_day_close.sql": (p) => tableExists(p, "day_close_locks"),
-  "051_delivery_planning_geo.sql": (p) => columnExists(p, "delivery_addresses", "latitude"),
-  "052_delivery_planning_settings.sql": (p) => tableExists(p, "delivery_planning_settings"),
-  "053_delivery_planning_plans.sql": (p) => tableExists(p, "delivery_plans"),
-  "054_delivery_shift_dispatch.sql": (p) => columnExists(p, "sales_orders", "order_kind"),
-  "055_driver_attendance_run_zones.sql": (p) => columnExists(p, "driver_attendance", "run_zone_ids_json"),
-};
-
-async function bootstrapFromExistingDb(prisma: PrismaClient): Promise<void> {
-  await ensureTrackingTable(prisma);
-  const countRows = await prisma.$queryRaw<{ cnt: bigint }[]>`SELECT COUNT(*) AS cnt FROM schema_migrations`;
-  if (Number(countRows[0]?.cnt ?? 0) > 0) return;
-  if (!(await tableExists(prisma, "users"))) return;
-
-  // 只標記「探測通過」的 migration；不可一次連號標到某檔，避免空庫誤判已齊全
-  const all = listMigrations();
-  for (const file of all) {
-    const probe = MIGRATION_PROBES[file];
-    if (probe && (await probe(prisma))) {
-      await recordApplied(prisma, file);
-    }
-  }
-}
-
-async function getApplied(prisma: PrismaClient): Promise<string[]> {
-  await ensureTrackingTable(prisma);
-  await bootstrapFromExistingDb(prisma);
+async function getAppliedIds(prisma: PrismaClient): Promise<string[]> {
   const rows = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM schema_migrations ORDER BY id ASC`;
   return rows.map((row) => row.id);
+}
+
+/**
+ * 舊版曾把 003～055 寫進追蹤表。摺疊後只保留目前 migrations 目錄裡的檔名。
+ * 已有完整庫（有 users）但還沒有 001 標記時，直接視為基線已套用，避免對正式庫再跑建表。
+ */
+async function reconcileTracking(prisma: PrismaClient): Promise<string | undefined> {
+  await ensureTrackingTable(prisma);
+  const current = listMigrations();
+  const currentSet = new Set(current);
+  const applied = await getAppliedIds(prisma);
+  const obsolete = applied.filter((id) => !currentSet.has(id));
+  for (const id of obsolete) {
+    await prisma.$executeRawUnsafe(
+      `DELETE FROM \`schema_migrations\` WHERE \`id\` = '${id.replace(/'/g, "''")}'`,
+    );
+  }
+
+  const afterPrune = new Set(await getAppliedIds(prisma));
+  if (current.includes(BASELINE) && !afterPrune.has(BASELINE) && (await tableExists(prisma, "users"))) {
+    await recordApplied(prisma, BASELINE);
+    return obsolete.length > 0
+      ? `已將舊的 ${obsolete.length} 筆升級紀錄摺疊為 ${BASELINE}`
+      : `既有資料庫已標記為 ${BASELINE}`;
+  }
+  if (obsolete.length > 0) {
+    return `已清除 ${obsolete.length} 筆不再使用的升級紀錄`;
+  }
+  return undefined;
 }
 
 function runMigrationFile(filename: string): void {
@@ -192,26 +118,15 @@ function runMigrationFile(filename: string): void {
   }
 }
 
-async function recordApplied(prisma: PrismaClient, filename: string): Promise<void> {
-  await prisma.$executeRawUnsafe(
-    `INSERT IGNORE INTO schema_migrations (id) VALUES ('${filename.replace(/'/g, "''")}')`,
-  );
-}
-
 async function repairFalseApplied(prisma: PrismaClient): Promise<string[]> {
   await ensureTrackingTable(prisma);
-  const applied = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM schema_migrations ORDER BY id ASC`;
+  const applied = await getAppliedIds(prisma);
   const removed: string[] = [];
-  for (const row of applied) {
-    const probe = MIGRATION_PROBES[row.id];
-    if (!probe) continue;
-    const ok = await probe(prisma);
-    if (!ok) {
-      await prisma.$executeRawUnsafe(
-        `DELETE FROM \`schema_migrations\` WHERE \`id\` = '${row.id.replace(/'/g, "''")}'`,
-      );
-      removed.push(row.id);
-    }
+  if (applied.includes(BASELINE) && !(await tableExists(prisma, "users"))) {
+    await prisma.$executeRawUnsafe(
+      `DELETE FROM \`schema_migrations\` WHERE \`id\` = '${BASELINE.replace(/'/g, "''")}'`,
+    );
+    removed.push(BASELINE);
   }
   return removed;
 }
@@ -228,13 +143,18 @@ const repair = args.includes("--repair");
 const prisma = new PrismaClient();
 
 try {
-  const all = listMigrations();
-  let repaired: string[] = [];
+  let message: string | undefined;
   if (repair) {
-    repaired = await repairFalseApplied(prisma);
+    const repaired = await repairFalseApplied(prisma);
+    message =
+      repaired.length > 0 ? `已清除 ${repaired.length} 筆誤標紀錄，請再執行升級結構` : "未發現誤標紀錄";
   }
 
-  const applied = await getApplied(prisma);
+  const reconcileMessage = await reconcileTracking(prisma);
+  if (!message) message = reconcileMessage;
+
+  const all = listMigrations();
+  const applied = await getAppliedIds(prisma);
   const appliedSet = new Set(applied);
   const pending = all.filter((name) => !appliedSet.has(name));
   const latest = all.length > 0 ? all[all.length - 1]! : null;
@@ -245,18 +165,14 @@ try {
       applied,
       pending,
       latest,
-      message: repair
-        ? repaired.length > 0
-          ? `已清除 ${repaired.length} 筆誤標紀錄，請再執行升級結構`
-          : "未發現誤標紀錄"
-        : undefined,
-      ...(repair ? { appliedNow: repaired } : {}),
+      message,
+      ...(repair ? { appliedNow: [] } : {}),
     });
     process.exit(0);
   }
 
   if (dryRun) {
-    printJson({ ok: true, applied, pending, latest, dryRun: true, wouldApply: pending });
+    printJson({ ok: true, applied, pending, latest, dryRun: true, wouldApply: pending, message });
     process.exit(0);
   }
 
@@ -273,6 +189,7 @@ try {
     pending: [],
     latest,
     appliedNow,
+    message,
   });
 } catch (error) {
   printJson({

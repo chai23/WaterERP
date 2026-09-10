@@ -12,7 +12,7 @@
 --
 -- 不會刪除：customers、products、drivers、vehicles、採購／生產單等。
 --
--- 用法：mysql -u USER -p DATABASE < database/migrations/008_clear_all_sales_orders.sql
+-- 用法：mysql -u USER -p DATABASE < database/maintenance/clear_all_sales_orders.sql
 -- =============================================================================
 
 SET NAMES utf8mb4;

@@ -110,7 +110,7 @@
 
 ## 九、資料清空／重測
 
-若需清空所有銷貨訂單重新測試，請在備份後執行（見 `database/migrations/008_clear_all_sales_orders.sql` 註解說明）。
+若需清空所有銷貨訂單重新測試，請在備份後執行（見 `database/maintenance/clear_all_sales_orders.sql` 註解說明）。
 
 ---
 

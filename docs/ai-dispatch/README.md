@@ -3,7 +3,7 @@
 本目錄為設計文件與 SQL 草案／正式 migration 對照。
 
 > **MVP-A + 班次一鍵排程已實作**（flag：`DELIVERY_PLANNING_ENABLED`）。  
-> 正式 migration：`database/migrations/051～055`。
+> 結構已併入 `database/schema.sql`（基線 `001_baseline.sql`）。本目錄 SQL 僅供設計對照。
 
 | 文件 | 說明 |
 |------|------|

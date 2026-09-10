@@ -12,7 +12,8 @@
 
 1. 在 MySQL 建立資料庫，例如：`CREATE DATABASE water_erp CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`
 2. 執行 `database/schema.sql`（可於 Workbench / CLI：`mysql -u... -p water_erp < database/schema.sql`）
-3. **若為舊庫升級**（原本 `users.phone` 為登入帳號）：請先備份後執行 [`database/migrate_users_employee_code.sql`](database/migrate_users_employee_code.sql)，將登入改為 `employee_code`（員編）、`phone` 改為聯絡手機。
+3. **新伺服器請用這份完整 schema 建庫**；之後若要幫已在跑的庫加欄位，再往 `database/migrations/` 加 `002_*.sql`。
+4. **若為舊庫升級**（原本 `users.phone` 為登入帳號）：請先備份後執行 [`database/migrate_users_employee_code.sql`](database/migrate_users_employee_code.sql)，將登入改為 `employee_code`（員編）、`phone` 改為聯絡手機。
 
 ### 2. 安裝依賴（專案根目錄）
 

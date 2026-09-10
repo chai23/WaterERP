@@ -15,7 +15,7 @@
 --
 -- 用法：
 --   npm run db:clear-transactions
---   或：npx prisma db execute --schema prisma/schema.prisma --file ../../database/migrations/019_clear_transaction_data_keep_masters.sql
+--   或：npx prisma db execute --schema prisma/schema.prisma --file ../../database/maintenance/clear_transaction_data_keep_masters.sql
 -- =============================================================================
 
 SET NAMES utf8mb4;
