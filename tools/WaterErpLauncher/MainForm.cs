@@ -1545,8 +1545,22 @@ internal sealed class MainForm : Form
         return File.Exists(path) ? path : null;
     }
 
+    private bool IsLocalNginxTestMode()
+    {
+        var root = _projectRoot.Text.Trim();
+        return root.Length > 0 && File.Exists(Path.Combine(root, "deploy", "nginx", ".use-local-test"));
+    }
+
     private void NormalizeProductionUrls()
     {
+        if (IsLocalNginxTestMode())
+        {
+            _apiBaseUrl.Text = "http://127.0.0.1";
+            _adminUrl.Text = "http://127.0.0.1/";
+            _driverUrl.Text = "http://127.0.0.1/driver/";
+            _liffUrl.Text = "http://127.0.0.1/liff/";
+            return;
+        }
         var values = new[] { _apiBaseUrl, _adminUrl, _driverUrl, _liffUrl };
         var needsFix = values.Any(box =>
             box.Text.Contains("localhost", StringComparison.OrdinalIgnoreCase)

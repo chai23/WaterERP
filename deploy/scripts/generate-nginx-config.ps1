@@ -7,13 +7,23 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$templatePath = Join-Path $PSScriptRoot "..\nginx\water-erp.conf.template"
+$localFlag = Join-Path $ProjectRoot "deploy\nginx\.use-local-test"
+$useLocalTest = Test-Path $localFlag
+$templatePath = if ($useLocalTest) {
+    Join-Path $PSScriptRoot "..\nginx\water-erp.local.conf.template"
+} else {
+    Join-Path $PSScriptRoot "..\nginx\water-erp.conf.template"
+}
 if (-not (Test-Path $templatePath)) {
     throw "找不到範本：$templatePath"
 }
 
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-    $OutputPath = Join-Path $ProjectRoot "deploy\nginx\water-erp.conf"
+    $OutputPath = if ($useLocalTest) {
+        Join-Path $ProjectRoot "deploy\nginx\water-erp.local.conf"
+    } else {
+        Join-Path $ProjectRoot "deploy\nginx\water-erp.conf"
+    }
 }
 
 $rootForNginx = ($ProjectRoot -replace "\\", "/")
@@ -31,3 +41,6 @@ if (-not (Test-Path $outDir)) {
 Write-Host "已產生 Nginx 設定：$OutputPath"
 Write-Host "專案路徑：$rootForNginx"
 Write-Host "API 埠：$ApiPort"
+if ($useLocalTest) {
+    Write-Host "模式：本機測試（不轉正式網域）"
+}

@@ -1,0 +1,46 @@
+# WaterERP — 本機測試入口（HTTP，不轉正式網域）
+# 當 deploy/nginx/.use-local-test 存在時，由 generate-nginx-config.ps1 產生。
+
+server {
+    listen 80 default_server;
+    server_name localhost 127.0.0.1 192.168.0.108;
+
+    root {{PROJECT_ROOT}}/apps/web-admin/dist;
+    index index.html;
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:{{API_PORT}};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 120s;
+        proxy_read_timeout 120s;
+    }
+
+    location = /driver {
+        return 301 /driver/;
+    }
+
+    location /driver/ {
+        alias {{PROJECT_ROOT}}/apps/web-driver/dist/;
+        index index.html;
+        try_files $uri $uri/ /driver/index.html;
+    }
+
+    location = /liff {
+        return 301 /liff/;
+    }
+
+    location /liff/ {
+        alias {{PROJECT_ROOT}}/apps/web-liff/dist/;
+        index index.html;
+        try_files $uri $uri/ /liff/index.html;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

@@ -6,6 +6,10 @@ build
 *.log
 .DS_Store
 
+# 本機測試 Nginx（此機不再當正式入口時使用）
+deploy/nginx/.use-local-test
+deploy/nginx/water-erp.local.conf
+
 # Let's Encrypt / win-acme（勿提交私鑰）
 deploy/certs/
 deploy/acme-www/
