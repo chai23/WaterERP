@@ -29,13 +29,10 @@ tools/WaterErpMacLauncher/start.command
 
 首次會建置 `.app`；之後若 Swift 原始碼有更新，也會**自動重新建置**再開啟。
 
-若畫面沒更新，可強制重建：
+若畫面沒更新，或剛改完啟動器功能，可強制重建：
 
-```bash
-npm run mac:launcher
-# 或
-bash tools/WaterErpMacLauncher/build.sh
-```
+- 雙擊 `tools/WaterErpMacLauncher/rebuild.command`
+- 或在專案根目錄執行 `npm run mac:launcher`
 
 ### 方式二：終端機
 
