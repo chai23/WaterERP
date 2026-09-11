@@ -21,6 +21,10 @@ export async function ensureAdminUser(prisma: PrismaClient): Promise<void> {
     return;
   }
 
+  console.warn(
+    `[security] 將建立預設管理員 ${ADMIN_EMPLOYEE_CODE}，請立即登入後台改密（預設密碼請勿用於正式環境）`,
+  );
+
   const user = await prisma.user.create({
     data: {
       employeeCode: ADMIN_EMPLOYEE_CODE,

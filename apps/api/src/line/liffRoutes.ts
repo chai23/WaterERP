@@ -4,17 +4,20 @@ import jwt, { type JwtPayload, type Secret, type SignOptions } from "jsonwebtoke
 import {
   formatOrderCreatedMessage,
   notifyCustomerViaLine,
+  pushLineText,
   replyText,
   verifyLiffIdToken,
   WELCOME_MESSAGE,
 } from "./messaging.js";
 import {
-  consumeLineOtp,
-  issueLineOtp,
+  consumeLineBindCode,
+  issueLineBindCode,
+  normalizeCustomerCode,
   normalizeMobile,
-  verifyLineOtp,
+  verifyLineBindCode,
   verifyLineWebhookSignature,
 } from "./otp.js";
+import { isProductionRuntime, publicErrorMessage } from "../security.js";
 import {
   createServiceTicket,
   isServiceType,
@@ -65,12 +68,40 @@ async function allocateCustomerCode(prisma: PrismaClient): Promise<string> {
   return fallback.padStart(6, "0");
 }
 
-function findCustomerByMobile(prisma: PrismaClient, mobile: string) {
-  return prisma.customer.findFirst({
+function getStaffAuth(req: Request): { id: bigint; role: string } | null {
+  return (req as Request & { authUser?: { id: bigint; role: string } }).authUser ?? null;
+}
+
+function requireStaffRole(
+  req: Request,
+  res: Response,
+  roles: readonly string[],
+): { id: bigint; role: string } | null {
+  const user = getStaffAuth(req);
+  if (!user) {
+    res.status(401).json({ ok: false, message: "請先登入" });
+    return null;
+  }
+  if (!roles.includes(user.role)) {
+    res.status(403).json({ ok: false, message: "權限不足" });
+    return null;
+  }
+  return user;
+}
+
+async function findCustomersByMobile(prisma: PrismaClient, mobile: string) {
+  const rows = await prisma.customer.findMany({
     where: {
       OR: [{ mobile }, { phone: mobile }],
     },
     include: { addresses: { orderBy: { id: "asc" } } },
+  });
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const id = row.id.toString();
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
   });
 }
 
@@ -494,7 +525,7 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
       return;
     }
     try {
-      const payload = jwt.verify(match[1], jwtSecret) as AuthPayload;
+      const payload = jwt.verify(match[1], jwtSecret, { algorithms: ["HS256"] }) as AuthPayload;
       if (payload.typ !== "member") {
         res.status(401).json({ ok: false, message: "無效的會員憑證" });
         return;
@@ -524,9 +555,16 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
     try {
       const signature = req.headers["x-line-signature"];
       const raw = (req as Request & { rawBody?: Buffer }).rawBody;
-      if (raw && process.env.LINE_CHANNEL_SECRET) {
+      const secret = process.env.LINE_CHANNEL_SECRET?.trim();
+      if (!secret) {
+        if (isProductionRuntime()) {
+          res.status(401).json({ ok: false, message: "invalid signature" });
+          return;
+        }
+        console.warn("[line-webhook] 未設定 LINE_CHANNEL_SECRET，開發模式略過驗簽");
+      } else {
         const sig = Array.isArray(signature) ? signature[0] : signature;
-        if (!verifyLineWebhookSignature(raw, sig)) {
+        if (!raw || !verifyLineWebhookSignature(raw, sig)) {
           res.status(401).json({ ok: false, message: "invalid signature" });
           return;
         }
@@ -553,7 +591,7 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
       }
       res.json({ ok: true });
     } catch (e) {
-      res.status(500).json({ ok: false, message: String(e) });
+      res.status(500).json({ ok: false, message: publicErrorMessage(e) });
     }
   });
 
@@ -594,35 +632,7 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
         },
       });
     } catch (e) {
-      res.status(500).json({ ok: false, message: String(e) });
-    }
-  });
-
-  app.post("/api/liff/otp/request", async (req, res) => {
-    try {
-      const idToken = typeof req.body?.idToken === "string" ? req.body.idToken : "";
-      const mobileRaw = typeof req.body?.mobile === "string" ? req.body.mobile : "";
-      const verified = await verifyLiffIdToken(idToken);
-      if (!verified.ok) {
-        res.status(401).json({ ok: false, message: verified.message });
-        return;
-      }
-      const issued = await issueLineOtp(prisma, { mobile: mobileRaw, lineUserId: verified.lineUserId });
-      if (!issued.ok) {
-        res.status(400).json({ ok: false, message: issued.message });
-        return;
-      }
-      res.json({
-        ok: true,
-        data: {
-          expiresAt: issued.expiresAt.toISOString(),
-          delivery: issued.delivery,
-          ...(issued.devCode ? { devCode: issued.devCode } : {}),
-          ...(issued.skipped ? { skipped: true } : {}),
-        },
-      });
-    } catch (e) {
-      res.status(500).json({ ok: false, message: String(e) });
+      res.status(500).json({ ok: false, message: publicErrorMessage(e) });
     }
   });
 
@@ -630,12 +640,10 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
     try {
       const idToken = typeof req.body?.idToken === "string" ? req.body.idToken : "";
       const mobileRaw = typeof req.body?.mobile === "string" ? req.body.mobile : "";
-      const code = typeof req.body?.code === "string" ? req.body.code : "";
       const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
       const addressLine = typeof req.body?.addressLine === "string" ? req.body.addressLine.trim() : "";
-      const billingRaw = typeof req.body?.billingType === "string" ? req.body.billingType.trim() : "";
-      const billingType =
-        billingRaw === "monthly" || billingRaw === "prepaid" || billingRaw === "cash" ? billingRaw : "cash";
+      const customerCodeRaw = typeof req.body?.customerCode === "string" ? req.body.customerCode : "";
+      const bindCodeRaw = typeof req.body?.bindCode === "string" ? req.body.bindCode : "";
       const deliveryFloor =
         req.body?.deliveryFloor != null && String(req.body.deliveryFloor).trim() !== ""
           ? Number(req.body.deliveryFloor)
@@ -647,15 +655,9 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
         return;
       }
 
-      // 先驗證、成功綁定／註冊後才消耗，避免新會員補填資料時被迫重送驗證碼
-      const otp = await verifyLineOtp(prisma, {
-        mobile: mobileRaw,
-        lineUserId: verified.lineUserId,
-        code,
-        consume: false,
-      });
-      if (!otp.ok) {
-        res.status(400).json({ ok: false, message: otp.message });
+      const mobile = normalizeMobile(mobileRaw);
+      if (!mobile) {
+        res.status(400).json({ ok: false, message: "手機號碼格式錯誤（請用 09 開頭）" });
         return;
       }
 
@@ -667,7 +669,13 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
         return;
       }
 
-      let customer = await findCustomerByMobile(prisma, otp.mobile);
+      const matches = await findCustomersByMobile(prisma, mobile);
+      if (matches.length > 1) {
+        res.status(400).json({ ok: false, message: "此手機對應多筆客戶資料，請聯繫客服協助綁定" });
+        return;
+      }
+
+      let customer = matches[0] ?? null;
       if (customer?.lineUserId && customer.lineUserId !== verified.lineUserId) {
         res.status(400).json({ ok: false, message: "此手機已綁定其他 LINE 帳號，請聯繫客服" });
         return;
@@ -677,27 +685,26 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
         if (!name || !addressLine) {
           res.status(400).json({
             ok: false,
-            message: "找不到既有客戶資料，請填寫姓名、結帳方式與配送地址以完成註冊",
+            message: "找不到既有客戶資料，請填寫姓名與配送地址以完成註冊",
             needRegister: true,
           });
           return;
         }
-        await consumeLineOtp(prisma, otp.challengeId);
         const customerCode = await allocateCustomerCode(prisma);
         customer = await prisma.customer.create({
           data: {
             customerCode,
             name,
-            mobile: otp.mobile,
-            phone: otp.mobile,
-            billingType,
+            mobile,
+            phone: mobile,
+            billingType: "cash",
             lineUserId: verified.lineUserId,
             lineBoundAt: new Date(),
             addresses: {
               create: {
                 addressLine,
                 deliveryFloor: Number.isFinite(deliveryFloor) ? deliveryFloor : null,
-                contactMobile: otp.mobile,
+                contactMobile: mobile,
                 isDefault: true,
                 label: "住家",
               },
@@ -706,13 +713,31 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
           include: { addresses: { orderBy: { id: "asc" } } },
         });
       } else {
-        await consumeLineOtp(prisma, otp.challengeId);
+        const customerCode = normalizeCustomerCode(customerCodeRaw);
+        if (!customerCode || !bindCodeRaw.trim()) {
+          res.status(400).json({
+            ok: false,
+            message: "此手機已有會員資料，請向客服申請綁定，並輸入客戶編號與一次性綁定碼",
+            needExistingBind: true,
+          });
+          return;
+        }
+        if (!customer.customerCode || customer.customerCode !== customerCode) {
+          res.status(400).json({ ok: false, message: "客戶編號不符，請向客服確認" });
+          return;
+        }
+        const bind = await verifyLineBindCode(prisma, { customerId: customer.id, code: bindCodeRaw });
+        if (!bind.ok) {
+          res.status(400).json({ ok: false, message: bind.message, needExistingBind: true });
+          return;
+        }
+        await consumeLineBindCode(prisma, bind.challengeId);
         customer = await prisma.customer.update({
           where: { id: customer.id },
           data: {
             lineUserId: verified.lineUserId,
             lineBoundAt: new Date(),
-            mobile: customer.mobile || otp.mobile,
+            mobile: customer.mobile || mobile,
           },
           include: { addresses: { orderBy: { id: "asc" } } },
         });
@@ -727,7 +752,7 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
         },
       });
     } catch (e) {
-      res.status(500).json({ ok: false, message: String(e) });
+      res.status(500).json({ ok: false, message: publicErrorMessage(e) });
     }
   });
 
@@ -747,7 +772,7 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
         data: await toLiffCustomerPayload(prisma, customer),
       });
     } catch (e) {
-      res.status(500).json({ ok: false, message: String(e) });
+      res.status(500).json({ ok: false, message: publicErrorMessage(e) });
     }
   });
 
@@ -812,7 +837,7 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
 
       res.json({ ok: true, data });
     } catch (e) {
-      res.status(500).json({ ok: false, message: String(e) });
+      res.status(500).json({ ok: false, message: publicErrorMessage(e) });
     }
   });
 
@@ -840,7 +865,7 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
       });
       res.status(201).json({ ok: true, data: created });
     } catch (e) {
-      res.status(500).json({ ok: false, message: String(e) });
+      res.status(500).json({ ok: false, message: publicErrorMessage(e) });
     }
   });
 
@@ -864,7 +889,7 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
       });
       res.json({ ok: true, data: await enrichLiffOrders(prisma, member.customerId, rows) });
     } catch (e) {
-      res.status(500).json({ ok: false, message: String(e) });
+      res.status(500).json({ ok: false, message: publicErrorMessage(e) });
     }
   });
 
@@ -895,7 +920,7 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
       const [enriched] = await enrichLiffOrders(prisma, member.customerId, [row]);
       res.json({ ok: true, data: enriched });
     } catch (e) {
-      res.status(500).json({ ok: false, message: String(e) });
+      res.status(500).json({ ok: false, message: publicErrorMessage(e) });
     }
   });
 
@@ -951,7 +976,7 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
         }).catch((err) => console.error("[line-notify] order_created", err));
       }
     } catch (e) {
-      res.status(500).json({ ok: false, message: String(e) });
+      res.status(500).json({ ok: false, message: publicErrorMessage(e) });
     }
   });
 
@@ -966,7 +991,7 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
       });
       res.json({ ok: true, data: rows.map(serializeServiceTicket) });
     } catch (e) {
-      res.status(500).json({ ok: false, message: String(e) });
+      res.status(500).json({ ok: false, message: publicErrorMessage(e) });
     }
   });
 
@@ -988,7 +1013,7 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
       }
       res.json({ ok: true, data: serializeServiceTicket(row) });
     } catch (e) {
-      res.status(500).json({ ok: false, message: String(e) });
+      res.status(500).json({ ok: false, message: publicErrorMessage(e) });
     }
   });
 
@@ -1066,7 +1091,7 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
 
       res.status(201).json({ ok: true, data: serializeServiceTicket(created) });
     } catch (e) {
-      res.status(500).json({ ok: false, message: String(e) });
+      res.status(500).json({ ok: false, message: publicErrorMessage(e) });
     }
   });
 
@@ -1121,7 +1146,7 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
       }).catch((err) => console.error("[line-notify] loaner_requested_by_customer", err));
       res.json({ ok: true, data: serializeServiceTicket(updated) });
     } catch (e) {
-      res.status(500).json({ ok: false, message: String(e) });
+      res.status(500).json({ ok: false, message: publicErrorMessage(e) });
     }
   });
 
@@ -1167,20 +1192,104 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
       });
       res.json({ ok: true, data: serializeServiceTicket(updated) });
     } catch (e) {
-      res.status(500).json({ ok: false, message: String(e) });
+      res.status(500).json({ ok: false, message: publicErrorMessage(e) });
     }
   });
 
-  app.post("/api/customers/:customerId/unbind-line", async (req, res) => {
+  app.post("/api/customers/:customerId/line-bind-code", async (req, res) => {
+    const auth = requireStaffRole(req, res, ["admin", "accounting", "dispatcher"]);
+    if (!auth) return;
     try {
       const customerId = toBigInt(req.params.customerId);
       if (!customerId) {
         res.status(400).json({ ok: false, message: "參數錯誤" });
         return;
       }
+      const customer = await prisma.customer.findUnique({
+        where: { id: customerId },
+        select: { id: true, name: true, customerCode: true, lineUserId: true },
+      });
+      if (!customer) {
+        res.status(404).json({ ok: false, message: "找不到客戶" });
+        return;
+      }
+      if (customer.lineUserId) {
+        res.status(400).json({ ok: false, message: "此客戶已綁定 LINE，請先解除綁定" });
+        return;
+      }
+      let customerCode = customer.customerCode;
+      if (!customerCode) {
+        customerCode = await allocateCustomerCode(prisma);
+        await prisma.customer.update({
+          where: { id: customer.id },
+          data: { customerCode },
+        });
+      }
+      const issued = await issueLineBindCode(prisma, {
+        customerId: customer.id,
+        createdByUserId: auth.id,
+      });
+      await prisma.operationAuditLog.create({
+        data: {
+          actorUserId: auth.id,
+          action: "line_bind_code_issue",
+          entityType: "customer",
+          entityId: customer.id.toString(),
+          afterJson: {
+            customerCode,
+            expiresAt: issued.expiresAt.toISOString(),
+          },
+        },
+      });
+      res.status(201).json({
+        ok: true,
+        data: {
+          customerCode,
+          bindCode: issued.code,
+          expiresAt: issued.expiresAt.toISOString(),
+        },
+      });
+    } catch (e) {
+      res.status(500).json({ ok: false, message: publicErrorMessage(e) });
+    }
+  });
+
+  app.post("/api/customers/:customerId/unbind-line", async (req, res) => {
+    const auth = requireStaffRole(req, res, ["admin"]);
+    if (!auth) return;
+    try {
+      const customerId = toBigInt(req.params.customerId);
+      if (!customerId) {
+        res.status(400).json({ ok: false, message: "參數錯誤" });
+        return;
+      }
+      const existing = await prisma.customer.findUnique({
+        where: { id: customerId },
+        select: { id: true, lineUserId: true, lineBoundAt: true, name: true },
+      });
+      if (!existing) {
+        res.status(404).json({ ok: false, message: "找不到客戶" });
+        return;
+      }
+      if (existing.lineUserId) {
+        await pushLineText(
+          existing.lineUserId,
+          "【超好企業】您的 LINE 訂水綁定已由客服解除。若要再次使用，請向客服申請綁定碼。",
+        ).catch((err) => console.error("[line-unbind-notify]", err));
+      }
       const updated = await prisma.customer.update({
         where: { id: customerId },
         data: { lineUserId: null, lineBoundAt: null },
+      });
+      await prisma.operationAuditLog.create({
+        data: {
+          actorUserId: auth.id,
+          action: "line_unbind",
+          entityType: "customer",
+          entityId: customerId.toString(),
+          beforeJson: { lineUserId: existing.lineUserId, lineBoundAt: existing.lineBoundAt },
+          afterJson: { lineUserId: null, lineBoundAt: null },
+        },
       });
       res.json({
         ok: true,
@@ -1191,7 +1300,7 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
         },
       });
     } catch (e) {
-      res.status(500).json({ ok: false, message: String(e) });
+      res.status(500).json({ ok: false, message: publicErrorMessage(e) });
     }
   });
 }
@@ -1200,7 +1309,6 @@ export function isLiffPublicPath(path: string): boolean {
   return (
     path === "/api/line/webhook" ||
     path === "/api/liff/session" ||
-    path === "/api/liff/otp/request" ||
     path === "/api/liff/bind"
   );
 }

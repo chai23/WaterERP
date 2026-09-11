@@ -1,8 +1,7 @@
-import { createHash, createHmac, randomInt, timingSafeEqual } from "crypto";
+import { createHmac, createHash, randomInt, timingSafeEqual } from "crypto";
 import type { PrismaClient } from "@prisma/client";
-import { pushLineText } from "./messaging.js";
 
-const OTP_TTL_MS = 10 * 60 * 1000;
+const BIND_TTL_MS = 10 * 60 * 1000;
 
 export function normalizeMobile(raw: string): string | null {
   const digits = raw.replace(/\D/g, "");
@@ -12,126 +11,66 @@ export function normalizeMobile(raw: string): string | null {
   return null;
 }
 
-function hashOtp(code: string, lineUserId: string): string {
-  return createHash("sha256").update(`${code}:${lineUserId}:${process.env.JWT_SECRET ?? "change-me"}`).digest("hex");
+export function normalizeCustomerCode(raw: string): string | null {
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length === 0 || digits.length > 6) return null;
+  return digits.padStart(6, "0");
 }
 
-export async function issueLineOtp(
+function hashBindCode(code: string, customerId: bigint): string {
+  return createHash("sha256")
+    .update(`${code}:${customerId.toString()}:${process.env.JWT_SECRET ?? "change-me"}`)
+    .digest("hex");
+}
+
+export async function issueLineBindCode(
   prisma: PrismaClient,
-  args: { mobile: string; lineUserId: string },
-): Promise<
-  | { ok: true; expiresAt: Date; devCode?: string; skipped?: boolean; delivery: "line" | "dev" | "skip" }
-  | { ok: false; message: string }
-> {
-  const mobile = normalizeMobile(args.mobile);
-  if (!mobile) return { ok: false, message: "手機號碼格式錯誤（請用 09 開頭）" };
-  const lineUserId = args.lineUserId.trim();
-  if (!lineUserId) return { ok: false, message: "缺少 LINE 使用者識別" };
-
-  // 測試用：略過驗證碼（正式上線請關閉 LINE_OTP_SKIP）
-  if (isOtpSkipEnabled()) {
-    const expiresAt = new Date(Date.now() + OTP_TTL_MS);
-    console.info(`[line-otp] SKIP mode mobile=${mobile} lineUserId=${lineUserId}`);
-    return { ok: true, expiresAt, skipped: true, delivery: "skip" };
-  }
-
+  args: { customerId: bigint; createdByUserId: bigint },
+): Promise<{ code: string; expiresAt: Date }> {
   const code = String(randomInt(100000, 999999));
-  const expiresAt = new Date(Date.now() + OTP_TTL_MS);
-  await prisma.lineOtpChallenge.create({
+  const expiresAt = new Date(Date.now() + BIND_TTL_MS);
+  await prisma.lineBindChallenge.updateMany({
+    where: { customerId: args.customerId, consumedAt: null },
+    data: { consumedAt: new Date() },
+  });
+  await prisma.lineBindChallenge.create({
     data: {
-      mobile,
-      lineUserId,
-      codeHash: hashOtp(code, lineUserId),
+      customerId: args.customerId,
+      codeHash: hashBindCode(code, args.customerId),
+      createdByUserId: args.createdByUserId,
       expiresAt,
     },
   });
-
-  const explicitOtpDev =
-    process.env.LINE_OTP_DEV_MODE === "1" || process.env.LINE_OTP_DEV_MODE === "true";
-  const hasMessagingToken = Boolean(process.env.LINE_CHANNEL_ACCESS_TOKEN?.trim());
-  // 正式：有 Messaging Token 且未強制 OTP 開發模式 → LINE 推播驗證碼
-  // 開發：無 Token 或強制開發模式 → 寫 log，並在 API 回應附驗證碼方便本機測試
-  const useDevOtp = explicitOtpDev || !hasMessagingToken;
-
-  if (!useDevOtp) {
-    const pushed = await pushLineText(
-      lineUserId,
-      `【超好企業】手機驗證碼：${code}\n請於 10 分鐘內輸入，請勿轉發給他人。`,
-    );
-    if (!pushed.ok) {
-      console.error(`[line-otp] push failed mobile=${mobile} lineUserId=${lineUserId}: ${pushed.message}`);
-      return { ok: false, message: `驗證碼推播失敗：${pushed.message}` };
-    }
-    console.info(`[line-otp] pushed mobile=${mobile} lineUserId=${lineUserId}`);
-    return { ok: true, expiresAt, delivery: "line" };
-  }
-
-  console.info(`[line-otp] mobile=${mobile} lineUserId=${lineUserId} code=${code} (devLog)`);
-
-  return {
-    ok: true,
-    expiresAt,
-    devCode: code,
-    delivery: "dev",
-  };
+  return { code, expiresAt };
 }
 
-export function isOtpSkipEnabled(): boolean {
-  const v = process.env.LINE_OTP_SKIP?.trim();
-  return v === "1" || v === "true" || v === "yes";
-}
-
-export async function verifyLineOtp(
+export async function verifyLineBindCode(
   prisma: PrismaClient,
-  args: { mobile: string; lineUserId: string; code: string; consume?: boolean },
-): Promise<{ ok: true; mobile: string; challengeId: bigint | null } | { ok: false; message: string }> {
-  const mobile = normalizeMobile(args.mobile);
-  if (!mobile) return { ok: false, message: "手機號碼格式錯誤" };
-  const lineUserId = args.lineUserId.trim();
-  const consume = args.consume !== false;
-
-  if (isOtpSkipEnabled()) {
-    console.info(`[line-otp] SKIP verify mobile=${mobile} lineUserId=${lineUserId}`);
-    return { ok: true, mobile, challengeId: null };
-  }
-
+  args: { customerId: bigint; code: string },
+): Promise<{ ok: true; challengeId: bigint } | { ok: false; message: string }> {
   const code = String(args.code ?? "").trim();
-  if (!/^\d{6}$/.test(code)) return { ok: false, message: "驗證碼須為 6 位數字" };
+  if (!/^\d{6}$/.test(code)) return { ok: false, message: "綁定碼須為 6 位數字" };
 
-  const row = await prisma.lineOtpChallenge.findFirst({
+  const row = await prisma.lineBindChallenge.findFirst({
     where: {
-      mobile,
-      lineUserId,
+      customerId: args.customerId,
       consumedAt: null,
       expiresAt: { gt: new Date() },
     },
     orderBy: { id: "desc" },
   });
-  if (!row) return { ok: false, message: "驗證碼無效或已過期，請重新取得" };
+  if (!row) return { ok: false, message: "綁定碼無效或已過期，請聯繫客服重新核發" };
 
   const expected = Buffer.from(row.codeHash, "utf8");
-  const actual = Buffer.from(hashOtp(code, lineUserId), "utf8");
+  const actual = Buffer.from(hashBindCode(code, args.customerId), "utf8");
   if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
-    return { ok: false, message: "驗證碼錯誤" };
+    return { ok: false, message: "綁定碼錯誤" };
   }
-
-  if (consume) {
-    await prisma.lineOtpChallenge.update({
-      where: { id: row.id },
-      data: { consumedAt: new Date() },
-    });
-  }
-
-  return { ok: true, mobile, challengeId: row.id };
+  return { ok: true, challengeId: row.id };
 }
 
-/** 綁定／註冊成功後才標記驗證碼已使用，避免新會員補填資料前就被消耗。 */
-export async function consumeLineOtp(
-  prisma: PrismaClient,
-  challengeId: bigint | null,
-): Promise<void> {
-  if (challengeId == null) return;
-  await prisma.lineOtpChallenge.updateMany({
+export async function consumeLineBindCode(prisma: PrismaClient, challengeId: bigint): Promise<void> {
+  await prisma.lineBindChallenge.updateMany({
     where: { id: challengeId, consumedAt: null },
     data: { consumedAt: new Date() },
   });

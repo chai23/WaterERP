@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
+import { allowLiffDevBypass } from "../security.js";
 
 const LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push";
 const LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply";
@@ -18,11 +19,7 @@ export async function verifyLiffIdToken(idToken: string): Promise<
   if (!token) return { ok: false, message: "缺少 LIFF ID Token" };
 
   const channelId = (process.env.LINE_LOGIN_CHANNEL_ID ?? process.env.LINE_CHANNEL_ID ?? "").trim();
-  const devBypass =
-    process.env.LIFF_DEV_BYPASS === "1" ||
-    process.env.LIFF_DEV_BYPASS === "true" ||
-    // 未設定正式 LINE Channel 時，允許本機使用前端的 dev:<lineUserId> token
-    (!channelId && token.startsWith("dev:"));
+  const devBypass = allowLiffDevBypass();
 
   if (devBypass && token.startsWith("dev:")) {
     const lineUserId = token.slice(4).trim();
@@ -31,9 +28,6 @@ export async function verifyLiffIdToken(idToken: string): Promise<
   }
 
   if (!channelId) {
-    if (devBypass) {
-      return { ok: true, lineUserId: token.slice(0, 64) || "U_dev_user", name: "開發使用者" };
-    }
     return {
       ok: false,
       message:
@@ -58,7 +52,7 @@ export async function verifyLiffIdToken(idToken: string): Promise<
   }
 }
 
-/** 對指定 LINE 使用者推播純文字（OTP、訂單通知共用）。 */
+/** 對指定 LINE 使用者推播純文字（訂單通知等）。 */
 export async function pushLineText(lineUserId: string, text: string): Promise<LinePushResult> {
   const accessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN?.trim();
   if (!accessToken) {

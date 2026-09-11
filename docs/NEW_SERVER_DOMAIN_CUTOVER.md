@@ -136,7 +136,7 @@ PORT=3000
 
 - 舊新庫都在本機：**不要填** `LEGACY_DATABASE_URL`（會自動連同一台的 `database`）
 - LINE 三個值從舊 `.env` 原樣保留（`LINE_CHANNEL_ACCESS_TOKEN`、`LINE_CHANNEL_SECRET`、`LINE_LOGIN_CHANNEL_ID`）
-- 正式機**不要**開 `LIFF_DEV_BYPASS`、`LINE_OTP_DEV_MODE`、`LINE_OTP_SKIP`
+- 正式機**不要**開 `LIFF_DEV_BYPASS`
 - 走網域 + Nginx 時可拿掉 `CORS_ORIGIN`，或維持空白
 - `JWT_SECRET` 可沿用舊值；想重簽所有登入就改成新的長隨機字串
 

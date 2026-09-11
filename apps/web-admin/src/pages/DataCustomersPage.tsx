@@ -57,6 +57,7 @@ function orderStatusLabel(status: string | undefined): string {
   }
 }
 import { useDashboard } from "../DashboardContext";
+import { useAuth } from "../AuthContext";
 import { useMediaQuery } from "../useMediaQuery";
 
 type WorkspaceTab = "summary" | "orders" | "billing" | "edit";
@@ -212,8 +213,17 @@ function lifecycleEventLabel(type: string): string {
 
 export default function DataCustomersPage() {
   const { customers, addressZones, affiliatedCompanies, products, refreshMasters } = useDashboard();
+  const { user } = useAuth();
+  const canIssueLineBind = user?.role === "admin" || user?.role === "accounting" || user?.role === "dispatcher";
+  const canUnbindLine = user?.role === "admin";
   const activeProducts = useMemo(() => products.filter((p) => p.isActive !== false), [products]);
   const isMobile = useMediaQuery("(max-width: 768px)");
+  const [lineBindIssued, setLineBindIssued] = useState<{
+    customerCode: string;
+    bindCode: string;
+    expiresAt: string;
+  } | null>(null);
+  const [issuingBindCode, setIssuingBindCode] = useState(false);
 
   useEffect(() => {
     void refreshMasters(["customers", "zones", "products"], false);
@@ -223,6 +233,9 @@ export default function DataCustomersPage() {
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("summary");
   const [detailId, setDetailId] = useState<string | null>(null);
   const [customerSearch, setCustomerSearch] = useState("");
+  useEffect(() => {
+    setLineBindIssued(null);
+  }, [detailId]);
   const [billingFilter, setBillingFilter] = useState<BillingFilter>("all");
   const [lifecycleFilter, setLifecycleFilter] = useState<LifecycleFilter>("all");
   const [churnReasons, setChurnReasons] = useState<CustomerChurnReason[]>([]);
@@ -1761,6 +1774,7 @@ export default function DataCustomersPage() {
               {detailErr ? <p className="feedback feedback--err">{detailErr}</p> : null}
 
               {workspaceCustomer ? (
+                <>
                 <header className="customer-hub__hero">
                   {isMobile && pageMode === "browse" ? (
                     <button
@@ -1826,19 +1840,51 @@ export default function DataCustomersPage() {
                         舊系統歷史訂單
                       </Link>
                     ) : null}
-                    {detailId && workspaceCustomer.lineUserId ? (
+                    {detailId && !workspaceCustomer.lineUserId && canIssueLineBind ? (
+                      <button
+                        type="button"
+                        className="btn btn--secondary btn--sm"
+                        disabled={issuingBindCode}
+                        onClick={() => {
+                          void (async () => {
+                            setIssuingBindCode(true);
+                            try {
+                              const res = await fetch(`/api/customers/${detailId}/line-bind-code`, { method: "POST" });
+                              const payload = await res.json().catch(() => ({}));
+                              if (!res.ok || !payload.ok) {
+                                window.alert(payload.message ?? "產生綁定碼失敗");
+                                return;
+                              }
+                              const data = payload.data as {
+                                customerCode: string;
+                                bindCode: string;
+                                expiresAt: string;
+                              };
+                              setLineBindIssued(data);
+                              void fetchDetail(detailId);
+                            } finally {
+                              setIssuingBindCode(false);
+                            }
+                          })();
+                        }}
+                      >
+                        {issuingBindCode ? "產生中…" : "產生 LINE 綁定碼"}
+                      </button>
+                    ) : null}
+                    {detailId && workspaceCustomer.lineUserId && canUnbindLine ? (
                       <button
                         type="button"
                         className="btn btn--ghost btn--sm"
                         onClick={() => {
                           void (async () => {
-                            if (!window.confirm("確定解除此客戶的 LINE 綁定？客戶需重新驗證手機才能訂水。")) return;
+                            if (!window.confirm("確定解除此客戶的 LINE 綁定？客戶需再向客服申請綁定碼才能訂水。")) return;
                             const res = await fetch(`/api/customers/${detailId}/unbind-line`, { method: "POST" });
                             const payload = await res.json().catch(() => ({}));
                             if (!res.ok || !payload.ok) {
                               window.alert(payload.message ?? "解除綁定失敗");
                               return;
                             }
+                            setLineBindIssued(null);
                             void fetchDetail(detailId);
                           })();
                         }}
@@ -1853,6 +1899,14 @@ export default function DataCustomersPage() {
                     ) : null}
                   </div>
                 </header>
+                {lineBindIssued ? (
+                  <p className="feedback feedback--ok" style={{ marginTop: "0.75rem" }}>
+                    LINE 綁定碼已產生（請立刻告知客戶，10 分鐘內有效）：編號{" "}
+                    <strong>{lineBindIssued.customerCode}</strong>、綁定碼{" "}
+                    <strong>{lineBindIssued.bindCode}</strong>
+                  </p>
+                ) : null}
+                </>
               ) : null}
 
               <div className="customer-hub__kpi-row">

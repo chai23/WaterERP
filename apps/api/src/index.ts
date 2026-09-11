@@ -13,12 +13,23 @@ import {
   type DraftOrderLine,
 } from "./promotions.js";
 import { isLiffApiPath, registerLiffRoutes } from "./line/liffRoutes.js";
+import { normalizeMobile } from "./line/otp.js";
 import {
   formatDeliveredMessage,
   formatNotDeliveredMessage,
   formatOrderAssignedMessage,
   notifyCustomerViaLine,
 } from "./line/messaging.js";
+import {
+  assertJwtSecret,
+  inspectLoginThrottle,
+  isProductionRuntime,
+  loginThrottleKey,
+  noteLoginFailure,
+  noteLoginSuccess,
+  passwordPolicyError,
+  publicErrorMessage,
+} from "./security.js";
 import {
   createServiceTicket,
   isServiceType,
@@ -43,7 +54,8 @@ const port = Number(process.env.PORT) || 3000;
 const host = process.env.HOST ?? "127.0.0.1";
 const DEFAULT_CREATOR_USER_ID = 1n;
 const JWT_SECRET: Secret = process.env.JWT_SECRET ?? "change-me";
-const JWT_SIGN_OPTIONS = { expiresIn: process.env.JWT_EXPIRES_IN ?? "7d" } as SignOptions;
+const JWT_SIGN_OPTIONS = { expiresIn: process.env.JWT_EXPIRES_IN ?? "7d", algorithm: "HS256" } as SignOptions;
+assertJwtSecret(String(JWT_SECRET));
 
 type AuthUser = {
   id: bigint;
@@ -57,6 +69,7 @@ type AuthPayload = JwtPayload & {
   sub?: string;
   role?: string;
   employeeCode?: string;
+  typ?: string;
 };
 
 const publicApiPaths = new Set([
@@ -65,7 +78,6 @@ const publicApiPaths = new Set([
   "/api/auth/bootstrap",
   "/api/line/webhook",
   "/api/liff/session",
-  "/api/liff/otp/request",
   "/api/liff/bind",
 ]);
 
@@ -1992,7 +2004,8 @@ const buildDriverBillingHints = async (params: {
   };
 };
 
-const corsOrigin = process.env.CORS_ORIGIN?.split(",").map((s) => s.trim()) ?? true;
+const corsOriginList = process.env.CORS_ORIGIN?.split(",").map((s) => s.trim()).filter(Boolean);
+const corsOrigin = corsOriginList && corsOriginList.length > 0 ? corsOriginList : isProductionRuntime() ? false : true;
 
 app.use(cors({ origin: corsOrigin }));
 app.use(
@@ -2026,7 +2039,15 @@ app.use(async (req, res, next) => {
   }
 
   try {
-    const payload = jwt.verify(match[1], JWT_SECRET) as AuthPayload;
+    const payload = jwt.verify(match[1], JWT_SECRET, { algorithms: ["HS256"] }) as AuthPayload;
+    if (payload.typ === "member") {
+      res.status(401).json({ ok: false, message: "登入已失效，請重新登入" });
+      return;
+    }
+    if (payload.typ && payload.typ !== "employee") {
+      res.status(401).json({ ok: false, message: "登入已失效，請重新登入" });
+      return;
+    }
     const userId = toBigInt(payload.sub);
     if (!userId) {
       res.status(401).json({ ok: false, message: "登入已失效，請重新登入" });
@@ -2069,7 +2090,8 @@ app.get("/api/health", async (_req, res) => {
       deliveryPlanningEnabled: isDeliveryPlanningEnabled(),
     });
   } catch (e) {
-    res.status(503).json({ ok: false, db: "error", message: String(e) });
+    console.error(e);
+    res.status(503).json({ ok: false, db: "error", message: "資料庫無法連線" });
   }
 });
 
@@ -2823,7 +2845,7 @@ app.get("/api/address-zones", async (req, res) => {
     });
     res.json(rows);
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -2849,7 +2871,7 @@ app.post("/api/address-zones", async (req, res) => {
       res.status(409).json({ ok: false, message: "此分區名稱已存在" });
       return;
     }
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -2896,7 +2918,7 @@ app.patch("/api/address-zones/:zoneId", async (req, res) => {
       res.status(409).json({ ok: false, message: "此分區名稱已存在" });
       return;
     }
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -2919,7 +2941,7 @@ app.delete("/api/address-zones/:zoneId", async (req, res) => {
       res.status(404).json({ ok: false, message: "找不到分區" });
       return;
     }
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -2932,7 +2954,7 @@ app.get("/api/affiliated-companies", async (req, res) => {
     });
     res.json(rows);
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -2958,7 +2980,7 @@ app.post("/api/affiliated-companies", async (req, res) => {
       res.status(409).json({ ok: false, message: "此公司名稱已存在" });
       return;
     }
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -3005,7 +3027,7 @@ app.patch("/api/affiliated-companies/:companyId", async (req, res) => {
       res.status(409).json({ ok: false, message: "此公司名稱已存在" });
       return;
     }
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -3028,7 +3050,7 @@ app.delete("/api/affiliated-companies/:companyId", async (req, res) => {
       res.status(404).json({ ok: false, message: "找不到公司" });
       return;
     }
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -3041,7 +3063,7 @@ app.get("/api/print-slogans", async (req, res) => {
     });
     res.json(rows);
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -3077,7 +3099,7 @@ app.post("/api/print-slogans", async (req, res) => {
       res.status(409).json({ ok: false, message: "此標語名稱已存在" });
       return;
     }
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -3133,7 +3155,7 @@ app.patch("/api/print-slogans/:sloganId", async (req, res) => {
       res.status(409).json({ ok: false, message: "此標語名稱已存在" });
       return;
     }
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -3152,7 +3174,7 @@ app.delete("/api/print-slogans/:sloganId", async (req, res) => {
       res.status(404).json({ ok: false, message: "找不到標語" });
       return;
     }
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -3227,7 +3249,7 @@ app.get("/api/order-announcements/resolved", async (req, res) => {
     const text = await resolveOrderAnnouncementText(ymd);
     res.json({ ok: true, date: ymd, text });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -3240,7 +3262,7 @@ app.get("/api/order-announcements", async (req, res) => {
     });
     res.json(rows);
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -3288,7 +3310,7 @@ app.post("/api/order-announcements", async (req, res) => {
     });
     res.status(201).json({ ok: true, data: row });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -3378,7 +3400,7 @@ app.patch("/api/order-announcements/:announcementId", async (req, res) => {
       res.status(404).json({ ok: false, message: "找不到公告" });
       return;
     }
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -3397,7 +3419,7 @@ app.delete("/api/order-announcements/:announcementId", async (req, res) => {
       res.status(404).json({ ok: false, message: "找不到公告" });
       return;
     }
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -3406,7 +3428,7 @@ app.get("/api/promotion-rules", async (_req, res) => {
     const rows = await prisma.promotionRule.findMany({ orderBy: [{ sortOrder: "asc" }, { id: "asc" }] });
     res.json(rows.map(serializePromotionRule));
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -3443,7 +3465,7 @@ app.patch("/api/promotion-rules/:ruleKey", async (req, res) => {
     const row = await prisma.promotionRule.update({ where: { ruleKey }, data });
     res.json({ ok: true, data: serializePromotionRule(row) });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -3457,7 +3479,7 @@ app.get("/api/promotion-dispenser-gift-rules", async (req, res) => {
     });
     res.json(rows.map(serializeDispenserGiftRule));
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -3513,7 +3535,7 @@ app.post("/api/promotion-dispenser-gift-rules", async (req, res) => {
       res.status(400).json({ ok: false, message: "此飲水機商品已有贈品規則" });
       return;
     }
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -3597,7 +3619,7 @@ app.patch("/api/promotion-dispenser-gift-rules/:ruleId", async (req, res) => {
       res.status(400).json({ ok: false, message: "此飲水機商品已有贈品規則" });
       return;
     }
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -3616,7 +3638,7 @@ app.delete("/api/promotion-dispenser-gift-rules/:ruleId", async (req, res) => {
       res.status(404).json({ ok: false, message: "找不到規則" });
       return;
     }
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -3664,7 +3686,7 @@ app.post("/api/promotion-rules/preview", async (req, res) => {
       }));
     res.json({ ok: true, data: { messages, giftLines } });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -3684,7 +3706,7 @@ app.get("/api/customer-churn-reasons", async (_req, res) => {
       })),
     });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -3720,11 +3742,12 @@ app.get("/api/customers/:customerId/lifecycle-events", async (req, res) => {
       })),
     });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
 app.post("/api/customers/:customerId/churn", async (req, res) => {
+  if (!requireRole(req, res, ["admin", "accounting", "dispatcher", "warehouse"])) return;
   try {
     const customerId = toBigInt(req.params.customerId);
     if (!customerId) {
@@ -3816,6 +3839,7 @@ app.post("/api/customers/:customerId/churn", async (req, res) => {
 });
 
 app.post("/api/customers/:customerId/reactivate", async (req, res) => {
+  if (!requireRole(req, res, ["admin", "accounting", "dispatcher", "warehouse"])) return;
   try {
     const customerId = toBigInt(req.params.customerId);
     if (!customerId) {
@@ -4071,7 +4095,7 @@ app.get("/api/reports/customer-lifecycle", async (req, res) => {
       },
     });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -4083,7 +4107,7 @@ app.get("/api/customers", async (_req, res) => {
     });
     res.json(rows.map(enrichCustomerBarrels));
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -4163,7 +4187,7 @@ app.get("/api/customers/:customerId", async (req, res) => {
 
     res.json(enrichCustomerBarrels(row));
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -4214,7 +4238,7 @@ app.get("/api/customers/:customerId/billing-summary", async (req, res) => {
       },
     });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -4263,7 +4287,7 @@ app.get("/api/customers/:customerId/last-product-prices", async (req, res) => {
     }
     res.json({ ok: true, data: list });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -4449,7 +4473,7 @@ app.get("/api/customers/:customerId/billing-ledger", async (req, res) => {
       },
     });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -4495,11 +4519,12 @@ app.get("/api/customers/:customerId/payments", async (req, res) => {
       },
     });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
 app.post("/api/customers/:customerId/prepaid-topup", async (req, res) => {
+  if (!requireRole(req, res, ["admin", "accounting"])) return;
   try {
     const customerId = toBigInt(req.params.customerId);
     if (!customerId) {
@@ -4636,6 +4661,7 @@ const normalizeAddressCreates = (
 };
 
 app.post("/api/customers", async (req, res) => {
+  if (!requireRole(req, res, ["admin", "accounting", "dispatcher", "warehouse"])) return;
   try {
     const body = req.body as {
       customerCode?: unknown;
@@ -4671,6 +4697,19 @@ app.post("/api/customers", async (req, res) => {
     const contactName = trimOptionalString(body.contactName);
     const phone = trimOptionalString(body.phone);
     const mobile = trimOptionalString(body.mobile);
+    if (mobile) {
+      const normalizedMobile = normalizeMobile(mobile);
+      if (normalizedMobile) {
+        const dup = await prisma.customer.findFirst({
+          where: { OR: [{ mobile: normalizedMobile }, { phone: normalizedMobile }] },
+          select: { id: true },
+        });
+        if (dup) {
+          res.status(409).json({ ok: false, message: "此手機已有客戶資料，請使用既有客戶或聯繫客服" });
+          return;
+        }
+      }
+    }
     const taxIdNorm = normalizeTaxId(body.taxId);
     if (taxIdNorm === "INVALID") {
       res.status(400).json({ ok: false, message: "統一編號須為 8 碼數字" });
@@ -4781,11 +4820,12 @@ app.post("/api/customers", async (req, res) => {
       res.status(409).json({ ok: false, message: "客戶編號已存在，請改用其他 6 碼編號" });
       return;
     }
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
 app.patch("/api/customers/:customerId", async (req, res) => {
+  if (!requireRole(req, res, ["admin", "accounting", "dispatcher", "warehouse"])) return;
   try {
     const customerId = toBigInt(req.params.customerId);
     if (!customerId) {
@@ -4944,11 +4984,12 @@ app.patch("/api/customers/:customerId", async (req, res) => {
       res.status(409).json({ ok: false, message: "客戶編號已存在，請改用其他 6 碼編號" });
       return;
     }
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
 app.post("/api/customers/:customerId/addresses", async (req, res) => {
+  if (!requireRole(req, res, ["admin", "accounting", "dispatcher", "warehouse"])) return;
   try {
     const customerId = toBigInt(req.params.customerId);
     if (!customerId) {
@@ -5040,11 +5081,12 @@ app.post("/api/customers/:customerId/addresses", async (req, res) => {
 
     res.status(201).json({ ok: true, data: created });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
 app.patch("/api/customers/:customerId/addresses/:addressId", async (req, res) => {
+  if (!requireRole(req, res, ["admin", "accounting", "dispatcher", "warehouse"])) return;
   try {
     const customerId = toBigInt(req.params.customerId);
     const addressId = toBigInt(req.params.addressId);
@@ -5220,11 +5262,12 @@ app.patch("/api/customers/:customerId/addresses/:addressId", async (req, res) =>
       customer: fullCustomer ? enrichCustomerBarrels(fullCustomer) : null,
     });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
 app.delete("/api/customers/:customerId/addresses/:addressId", async (req, res) => {
+  if (!requireRole(req, res, ["admin", "accounting", "dispatcher", "warehouse"])) return;
   try {
     const customerId = toBigInt(req.params.customerId);
     const addressId = toBigInt(req.params.addressId);
@@ -5301,7 +5344,7 @@ app.get("/api/products", async (_req, res) => {
     });
     res.json(rows);
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -5403,7 +5446,7 @@ app.post("/api/products", async (req, res) => {
       res.status(409).json({ ok: false, message: "商品編號或 SKU 已存在，請改用其他值" });
       return;
     }
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -5524,7 +5567,7 @@ app.patch("/api/products/:productId", async (req, res) => {
       res.status(409).json({ ok: false, message: "商品編號已存在，請改用其他 3 碼編號" });
       return;
     }
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -5567,7 +5610,7 @@ app.post("/api/products/:productId/inventory-adjust", async (req, res) => {
     });
     res.json({ ok: true, data: result });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -5579,7 +5622,7 @@ app.get("/api/vehicles", async (_req, res) => {
     });
     res.json(rows);
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -5625,7 +5668,7 @@ app.get("/api/drivers", async (req, res) => {
     });
     res.json(rows);
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -5639,24 +5682,35 @@ app.post("/api/auth/login", async (req, res) => {
       return;
     }
 
+    const throttleKey = loginThrottleKey(req, employeeCode);
+    const throttled = inspectLoginThrottle(throttleKey);
+    if (!throttled.ok) {
+      res.status(429).json({ ok: false, message: throttled.message });
+      return;
+    }
+
     const user = await prisma.user.findUnique({
       where: { employeeCode },
       include: { driver: true },
     });
 
     if (!user || !user.isActive) {
+      noteLoginFailure(throttleKey);
       res.status(401).json({ ok: false, message: "帳號或密碼錯誤" });
       return;
     }
 
     const match = await bcrypt.compare(password, user.passwordHash);
     if (!match) {
+      noteLoginFailure(throttleKey);
       res.status(401).json({ ok: false, message: "帳號或密碼錯誤" });
       return;
     }
 
+    noteLoginSuccess(throttleKey);
     const token = jwt.sign(
       {
+        typ: "employee",
         sub: user.id.toString(),
         role: user.role,
         employeeCode: user.employeeCode,
@@ -5671,7 +5725,7 @@ app.post("/api/auth/login", async (req, res) => {
       user: toPublicUser(user),
     });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -5682,6 +5736,16 @@ app.post("/api/auth/bootstrap", async (req, res) => {
       res.status(409).json({ ok: false, message: "系統已有使用者，請由管理員新增帳號" });
       return;
     }
+    if (isProductionRuntime()) {
+      const setup = process.env.BOOTSTRAP_SETUP_TOKEN?.trim() ?? "";
+      const given =
+        (typeof req.body?.setupToken === "string" ? req.body.setupToken.trim() : "") ||
+        (typeof req.headers["x-bootstrap-token"] === "string" ? req.headers["x-bootstrap-token"].trim() : "");
+      if (!setup || given !== setup) {
+        res.status(403).json({ ok: false, message: "正式環境已關閉公開初始化，請設定 BOOTSTRAP_SETUP_TOKEN" });
+        return;
+      }
+    }
     const body = req.body as { name?: unknown; employeeCode?: unknown; phone?: unknown; password?: unknown };
     const name = typeof body.name === "string" ? body.name.trim() : "";
     const employeeCode = typeof body.employeeCode === "string" ? body.employeeCode.trim().toUpperCase() : "";
@@ -5689,6 +5753,11 @@ app.post("/api/auth/bootstrap", async (req, res) => {
     const password = typeof body.password === "string" ? body.password : "";
     if (!name || !employeeCode || !password) {
       res.status(400).json({ ok: false, message: "姓名、帳號、密碼為必填" });
+      return;
+    }
+    const passwordErr = passwordPolicyError(password);
+    if (passwordErr) {
+      res.status(400).json({ ok: false, message: passwordErr });
       return;
     }
     const user = await prisma.user.create({
@@ -5701,10 +5770,14 @@ app.post("/api/auth/bootstrap", async (req, res) => {
       },
       include: { driver: true },
     });
-    const token = jwt.sign({ sub: user.id.toString(), role: user.role, employeeCode: user.employeeCode }, JWT_SECRET, JWT_SIGN_OPTIONS);
+    const token = jwt.sign(
+      { typ: "employee", sub: user.id.toString(), role: user.role, employeeCode: user.employeeCode },
+      JWT_SECRET,
+      JWT_SIGN_OPTIONS,
+    );
     res.status(201).json({ ok: true, token, user: toPublicUser(user) });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -5732,7 +5805,7 @@ app.get("/api/users", async (req, res) => {
     });
     res.json({ ok: true, data: rows.map(toPublicUser) });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -5748,6 +5821,11 @@ app.post("/api/users", async (req, res) => {
     const role = ["admin", "dispatcher", "warehouse", "accounting"].includes(roleRaw) ? roleRaw : "dispatcher";
     if (!name || !employeeCode || !password) {
       res.status(400).json({ ok: false, message: "姓名、帳號、密碼為必填" });
+      return;
+    }
+    const passwordErr = passwordPolicyError(password);
+    if (passwordErr) {
+      res.status(400).json({ ok: false, message: passwordErr });
       return;
     }
     const row = await prisma.user.create({
@@ -5802,12 +5880,17 @@ app.patch("/api/users/:userId", async (req, res) => {
       data.isActive = body.isActive;
     }
     if (typeof body.password === "string" && body.password !== "") {
+      const passwordErr = passwordPolicyError(body.password);
+      if (passwordErr) {
+        res.status(400).json({ ok: false, message: passwordErr });
+        return;
+      }
       data.passwordHash = await hashPassword(body.password);
     }
     const row = await prisma.user.update({ where: { id: userId }, data, include: { driver: true } });
     res.json({ ok: true, data: toPublicUser(row) });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -5825,6 +5908,11 @@ app.patch("/api/auth/password", async (req, res) => {
       res.status(400).json({ ok: false, message: "請輸入原密碼與新密碼" });
       return;
     }
+    const passwordErr = passwordPolicyError(newPassword);
+    if (passwordErr) {
+      res.status(400).json({ ok: false, message: passwordErr });
+      return;
+    }
     const user = await prisma.user.findUnique({ where: { id: auth.id } });
     if (!user || !(await bcrypt.compare(oldPassword, user.passwordHash))) {
       res.status(401).json({ ok: false, message: "原密碼錯誤" });
@@ -5833,12 +5921,13 @@ app.patch("/api/auth/password", async (req, res) => {
     await prisma.user.update({ where: { id: auth.id }, data: { passwordHash: await hashPassword(newPassword) } });
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
 /** 新增司機：建立 User（員編登入 + 聯絡手機）+ Driver（employee_code 與 users 同步） */
 app.post("/api/drivers", async (req, res) => {
+  if (!requireRole(req, res, ["admin", "accounting", "dispatcher"])) return;
   try {
     const body = req.body as {
       name?: unknown;
@@ -5861,6 +5950,11 @@ app.post("/api/drivers", async (req, res) => {
 
     if (!name || !employeeCode || !password) {
       res.status(400).json({ ok: false, message: "姓名、員編、密碼為必填" });
+      return;
+    }
+    const passwordErr = passwordPolicyError(password);
+    if (passwordErr) {
+      res.status(400).json({ ok: false, message: passwordErr });
       return;
     }
 
@@ -5908,7 +6002,7 @@ app.post("/api/drivers", async (req, res) => {
 
     res.status(201).json({ ok: true, data: driver });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -6024,6 +6118,11 @@ app.patch("/api/drivers/:driverId", async (req, res) => {
         res.status(400).json({ ok: false, message: "密碼不可為空" });
         return;
       }
+      const passwordErr = passwordPolicyError(password);
+      if (passwordErr) {
+        res.status(400).json({ ok: false, message: passwordErr });
+        return;
+      }
       passwordHash = await hashPassword(password);
     }
 
@@ -6046,7 +6145,7 @@ app.patch("/api/drivers/:driverId", async (req, res) => {
 
     res.json({ ok: true, data: driver });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -6070,7 +6169,7 @@ app.get("/api/sales-orders", async (req, res) => {
       })),
     );
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -6104,7 +6203,7 @@ app.get("/api/sales-orders/incomplete-by-customer", async (req, res) => {
     });
     res.json({ ok: true, data: rows });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -6177,7 +6276,7 @@ app.get("/api/sales-orders/assignment-queue", async (req, res) => {
       },
     });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -6198,7 +6297,7 @@ app.get("/api/sales-orders/pending-review", async (_req, res) => {
       })),
     });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -6227,7 +6326,7 @@ app.get("/api/sales-orders/patrol-preview", async (req, res) => {
       },
     });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -6248,7 +6347,7 @@ app.get("/api/sales-orders/:salesOrderId", async (req, res) => {
     }
     res.json(row);
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -6358,7 +6457,7 @@ app.get("/api/sales-orders/:salesOrderId/print-enrichment", async (req, res) => 
       },
     });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -6382,7 +6481,7 @@ app.get("/api/completed-deliveries", async (_req, res) => {
     });
     res.json(rows);
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -6435,7 +6534,7 @@ app.get("/api/settlements", async (_req, res) => {
     hydrated.sort((a, b) => rank(b) - rank(a));
     res.json(hydrated.slice(0, 300));
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -7029,7 +7128,7 @@ app.post("/api/settlements/approve", async (req, res) => {
     res.json({ ok: true, data: result.data });
     fireSettlementApproveNotify(result);
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -7101,7 +7200,7 @@ app.post("/api/settlements/batch-complete", async (req, res) => {
 
     res.json({ ok: true, data: { succeeded, skipped } });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -7163,7 +7262,7 @@ app.get("/api/floor-delivery-bonuses", async (req, res) => {
 
     res.json(filtered);
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -7229,7 +7328,7 @@ app.get("/api/payroll-settings", async (_req, res) => {
       },
     });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -7352,7 +7451,7 @@ app.patch("/api/payroll-settings", async (req, res) => {
       },
     });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -7609,7 +7708,7 @@ app.get("/api/reports/driver-payroll", async (req, res) => {
       },
     });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -7709,7 +7808,7 @@ app.get("/api/billing/monthly-unsettled", async (req, res) => {
       },
     });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -7735,7 +7834,7 @@ app.get("/api/payments", async (_req, res) => {
     });
     res.json(rows);
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -8178,7 +8277,7 @@ app.get("/api/accounting/summary", async (req, res) => {
     const summary = await buildAccountingPeriodSummary(start, end, filters);
     res.json(accountingSummaryJson(range, start, end, summary));
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -8452,7 +8551,7 @@ app.get("/api/reports/period-detail", async (req, res) => {
       },
     });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -8730,7 +8829,7 @@ app.get("/api/reports/driver-daily-collection", async (req, res) => {
       },
     });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -8795,11 +8894,12 @@ app.get("/api/delivery-assignments/by-driver-date", async (req, res) => {
 
     res.json({ ok: true, data: { assignments: rows, productTotals } });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
 app.post("/api/delivery-assignments", async (req, res) => {
+  if (!requireRole(req, res, ["admin", "accounting", "dispatcher"])) return;
   try {
     const body = req.body as {
       salesOrderId?: unknown;
@@ -8870,12 +8970,13 @@ app.post("/api/delivery-assignments", async (req, res) => {
       stockShortages: result.stockShortages,
     });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
 /** 批次分派：失敗單略過並回報原因 */
 app.post("/api/orders/batch-assign", async (req, res) => {
+  if (!requireRole(req, res, ["admin", "accounting", "dispatcher"])) return;
   try {
     const body = req.body as {
       salesOrderIds?: unknown;
@@ -8947,7 +9048,7 @@ app.post("/api/orders/batch-assign", async (req, res) => {
 
     res.json({ ok: true, data: { succeeded, skipped } });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -9035,9 +9136,9 @@ async function createConfirmedSalesOrder(
         if (!pid || !Number.isInteger(q) || q < 0) {
           return { status: 400, payload: { ok: false, message: "明細錯誤：每列需有效 productId 與 qty（非負整數，0 表示數量待定）" } };
         }
-        const isReplenishment = Boolean(r.isReplenishment);
+        const isReplenishment = orderSource === "liff" ? false : Boolean(r.isReplenishment);
         let unitPrice: Prisma.Decimal | null = null;
-        if (r.unitPrice !== undefined && r.unitPrice !== null && r.unitPrice !== "") {
+        if (orderSource !== "liff" && r.unitPrice !== undefined && r.unitPrice !== null && r.unitPrice !== "") {
           const up = Number(r.unitPrice);
           if (!Number.isFinite(up) || up < 0) {
             return { status: 400, payload: { ok: false, message: "明細錯誤：unitPrice 須為非負數字" } };
@@ -9131,7 +9232,12 @@ async function createConfirmedSalesOrder(
     const billingTypeAtOrder =
       distinctLineBillings.size === 1 ? [...distinctLineBillings][0]! : "mixed";
     let orderCashAdjustment = new Prisma.Decimal(0);
-    if (body.orderCashAdjustment !== undefined && body.orderCashAdjustment !== null && body.orderCashAdjustment !== "") {
+    if (
+      orderSource !== "liff" &&
+      body.orderCashAdjustment !== undefined &&
+      body.orderCashAdjustment !== null &&
+      body.orderCashAdjustment !== ""
+    ) {
       const adj = new Prisma.Decimal(Number(body.orderCashAdjustment));
       if (adj.lessThan(0)) {
         return { status: 400, payload: { ok: false, message: "本單往來補額不可為負" } };
@@ -9142,6 +9248,22 @@ async function createConfirmedSalesOrder(
     const uniqueIds = [...new Set(linesAfterPromotions.map((l) => l.productId))];
     const products = await prisma.product.findMany({ where: { id: { in: uniqueIds } } });
     const productById = new Map(products.map((p) => [p.id, p]));
+    const liffLastPriceByProduct = new Map<bigint, Prisma.Decimal>();
+    if (orderSource === "liff") {
+      const history = await prisma.salesOrderLine.findMany({
+        where: {
+          productId: { in: uniqueIds },
+          salesOrder: { customerId, status: { not: "cancelled" } },
+        },
+        orderBy: { id: "desc" },
+        select: { productId: true, unitPrice: true },
+      });
+      for (const line of history) {
+        if (!liffLastPriceByProduct.has(line.productId)) {
+          liffLastPriceByProduct.set(line.productId, line.unitPrice);
+        }
+      }
+    }
 
     for (const l of linesAfterPromotions) {
       const p = productById.get(l.productId);
@@ -9208,7 +9330,9 @@ async function createConfirmedSalesOrder(
       const unitPrice =
         l.isPromotionGift || isReplenishment
           ? l.unitPrice ?? new Prisma.Decimal(0)
-          : (l.unitPrice ?? product.salePrice);
+          : orderSource === "liff"
+            ? (liffLastPriceByProduct.get(l.productId) ?? product.salePrice)
+            : (l.unitPrice ?? product.salePrice);
       const lineAmount = unitPrice.mul(l.qty);
       return {
         productId: l.productId,
@@ -9390,11 +9514,12 @@ async function createConfirmedSalesOrder(
 
     return { status: 201, payload: { ok: true, data: created } };
   } catch (e) {
-    return { status: 500, payload: { ok: false, message: String(e) } };
+    return { status: 500, payload: { ok: false, message: publicErrorMessage(e) } };
   }
 }
 
 app.post("/api/sales-orders", async (req, res) => {
+  if (!requireRole(req, res, ["admin", "accounting", "dispatcher"])) return;
   const auth = getAuthUser(req);
   const result = await createConfirmedSalesOrder(req.body ?? {}, {
     source: "admin",
@@ -9567,6 +9692,7 @@ async function listPatrolCandidatesForWeek(weekAnchorYmd: string): Promise<
 
 /** 一鍵產生本週巡查單：數量 0（待定）、結帳依客戶 billingType */
 app.post("/api/sales-orders/generate-patrol", async (req, res) => {
+  if (!requireRole(req, res, ["admin", "accounting", "dispatcher"])) return;
   try {
     const body = (req.body ?? {}) as { weekStart?: unknown };
     const weekAnchor =
@@ -9640,12 +9766,13 @@ app.post("/api/sales-orders/generate-patrol", async (req, res) => {
       },
     });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
 /** 辦公室確認 LINE／待審訂單 → confirmed（之後才可派車） */
 app.post("/api/sales-orders/:salesOrderId/confirm-review", async (req, res) => {
+  if (!requireRole(req, res, ["admin", "accounting", "dispatcher"])) return;
   try {
     const salesOrderId = toBigInt(req.params.salesOrderId);
     if (!salesOrderId) {
@@ -9691,7 +9818,7 @@ app.post("/api/sales-orders/:salesOrderId/confirm-review", async (req, res) => {
 
     res.json({ ok: true, data: updated });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -9901,7 +10028,7 @@ app.post("/api/driver/confirm-line-deliveries", async (req, res) => {
       res.status(400).json({ ok: false, message: "訂單應收已沖帳，無法變更配送數量" });
       return;
     }
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -10316,7 +10443,7 @@ app.post("/api/driver/complete", async (req, res) => {
       });
       return;
     }
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -10410,11 +10537,12 @@ app.get("/api/driver/today", async (req, res) => {
 
     res.json(enriched);
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
 app.post("/api/sales-orders/:salesOrderId/cancel", async (req, res) => {
+  if (!requireRole(req, res, ["admin", "accounting", "dispatcher"])) return;
   try {
     const salesOrderId = toBigInt(req.params.salesOrderId);
     const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
@@ -10522,7 +10650,7 @@ app.post("/api/sales-orders/:salesOrderId/cancel", async (req, res) => {
     }
     res.json({ ok: true, data: result.order });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -10555,11 +10683,12 @@ app.get("/api/ar/open-items", async (req, res) => {
     });
     res.json({ ok: true, data: rows });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
 app.post("/api/ar/receipt-vouchers", async (req, res) => {
+  if (!requireRole(req, res, ["admin", "accounting", "dispatcher"])) return;
   try {
     const body = req.body as {
       customerId?: unknown;
@@ -10719,7 +10848,7 @@ app.post("/api/ar/receipt-vouchers", async (req, res) => {
 
     res.status(201).json({ ok: true, data: result });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -10733,11 +10862,12 @@ app.get("/api/ar/receipt-vouchers", async (req, res) => {
     });
     res.json({ ok: true, data: rows });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
 app.post("/api/customers/:customerId/prepayment-topup-money", async (req, res) => {
+  if (!requireRole(req, res, ["admin", "accounting"])) return;
   try {
     const customerId = toBigInt(req.params.customerId);
     const amount = new Prisma.Decimal(Number(req.body?.amount ?? 0));
@@ -10852,6 +10982,7 @@ app.post("/api/customers/:customerId/prepayment-topup-money", async (req, res) =
 });
 
 app.post("/api/ar/prepayment-apply", async (req, res) => {
+  if (!requireRole(req, res, ["admin", "accounting", "dispatcher"])) return;
   try {
     const customerId = toBigInt(req.body?.customerId);
     const openItemId = toBigInt(req.body?.openItemId);
@@ -10912,6 +11043,7 @@ app.post("/api/ar/prepayment-apply", async (req, res) => {
 });
 
 app.post("/api/ar/credit-notes", async (req, res) => {
+  if (!requireRole(req, res, ["admin", "accounting"])) return;
   try {
     const customerId = toBigInt(req.body?.customerId);
     const salesOrderId = toBigInt(req.body?.salesOrderId);
@@ -10999,7 +11131,7 @@ app.post("/api/ar/credit-notes", async (req, res) => {
     });
     res.status(201).json({ ok: true, data: result });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -11036,7 +11168,7 @@ app.get("/api/reports/ar-aging", async (req, res) => {
     });
     res.json({ ok: true, data: { summary: bucket, rows } });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -11073,7 +11205,7 @@ app.get("/api/reports/ar-exceptions", async (_req, res) => {
       .filter((r) => r.outstanding > Number(r.creditLimit));
     res.json({ ok: true, data: { overdue, cashMissing, creditHold } });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -11100,7 +11232,7 @@ app.get("/api/reports/inventory-exceptions", async (_req, res) => {
     }));
     res.json({ ok: true, data, totalCount: data.length });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -11692,7 +11824,7 @@ app.get("/api/reports/exception-center", async (req, res) => {
       },
     });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -11743,7 +11875,7 @@ app.get("/api/reports/driver-cash-close", async (req, res) => {
       },
     });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -11944,7 +12076,7 @@ app.post("/api/billing/statements/post", async (req, res) => {
 
     res.status(201).json({ ok: true, data: postedBundle });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -12048,7 +12180,7 @@ app.get("/api/tax-invoices", async (req, res) => {
     });
     res.json({ ok: true, data: rows.map(serializeTaxInvoice) });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -12122,7 +12254,7 @@ app.patch("/api/tax-invoices/:id", async (req, res) => {
     });
     res.json({ ok: true, data: serializeTaxInvoice(updated) });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -12257,7 +12389,7 @@ app.get("/api/billing/statements", async (req, res) => {
       },
     });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -12444,7 +12576,7 @@ app.get("/api/barrel-collections", async (req, res) => {
 
     res.json(sliced);
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -12549,7 +12681,7 @@ app.get("/api/barrel-movements", async (req, res) => {
 
     res.json(sliced);
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -12630,7 +12762,7 @@ app.get("/api/barrel-pickups", async (req, res) => {
 
     res.json(filtered.slice(0, 300));
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -12658,7 +12790,7 @@ app.get("/api/service-tickets", async (req, res) => {
     });
     res.json({ ok: true, data: rows.map(serializeServiceTicketAdmin) });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -12679,7 +12811,7 @@ app.get("/api/service-tickets/:ticketId", async (req, res) => {
     }
     res.json({ ok: true, data: serializeServiceTicketAdmin(row) });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -12763,7 +12895,7 @@ app.post("/api/service-tickets", async (req, res) => {
     });
     res.status(201).json({ ok: true, data: serializeServiceTicketAdmin(full) });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -12810,7 +12942,7 @@ app.post("/api/service-tickets/:ticketId/accept", async (req, res) => {
     });
     res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -12920,7 +13052,7 @@ app.post("/api/service-tickets/:ticketId/assign-assess", async (req, res) => {
 
     res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -13072,7 +13204,7 @@ app.post("/api/service-tickets/:ticketId/admin-onsite-complete", async (req, res
 
     res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -13171,7 +13303,7 @@ app.post("/api/service-tickets/:ticketId/mark-loaner", async (req, res) => {
 
     res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -13233,7 +13365,7 @@ app.post("/api/service-tickets/:ticketId/confirm-workshop-received", async (req,
 
     res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -13322,7 +13454,7 @@ app.post("/api/service-tickets/:ticketId/workshop-progress", async (req, res) =>
 
     res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -13392,7 +13524,7 @@ app.post("/api/service-tickets/:ticketId/quote", async (req, res) => {
 
     res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -13439,7 +13571,7 @@ app.post("/api/service-tickets/:ticketId/quote-respond", async (req, res) => {
     });
     res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -13507,7 +13639,7 @@ app.post("/api/service-tickets/:ticketId/assign-return", async (req, res) => {
     });
     res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -13652,7 +13784,7 @@ app.post("/api/service-tickets/:ticketId/close", async (req, res) => {
 
     res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -13759,7 +13891,7 @@ app.post("/api/service-tickets/:ticketId/ensure-billing", async (req, res) => {
     });
     res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -13864,7 +13996,7 @@ app.post("/api/barrel-pickups", async (req, res) => {
 
     res.json({ ok: true, data: result });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -13965,7 +14097,7 @@ app.patch("/api/barrel-pickups/:pickupId", async (req, res) => {
 
     res.json({ ok: true, data: result });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -14007,7 +14139,7 @@ app.post("/api/barrel-pickups/:pickupId/cancel", async (req, res) => {
 
     res.json({ ok: true, data: result });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -14129,7 +14261,7 @@ app.post("/api/barrel-pickups/:pickupId/approve", async (req, res) => {
 
     res.json({ ok: true, data: result });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -14175,7 +14307,7 @@ app.get("/api/driver/barrel-pickups", async (req, res) => {
 
     res.json(rows);
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -14227,7 +14359,7 @@ app.get("/api/driver/service-tickets", async (req, res) => {
     });
     res.json({ ok: true, data: rows.map(serializeServiceTicketAdmin) });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -14382,7 +14514,7 @@ app.post("/api/driver/service-tickets/:ticketId/assess-report", async (req, res)
 
     res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -14449,7 +14581,7 @@ app.post("/api/driver/service-tickets/:ticketId/return-report", async (req, res)
 
     res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -14548,7 +14680,7 @@ app.post("/api/driver/barrel-pickups/:pickupId/report", async (req, res) => {
 
     res.json({ ok: true, data: result });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -14894,7 +15026,7 @@ app.get("/api/expense-categories", async (req, res) => {
     });
     res.json(rows);
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -14925,7 +15057,7 @@ app.post("/api/expense-categories", async (req, res) => {
       res.status(409).json({ ok: false, message: "此類別名稱已存在" });
       return;
     }
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -14964,7 +15096,7 @@ app.patch("/api/expense-categories/:categoryId", async (req, res) => {
       res.status(404).json({ ok: false, message: "找不到類別" });
       return;
     }
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -14988,7 +15120,7 @@ app.delete("/api/expense-categories/:categoryId", async (req, res) => {
       res.status(404).json({ ok: false, message: "找不到類別" });
       return;
     }
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -15008,7 +15140,7 @@ app.get("/api/expense-vouchers/daily-summary", async (req, res) => {
     });
     res.json({ ok: true, data: buildExpenseSummary(vouchers, ymd) });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -15042,7 +15174,7 @@ app.get("/api/expense-vouchers/today-summary", async (req, res) => {
     }
     res.json({ ok: true, data: buildExpenseSummary(vouchers, dateParam) });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -15063,7 +15195,7 @@ app.get("/api/expense-vouchers/reports/monthly", async (req, res) => {
     });
     res.json({ ok: true, data: buildExpenseSummary(vouchers, ym) });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -15099,7 +15231,7 @@ app.get("/api/expense-vouchers/reports/by-category", async (req, res) => {
     const summary = buildExpenseSummary(vouchers, `${dateFromParam || "—"} ~ ${dateToParam || "—"}`);
     res.json({ ok: true, data: summary.byCategory });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -15180,7 +15312,7 @@ app.get("/api/expense-vouchers", async (req, res) => {
 
     res.json(rows.slice(0, 300));
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -15201,7 +15333,7 @@ app.get("/api/expense-vouchers/:voucherId", async (req, res) => {
     }
     res.json(row);
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -15298,7 +15430,7 @@ app.post("/api/expense-vouchers", async (req, res) => {
 
     res.json({ ok: true, data: result });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -15429,7 +15561,7 @@ app.patch("/api/expense-vouchers/:voucherId", async (req, res) => {
 
     res.json({ ok: true, data: result });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -15457,7 +15589,7 @@ app.delete("/api/expense-vouchers/:voucherId", async (req, res) => {
     await prisma.expenseVoucher.delete({ where: { id: voucherId } });
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -15502,7 +15634,7 @@ app.post("/api/expense-vouchers/batch-verify", async (req, res) => {
 
     res.json({ ok: true, data: result });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -15529,7 +15661,7 @@ app.get("/api/notification-logs", async (req, res) => {
     });
     res.json({ ok: true, data: rows });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -15612,7 +15744,7 @@ app.get("/api/admin/day-close", async (req, res) => {
       },
     });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -15689,7 +15821,7 @@ app.post("/api/admin/day-close/lock", async (req, res) => {
         });
     res.json({ ok: true, data: row });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -15721,7 +15853,7 @@ app.post("/api/admin/day-close/unlock", async (req, res) => {
     });
     res.json({ ok: true, data: row });
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 
@@ -15799,7 +15931,7 @@ app.get("/api/admin/backup-export", async (req, res) => {
     res.setHeader("Content-Disposition", `attachment; filename="watererp-backup-${ymd}.json"`);
     res.send(body);
   } catch (e) {
-    res.status(500).json({ ok: false, message: String(e) });
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
 

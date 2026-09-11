@@ -157,7 +157,14 @@ const TOKEN_KEY = "water_liff_member_token";
 async function api<T>(
   path: string,
   opts: { method?: string; body?: unknown; token?: string | null } = {},
-): Promise<{ ok: boolean; status: number; data?: T; message?: string; needRegister?: boolean }> {
+): Promise<{
+  ok: boolean;
+  status: number;
+  data?: T;
+  message?: string;
+  needRegister?: boolean;
+  needExistingBind?: boolean;
+}> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "ngrok-skip-browser-warning": "1",
@@ -169,7 +176,13 @@ async function api<T>(
     body: opts.body != null ? JSON.stringify(opts.body) : undefined,
   });
   const raw = await res.text();
-  let payload: { ok?: boolean; data?: T; message?: string; needRegister?: boolean } = {};
+  let payload: {
+    ok?: boolean;
+    data?: T;
+    message?: string;
+    needRegister?: boolean;
+    needExistingBind?: boolean;
+  } = {};
   try {
     payload = raw ? (JSON.parse(raw) as typeof payload) : {};
   } catch {
@@ -187,6 +200,7 @@ async function api<T>(
     data: payload.data,
     message: payload.message,
     needRegister: Boolean(payload.needRegister),
+    needExistingBind: Boolean(payload.needExistingBind),
   };
 }
 
@@ -449,12 +463,11 @@ export default function App() {
   });
 
   const [mobile, setMobile] = useState("");
-  const [otpCode, setOtpCode] = useState("");
-  const [otpHint, setOtpHint] = useState("");
-  const [otpSent, setOtpSent] = useState(false);
   const [needRegister, setNeedRegister] = useState(false);
+  const [needExistingBind, setNeedExistingBind] = useState(false);
+  const [bindCustomerCode, setBindCustomerCode] = useState("");
+  const [bindCode, setBindCode] = useState("");
   const [regName, setRegName] = useState("");
-  const [regBillingType, setRegBillingType] = useState<"cash" | "monthly" | "prepaid">("cash");
   const [regCity, setRegCity] = useState("");
   const [regDistrict, setRegDistrict] = useState("");
   const [regStreet, setRegStreet] = useState("");
@@ -879,35 +892,6 @@ export default function App() {
     }
   };
 
-  const requestOtp = async () => {
-    if (!idToken) return;
-    setBindMsg("");
-    setOtpHint("");
-    const res = await api<{
-      expiresAt: string;
-      devCode?: string;
-      skipped?: boolean;
-      delivery?: "line" | "dev" | "skip";
-    }>("/api/liff/otp/request", {
-      method: "POST",
-      body: { idToken, mobile },
-    });
-    if (!res.ok) {
-      setBindMsg(res.message || "無法寄送驗證碼");
-      return;
-    }
-    setOtpSent(true);
-    if (res.data?.skipped || res.data?.delivery === "skip") {
-      setOtpHint("測試模式：已略過驗證碼，請直接按「綁定會員」");
-      setOtpCode("");
-    } else if (res.data?.devCode) {
-      setOtpHint(`開發模式驗證碼：${res.data.devCode}`);
-      setOtpCode(res.data.devCode);
-    } else {
-      setOtpHint("驗證碼已透過 LINE 訊息發送，請到官方帳號聊天室查看後輸入");
-    }
-  };
-
   const bind = async () => {
     if (!idToken) return;
     setBinding(true);
@@ -915,25 +899,40 @@ export default function App() {
     try {
       let addressLine: string | undefined;
       if (needRegister) {
+        if (!regName.trim()) {
+          setBindMsg("請填寫姓名／公司名稱");
+          return;
+        }
         if (!regCity || !regDistrict || !regStreet.trim()) {
           setBindMsg("請選擇縣市、鄉鎮市區，並填寫街道與門牌");
           return;
         }
         addressLine = composeTaiwanAddress(regCity, regDistrict, regStreet);
       }
+      if (needExistingBind) {
+        if (!bindCustomerCode.trim() || !bindCode.trim()) {
+          setBindMsg("請輸入客戶編號與客服提供的一次性綁定碼");
+          return;
+        }
+      }
       const res = await api<{ token: string; customer: Customer }>("/api/liff/bind", {
         method: "POST",
         body: {
           idToken,
           mobile,
-          code: otpCode,
-          ...(needRegister
-            ? { name: regName, addressLine, billingType: regBillingType }
-            : {}),
+          ...(needRegister ? { name: regName, addressLine } : {}),
+          ...(needExistingBind ? { customerCode: bindCustomerCode, bindCode } : {}),
         },
       });
       if (!res.ok) {
-        if (res.needRegister) setNeedRegister(true);
+        if (res.needRegister) {
+          setNeedRegister(true);
+          setNeedExistingBind(false);
+        }
+        if (res.needExistingBind) {
+          setNeedExistingBind(true);
+          setNeedRegister(false);
+        }
         setBindMsg(res.message || "綁定失敗");
         return;
       }
@@ -1120,7 +1119,7 @@ export default function App() {
   }
 
   if (!customer || !token) {
-    const bindStep = needRegister ? 3 : otpSent ? 2 : 1;
+    const bindStep = needRegister || needExistingBind ? 2 : 1;
     return (
       <div className="liff-shell">
         <header className="liff-hero">
@@ -1131,8 +1130,9 @@ export default function App() {
         <section className="liff-card">
           <div className="step-pills" aria-hidden="true">
             <div className={`step-pill ${bindStep >= 1 ? "is-on" : ""}`}>1 手機</div>
-            <div className={`step-pill ${bindStep >= 2 ? "is-on" : ""}`}>2 驗證</div>
-            <div className={`step-pill ${bindStep >= 3 ? "is-on" : ""}`}>3 完成</div>
+            <div className={`step-pill ${bindStep >= 2 ? "is-on" : ""}`}>
+              {needExistingBind ? "2 綁定碼" : "2 資料"}
+            </div>
           </div>
           <div className="section-head">
             <h2>會員綁定</h2>
@@ -1148,65 +1148,40 @@ export default function App() {
               autoComplete="tel"
             />
           </label>
-          <div className="btn-row">
-            <button type="button" className="btn btn--ghost" onClick={() => void requestOtp()}>
-              {otpSent ? "重新取得驗證碼" : "取得驗證碼"}
-            </button>
-          </div>
-          {otpHint ? <p className="feedback feedback--info">{otpHint}</p> : null}
-          <label className="field">
-            <span>驗證碼</span>
-            <input
-              value={otpCode}
-              onChange={(e) => setOtpCode(e.target.value)}
-              placeholder="6 位數字"
-              inputMode="numeric"
-              autoComplete="one-time-code"
-            />
-          </label>
+          {needExistingBind ? (
+            <>
+              <p className="muted" style={{ marginBottom: "0.75rem" }}>
+                此手機已有會員資料。請向客服申請核准後，輸入客戶編號與一次性綁定碼。
+              </p>
+              <label className="field">
+                <span>客戶編號</span>
+                <input
+                  value={bindCustomerCode}
+                  onChange={(e) => setBindCustomerCode(e.target.value)}
+                  placeholder="6 碼編號"
+                  inputMode="numeric"
+                />
+              </label>
+              <label className="field">
+                <span>一次性綁定碼</span>
+                <input
+                  value={bindCode}
+                  onChange={(e) => setBindCode(e.target.value)}
+                  placeholder="客服提供的 6 位數字"
+                  inputMode="numeric"
+                />
+              </label>
+            </>
+          ) : null}
           {needRegister ? (
             <>
               <p className="muted" style={{ marginBottom: "0.75rem" }}>
-                查無既有會員，請補填資料完成註冊。
+                查無既有會員，請補填資料完成註冊（結帳方式預設現金，其他方式請洽客服）。
               </p>
               <label className="field">
                 <span>姓名／公司名稱</span>
                 <input value={regName} onChange={(e) => setRegName(e.target.value)} placeholder="例：王小明" />
               </label>
-              <div className="field">
-                <span>結帳方式</span>
-                <div className="addr-grid">
-                  {(
-                    [
-                      { value: "cash" as const, title: "現金", desc: "配送時付款" },
-                      { value: "monthly" as const, title: "月結", desc: "月底／約定日對帳" },
-                      { value: "prepaid" as const, title: "預付桶", desc: "先儲值再扣桶出貨" },
-                    ] as const
-                  ).map((opt) => (
-                    <button
-                      key={opt.value}
-                      type="button"
-                      className={`addr-card${regBillingType === opt.value ? " is-selected" : ""}`}
-                      onClick={() => setRegBillingType(opt.value)}
-                    >
-                      <div className="addr-card__top">
-                        <span className="addr-card__label">{opt.title}</span>
-                      </div>
-                      <div className="addr-card__line">{opt.desc}</div>
-                    </button>
-                  ))}
-                </div>
-                {regBillingType === "prepaid" ? (
-                  <p className="muted" style={{ marginTop: "0.45rem", marginBottom: 0 }}>
-                    註冊後預付餘額為 0，請向客服完成儲值後再下單。
-                  </p>
-                ) : null}
-                {regBillingType === "monthly" ? (
-                  <p className="muted" style={{ marginTop: "0.45rem", marginBottom: 0 }}>
-                    月結條件（結帳日等）可由客服後續協助確認。
-                  </p>
-                ) : null}
-              </div>
               <label className="field">
                 <span>縣市</span>
                 <select
@@ -1256,7 +1231,7 @@ export default function App() {
             </>
           ) : null}
           <button type="button" className="btn btn--primary" disabled={binding} onClick={() => void bind()}>
-            {binding ? "綁定中…" : needRegister ? "註冊並綁定" : "驗證並綁定"}
+            {binding ? "綁定中…" : needRegister ? "註冊並綁定" : needExistingBind ? "確認綁定" : "綁定會員"}
           </button>
           {bindMsg ? <p className="feedback feedback--err">{bindMsg}</p> : null}
         </section>

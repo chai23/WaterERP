@@ -41,6 +41,7 @@ model User {
   serviceTicketEventsCreated ServiceTicketEvent[] @relation("ServiceTicketEventCreator")
   customerLifecycleEventsRecorded CustomerLifecycleEvent[] @relation("CustomerLifecycleRecorder")
   operationAuditLogs              OperationAuditLog[]      @relation("OperationAuditActor")
+  lineBindChallengesCreated       LineBindChallenge[]      @relation("LineBindChallengeCreator")
   dayCloseLocksLocked             DayCloseLock[]           @relation("DayCloseLocker")
   dayCloseLocksUnlocked           DayCloseLock[]           @relation("DayCloseUnlocker")
   deliveryPlansCreated            DeliveryPlan[]           @relation("DeliveryPlanCreator")
@@ -249,6 +250,7 @@ model Customer {
   barrelMovements   BarrelMovement[]
   serviceTickets    ServiceTicket[]
   lifecycleEvents   CustomerLifecycleEvent[]
+  lineBindChallenges LineBindChallenge[]
 
   @@index([lifecycleStatus, churnedAt])
   @@map("customers")
@@ -774,18 +776,21 @@ model NotificationLog {
   @@map("notification_logs")
 }
 
-/// LIFF 手機 OTP 挑戰（短效）
-model LineOtpChallenge {
-  id        BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
-  mobile    String   @db.VarChar(32)
-  codeHash  String   @map("code_hash") @db.VarChar(128)
-  lineUserId String  @map("line_user_id") @db.VarChar(64)
-  expiresAt DateTime @map("expires_at") @db.DateTime(3)
-  consumedAt DateTime? @map("consumed_at") @db.DateTime(3)
-  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+/// 客服核發的既有客戶 LINE 綁定一次性碼（短效）
+model LineBindChallenge {
+  id              BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  customerId      BigInt    @map("customer_id") @db.UnsignedBigInt
+  codeHash        String    @map("code_hash") @db.VarChar(128)
+  createdByUserId BigInt    @map("created_by_user_id") @db.UnsignedBigInt
+  expiresAt       DateTime  @map("expires_at") @db.DateTime(3)
+  consumedAt      DateTime? @map("consumed_at") @db.DateTime(3)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.DateTime(3)
 
-  @@index([mobile, lineUserId])
-  @@map("line_otp_challenges")
+  customer  Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  createdBy User     @relation("LineBindChallengeCreator", fields: [createdByUserId], references: [id])
+
+  @@index([customerId, consumedAt, expiresAt])
+  @@map("line_bind_challenges")
 }
 
 model FloorDeliveryBonusRecord {
