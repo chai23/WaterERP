@@ -636,6 +636,14 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
     }
   });
 
+  // 舊版 LIFF 仍會呼叫此路徑；回 JSON 提示重整，避免 Nginx 404 HTML 被顯示成「連線失敗」。
+  app.post("/api/liff/otp/request", (_req, res) => {
+    res.status(410).json({
+      ok: false,
+      message: "驗證碼已取消。請完全關閉此頁，從官方帳號選單重新開啟訂水後再綁定。",
+    });
+  });
+
   app.post("/api/liff/bind", async (req, res) => {
     try {
       const idToken = typeof req.body?.idToken === "string" ? req.body.idToken : "";

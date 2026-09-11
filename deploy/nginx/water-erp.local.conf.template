@@ -34,10 +34,18 @@ server {
         return 301 /liff/;
     }
 
+    location /liff/assets/ {
+        alias {{PROJECT_ROOT}}/apps/web-liff/dist/assets/;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        access_log off;
+    }
+
     location /liff/ {
         alias {{PROJECT_ROOT}}/apps/web-liff/dist/;
         index index.html;
         try_files $uri $uri/ /liff/index.html;
+        add_header Cache-Control "no-store, no-cache, must-revalidate";
+        add_header Pragma "no-cache";
     }
 
     location / {

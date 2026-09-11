@@ -170,11 +170,16 @@ async function api<T>(
     "ngrok-skip-browser-warning": "1",
   };
   if (opts.token) headers.Authorization = `Bearer ${opts.token}`;
-  const res = await fetch(path, {
-    method: opts.method ?? "GET",
-    headers,
-    body: opts.body != null ? JSON.stringify(opts.body) : undefined,
-  });
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      method: opts.method ?? "GET",
+      headers,
+      body: opts.body != null ? JSON.stringify(opts.body) : undefined,
+    });
+  } catch {
+    return { ok: false, status: 0, message: "連線失敗，請確認網路後重試" };
+  }
   const raw = await res.text();
   let payload: {
     ok?: boolean;
