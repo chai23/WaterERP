@@ -1,6 +1,6 @@
 # WaterERP — Nginx 單一入口（網域 + HTTPS）
-# 由 deploy/scripts/generate-nginx-config.ps1 產生
-# 正式網域範例：aoshyhcake.com.tw（請自行替換 server_name / 憑證檔名）
+# 由 deploy/scripts/generate-nginx-config.ps1 依本機專案路徑產生。
+# 此檔只是範本；實際 water-erp.conf 含各機路徑，不要提交到 Git。
 
 server {
     listen 80;

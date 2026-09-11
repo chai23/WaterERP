@@ -705,6 +705,7 @@ internal sealed class MainForm : Form
             AppendLog("=== 開始更新並部署 ===");
             await StopApplicationServicesCoreAsync();
             var root = _projectRoot.Text.Trim();
+            await ResetGeneratedNginxConfigForPullAsync(root);
             if (await RunGitCommandCoreAsync(root, $"pull origin {branch}") != 0)
                 throw new InvalidOperationException("Git pull 失敗，部署已中止。");
             if (!await BuildProductionCoreAsync(root, applySchema: true))
@@ -725,8 +726,11 @@ internal sealed class MainForm : Form
         ValidateGitRepo();
         await RunBusyAsync(async () =>
         {
-            if (await RunGitCommandCoreAsync(_projectRoot.Text.Trim(), $"pull origin {GetGitBranch()}") != 0)
+            var root = _projectRoot.Text.Trim();
+            await ResetGeneratedNginxConfigForPullAsync(root);
+            if (await RunGitCommandCoreAsync(root, $"pull origin {GetGitBranch()}") != 0)
                 throw new InvalidOperationException("Git pull 失敗，請查看日誌。");
+            await GenerateNginxConfigAsync(root);
             await RefreshGitStatusAsync(fetch: true, logResult: false);
         });
     }
@@ -1163,6 +1167,15 @@ internal sealed class MainForm : Form
             output = ex.Message;
             return false;
         }
+    }
+
+    private async Task ResetGeneratedNginxConfigForPullAsync(string root)
+    {
+        const string relative = "deploy/nginx/water-erp.conf";
+        if (await RunGitCommandCoreAsync(root, $"ls-files --error-unmatch -- {relative}") != 0)
+            return;
+        AppendLog("還原由本機產生的 Nginx 設定，避免路徑差異擋住 git pull；稍後會依本機專案路徑重建。");
+        await RunGitCommandCoreAsync(root, $"restore --source=HEAD --staged --worktree -- {relative}");
     }
 
     private async Task GenerateNginxConfigAsync(string root)

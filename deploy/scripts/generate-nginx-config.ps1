@@ -1,4 +1,4 @@
-﻿# 依專案路徑產生 Nginx 設定檔
+﻿# 依本機專案路徑產生 Nginx 設定檔（輸出檔含絕對路徑，不要提交到 Git）。
 param(
     [string]$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path,
     [int]$ApiPort = 3000,

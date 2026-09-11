@@ -9,6 +9,8 @@ build
 # 本機測試 Nginx（此機不再當正式入口時使用）
 deploy/nginx/.use-local-test
 deploy/nginx/water-erp.local.conf
+# 依各機專案路徑產生，勿提交（啟動器／generate-nginx-config.ps1 會重建）
+deploy/nginx/water-erp.conf
 
 # Let's Encrypt / win-acme（勿提交私鑰）
 deploy/certs/
