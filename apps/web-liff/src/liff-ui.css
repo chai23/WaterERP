@@ -612,6 +612,12 @@ textarea {
   color: #047857;
 }
 
+.mini-tag--warn {
+  background: var(--warn-soft);
+  border-color: #efd48a;
+  color: var(--warn);
+}
+
 /* —— Date chips —— */
 .date-row {
   display: flex;
@@ -796,6 +802,86 @@ textarea {
   max-width: 8.5rem;
   padding: 0.7rem 0.85rem;
   flex-shrink: 0;
+}
+
+/* —— Order confirm sheet —— */
+.confirm-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(21, 48, 69, 0.46);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.confirm-sheet__panel {
+  width: 100%;
+  max-width: 480px;
+  max-height: min(85vh, 40rem);
+  overflow: auto;
+  background: var(--surface);
+  border-radius: 20px 20px 0 0;
+  padding: 1.1rem 1rem calc(1.1rem + env(safe-area-inset-bottom));
+  box-shadow: 0 -12px 32px rgba(21, 48, 69, 0.16);
+}
+
+.confirm-sheet__panel h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1.15rem;
+}
+
+.confirm-sheet__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.45rem 0;
+  font-size: 0.9rem;
+}
+
+.confirm-sheet__row span {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.confirm-sheet__row strong {
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.confirm-sheet__row--total {
+  border-top: 1px solid var(--border);
+  margin-top: 0.35rem;
+  padding-top: 0.7rem;
+  font-size: 1rem;
+}
+
+.confirm-sheet__lines {
+  list-style: none;
+  margin: 0.35rem 0;
+  padding: 0.35rem 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.confirm-sheet__lines li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.28rem 0;
+  font-size: 0.9rem;
+}
+
+.confirm-sheet__actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
+  margin-top: 0.85rem;
+}
+
+.confirm-sheet__actions .btn {
+  width: 100%;
+  max-width: none;
 }
 
 /* —— Orders —— */
@@ -1134,6 +1220,7 @@ textarea {
 @media (prefers-reduced-motion: reduce) {
   .liff-shell,
   .cart-bar,
+  .confirm-sheet__panel,
   .order-card__detail,
   .loading__dot {
     animation: none;

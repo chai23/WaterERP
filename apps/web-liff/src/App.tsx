@@ -514,6 +514,7 @@ export default function App() {
   const [addingAddr, setAddingAddr] = useState(false);
   const [addrMsg, setAddrMsg] = useState("");
   const [showAddAddr, setShowAddAddr] = useState(false);
+  const [confirmingOrder, setConfirmingOrder] = useState(false);
 
   const regDistricts = regCity ? TW_DISTRICTS_BY_CITY[regCity] ?? [] : [];
   const newAddrDistricts = newAddrCity ? TW_DISTRICTS_BY_CITY[newAddrCity] ?? [] : [];
@@ -593,6 +594,43 @@ export default function App() {
     () => customer?.addresses.find((a) => String(a.id) === addressId) ?? null,
     [customer, addressId],
   );
+
+  const openOrderByAddressId = useMemo(() => {
+    const map = new Map<string, OrderRow>();
+    for (const o of orders) {
+      if (!isActiveStatus(o.status)) continue;
+      const id = o.deliveryAddress?.id != null ? String(o.deliveryAddress.id) : "";
+      if (!id || map.has(id)) continue;
+      map.set(id, o);
+    }
+    return map;
+  }, [orders]);
+
+  const openOrderAtSelectedAddress = addressId ? openOrderByAddressId.get(addressId) ?? null : null;
+
+  const confirmLines = useMemo(() => {
+    const rows: Array<{ key: string; name: string; qty: number; amount: number; kind: string }> = [];
+    const push = (source: Array<{ productId: string; qty: number }>, kind: string) => {
+      for (const l of source) {
+        const p = products.find((x) => String(x.id) === l.productId);
+        if (!p) continue;
+        rows.push({
+          key: `${kind}-${l.productId}`,
+          name: p.name,
+          qty: l.qty,
+          amount: Number(p.salePrice) * l.qty,
+          kind,
+        });
+      }
+    };
+    if (orderMode === "topup") {
+      push(selectedTopupLines, "儲值");
+    } else {
+      push(selectedLines, "配送");
+      push(selectedTopupLines, "儲值");
+    }
+    return rows;
+  }, [orderMode, selectedLines, selectedTopupLines, products]);
 
   const filteredOrders = useMemo(() => {
     if (orderFilter === "active") return orders.filter((o) => isActiveStatus(o.status));
@@ -951,29 +989,45 @@ export default function App() {
     }
   };
 
+  const orderDraftError = (): string | null => {
+    if (!addressId) return "請選擇配送／聯絡地址";
+    if (openOrderAtSelectedAddress) {
+      return `此地址已有未完成訂單 ${openOrderAtSelectedAddress.orderNo}，完成後才能再下單`;
+    }
+    const isTopupOnly = orderMode === "topup";
+    if (isTopupOnly) {
+      if (selectedTopupLines.length === 0) return "請至少選擇一項要儲值的商品數量";
+    } else if (selectedLines.length === 0) {
+      return "請至少加購一項商品";
+    }
+    if (!isTopupOnly && prepaidShortfall) {
+      return "預付桶不足，請先「一鍵補足儲值」或調高本單儲值桶數（可配送時再收款）";
+    }
+    return null;
+  };
+
+  const openOrderConfirm = () => {
+    const err = orderDraftError();
+    if (err) {
+      setOrderMsg(err);
+      return;
+    }
+    setOrderMsg("");
+    setConfirmingOrder(true);
+  };
+
   const submitOrder = async () => {
     if (!token) return;
+    const err = orderDraftError();
+    if (err) {
+      setOrderMsg(err);
+      setConfirmingOrder(false);
+      return;
+    }
     setOrdering(true);
     setOrderMsg("");
     try {
-      if (!addressId) {
-        setOrderMsg("請選擇配送／聯絡地址");
-        return;
-      }
       const isTopupOnly = orderMode === "topup";
-      if (isTopupOnly) {
-        if (selectedTopupLines.length === 0) {
-          setOrderMsg("請至少選擇一項要儲值的商品數量");
-          return;
-        }
-      } else if (selectedLines.length === 0) {
-        setOrderMsg("請至少加購一項商品");
-        return;
-      }
-      if (!isTopupOnly && prepaidShortfall) {
-        setOrderMsg("預付桶不足，請先「一鍵補足儲值」或調高本單儲值桶數（可配送時再收款）");
-        return;
-      }
 
       const lines = isTopupOnly
         ? selectedTopupLines.map((l) => ({
@@ -1013,6 +1067,7 @@ export default function App() {
         setOrderMsg(res.message || (isTopupOnly ? "儲值申請失敗" : "下單失敗"));
         return;
       }
+      setConfirmingOrder(false);
       setOrderMsg(
         isTopupOnly
           ? `儲值申請已送出：${res.data?.orderNo ?? ""}，客服確認並完成收款後會入帳桶數`
@@ -1351,6 +1406,7 @@ export default function App() {
                   const id = String(a.id);
                   const selected = id === addressId;
                   const fl = floorLabel(a.deliveryFloor);
+                  const openAtAddr = openOrderByAddressId.get(id);
                   return (
                     <button
                       key={id}
@@ -1364,6 +1420,7 @@ export default function App() {
                       <div className="addr-card__line">{a.addressLine}</div>
                       <div className="addr-card__meta">
                         {fl ? <span className="mini-tag">{fl}</span> : null}
+                        {openAtAddr ? <span className="mini-tag mini-tag--warn">有未完成單</span> : null}
                         {a.barrelsOnSite != null && a.barrelsOnSite > 0 ? (
                           <span className="mini-tag">現場應存桶數量 {a.barrelsOnSite}</span>
                         ) : null}
@@ -1375,6 +1432,15 @@ export default function App() {
                   );
                 })}
               </div>
+            )}
+            {openOrderAtSelectedAddress ? (
+              <p className="feedback feedback--err" style={{ marginTop: "0.75rem", marginBottom: 0 }}>
+                此地址已有未完成訂單 {openOrderAtSelectedAddress.orderNo}，完成後才能再下單。
+              </p>
+            ) : (
+              <p className="muted" style={{ marginTop: "0.75rem", marginBottom: 0 }}>
+                同一地址同時只能有一張未完成訂單。
+              </p>
             )}
           </section>
 
@@ -2386,17 +2452,101 @@ export default function App() {
           <button
             type="button"
             className="btn btn--primary"
-            disabled={ordering || !addressId || (orderMode === "delivery" && prepaidShortfall)}
-            onClick={() => void submitOrder()}
+            disabled={ordering || !addressId || (orderMode === "delivery" && prepaidShortfall) || Boolean(openOrderAtSelectedAddress)}
+            onClick={openOrderConfirm}
           >
             {ordering
               ? "送出中…"
-              : orderMode === "delivery" && prepaidShortfall
-                ? "餘額不足"
-                : orderMode === "topup"
-                  ? "送出儲值申請"
-                  : "送出訂單"}
+              : openOrderAtSelectedAddress
+                ? "無法下單"
+                : orderMode === "delivery" && prepaidShortfall
+                  ? "餘額不足"
+                  : "確認訂單"}
           </button>
+        </div>
+      ) : null}
+
+      {confirmingOrder ? (
+        <div
+          className="confirm-sheet"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="liff-confirm-title"
+          onClick={() => {
+            if (!ordering) setConfirmingOrder(false);
+          }}
+        >
+          <div
+            className="confirm-sheet__panel"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="liff-confirm-title">{orderMode === "topup" ? "確認儲值申請" : "確認訂單"}</h2>
+            <p className="muted" style={{ marginTop: 0 }}>
+              請核對內容無誤後再送出。送出後由客服確認。
+            </p>
+            <div className="confirm-sheet__row">
+              <span>{orderMode === "topup" ? "聯絡地址" : "配送地址"}</span>
+              <strong>
+                {selectedAddress
+                  ? `${selectedAddress.label?.trim() ? `${selectedAddress.label.trim()} · ` : ""}${selectedAddress.addressLine}`
+                  : "尚未選擇"}
+              </strong>
+            </div>
+            {orderMode === "delivery" ? (
+              <div className="confirm-sheet__row">
+                <span>希望配送日</span>
+                <strong>{scheduledDate || "不指定（由客服安排）"}</strong>
+              </div>
+            ) : null}
+            <ul className="confirm-sheet__lines">
+              {confirmLines.map((l) => (
+                <li key={l.key}>
+                  <span>
+                    {l.name}
+                    {l.kind === "儲值" ? "（儲值）" : ""} × {l.qty}
+                  </span>
+                  <strong>${money(l.amount)}</strong>
+                </li>
+              ))}
+            </ul>
+            {remark.trim() ? (
+              <div className="confirm-sheet__row">
+                <span>備註</span>
+                <strong>{remark.trim()}</strong>
+              </div>
+            ) : null}
+            <div className="confirm-sheet__row confirm-sheet__row--total">
+              <span>合計</span>
+              <strong>${money(cartTotal.total)}</strong>
+            </div>
+            {orderMsg ? (
+              <p className={`feedback ${orderMsg.includes("成功") || orderMsg.includes("已送出") ? "feedback--ok" : "feedback--err"}`}>
+                {orderMsg}
+              </p>
+            ) : null}
+            <div className="confirm-sheet__actions">
+              <button
+                type="button"
+                className="btn btn--ghost"
+                disabled={ordering}
+                onClick={() => setConfirmingOrder(false)}
+              >
+                返回修改
+              </button>
+              <button
+                type="button"
+                className="btn btn--primary"
+                disabled={ordering}
+                onClick={() => void submitOrder()}
+              >
+                {ordering
+                  ? "送出中…"
+                  : orderMode === "topup"
+                    ? "確認送出申請"
+                    : "確認送出訂單"}
+              </button>
+            </div>
+          </div>
         </div>
       ) : null}
 

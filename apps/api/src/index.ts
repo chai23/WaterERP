@@ -9191,6 +9191,26 @@ async function createConfirmedSalesOrder(
       return { status: 400, payload: { ok: false, message: "此客戶已標記流失，無法開新訂單" } };
     }
 
+    if (orderSource === "liff") {
+      const openAtAddress = await prisma.salesOrder.findFirst({
+        where: {
+          deliveryAddressId,
+          status: { notIn: ["completed", "cancelled", "not_delivered"] },
+        },
+        orderBy: { id: "desc" },
+        select: { orderNo: true },
+      });
+      if (openAtAddress) {
+        return {
+          status: 409,
+          payload: {
+            ok: false,
+            message: `此地址已有未完成訂單 ${openAtAddress.orderNo}，完成後才能再從 LINE 下單`,
+          },
+        };
+      }
+    }
+
     const linesInResolved: LineIn[] = linesIn
       .filter((l) => !l.isPromotionGift)
       .map((l) => {
@@ -9415,6 +9435,20 @@ async function createConfirmedSalesOrder(
     }
 
     const created = await prisma.$transaction(async (tx) => {
+      if (orderSource === "liff") {
+        const openAtAddress = await tx.salesOrder.findFirst({
+          where: {
+            deliveryAddressId,
+            status: { notIn: ["completed", "cancelled", "not_delivered"] },
+          },
+          select: { orderNo: true },
+        });
+        if (openAtAddress) {
+          const err = new Error(`此地址已有未完成訂單 ${openAtAddress.orderNo}，完成後才能再從 LINE 下單`);
+          (err as Error & { statusCode?: number }).statusCode = 409;
+          throw err;
+        }
+      }
       const so = await tx.salesOrder.create({
         data: {
           orderNo: generateOrderNo(),
@@ -9514,6 +9548,14 @@ async function createConfirmedSalesOrder(
 
     return { status: 201, payload: { ok: true, data: created } };
   } catch (e) {
+    const statusCode =
+      e && typeof e === "object" && "statusCode" in e ? Number((e as { statusCode?: unknown }).statusCode) : 0;
+    if (statusCode === 409) {
+      return {
+        status: 409,
+        payload: { ok: false, message: e instanceof Error ? e.message : "此地址已有未完成訂單" },
+      };
+    }
     return { status: 500, payload: { ok: false, message: publicErrorMessage(e) } };
   }
 }
