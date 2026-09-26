@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import {
   billingTypeLabel,
@@ -19,6 +20,7 @@ import { breakdownCashTaxInvoicePreview, cashInvoiceModeLabel } from "../taxDisp
 import type { TaxInvoiceRecord } from "../taxInvoiceUtils";
 import { taxInvoiceStatusLabel } from "../taxInvoiceUtils";
 import { openOrderPrintWindow, slipFromDashboardOrderWithAnnouncement } from "../orderPrint";
+import { useMediaQuery } from "../useMediaQuery";
 
 function fmtDateTimeShort(value: unknown): string {
   const parts = splitLocalDateTime(value);
@@ -144,6 +146,7 @@ function SummaryStat({ label, value, hint }: { label: string; value: string; hin
 }
 
 export function OrderDetailModal({ order, onClose }: { order: OrderRecord; onClose: () => void }) {
+  const isMobile = useMediaQuery("(max-width: 768px)");
   const lines = useMemo(() => {
     const raw = Array.isArray(order.lines) ? [...order.lines] : [];
     raw.sort((a, b) => Number(a.id ?? 0) - Number(b.id ?? 0));
@@ -245,7 +248,7 @@ export function OrderDetailModal({ order, onClose }: { order: OrderRecord; onClo
   const statusRaw = String(order.status ?? "");
   const billingAtOrder = order.billingTypeAtOrder != null ? String(order.billingTypeAtOrder) : null;
 
-  return (
+  return createPortal(
     <div className="modal-overlay" role="presentation" onClick={onClose}>
       <div
         className="modal-dialog modal-dialog--order-detail"
@@ -560,19 +563,21 @@ export function OrderDetailModal({ order, onClose }: { order: OrderRecord; onClo
         </div>
 
         <footer className="modal-dialog__footer">
-          <button
-            type="button"
-            className="btn btn--primary"
-            onClick={() => {
-              void (async () => {
-                const slip = await slipFromDashboardOrderWithAnnouncement(order as unknown as Record<string, unknown>);
-                const ok = openOrderPrintWindow(slip);
-                if (!ok) window.alert("無法開啟列印視窗，請允許此網站的彈出視窗後再試。");
-              })();
-            }}
-          >
-            套印列印
-          </button>
+          {isMobile ? null : (
+            <button
+              type="button"
+              className="btn btn--primary"
+              onClick={() => {
+                void (async () => {
+                  const slip = await slipFromDashboardOrderWithAnnouncement(order as unknown as Record<string, unknown>);
+                  const ok = openOrderPrintWindow(slip);
+                  if (!ok) window.alert("無法開啟列印視窗，請允許此網站的彈出視窗後再試。");
+                })();
+              }}
+            >
+              套印列印
+            </button>
+          )}
           <button type="button" className="btn btn--secondary" onClick={onClose}>
             關閉
           </button>
@@ -600,6 +605,7 @@ export function OrderDetailModal({ order, onClose }: { order: OrderRecord; onClo
           }}
         />
       ) : null}
-    </div>
+    </div>,
+    document.body,
   );
 }

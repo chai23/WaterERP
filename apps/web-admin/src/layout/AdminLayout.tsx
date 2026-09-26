@@ -96,6 +96,18 @@ const navGroups: { id: string; title: string; items: { to: string; label: string
 ];
 
 const PRINT_SETTING_PATHS = ["/settings/order-print", "/settings/print-slogans", "/settings/order-announcements"];
+const SIDEBAR_COLLAPSED_KEY = "watererp.admin.sidebarCollapsed";
+
+function readSidebarCollapsed(): boolean {
+  try {
+    const stored = localStorage.getItem(SIDEBAR_COLLAPSED_KEY);
+    if (stored === "0") return false;
+    if (stored === "1") return true;
+  } catch {
+    /* ignore */
+  }
+  return true;
+}
 
 const pageMeta = navGroups.flatMap((group) =>
   group.items.map((item) => ({ ...item, groupTitle: group.title })),
@@ -118,6 +130,16 @@ function navLinkClass(active: boolean, sub?: boolean) {
   return `admin-nav__link${sub ? " admin-nav__link--sub" : ""}${active ? " admin-nav__link--active" : ""}`;
 }
 
+function isTabActive(tabId: string, pathname: string, navOpen: boolean) {
+  if (tabId === "menu") return navOpen;
+  if (tabId === "home") return pathname === "/overview";
+  if (tabId === "orders") {
+    return pathname.startsWith("/orders") && !pathname.startsWith("/orders/floor-bonus");
+  }
+  if (tabId === "customers") return pathname.startsWith("/data/customers");
+  return false;
+}
+
 export default function AdminLayout() {
   const { user, logout } = useAuth();
   const { error } = useDashboard();
@@ -127,6 +149,8 @@ export default function AdminLayout() {
   const mainRef = useRef<HTMLElement>(null);
   const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set());
   const [navOpen, setNavOpen] = useState(false);
+  const [navQuery, setNavQuery] = useState("");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
 
   const visibleNavGroups = useMemo(
     () =>
@@ -140,6 +164,8 @@ export default function AdminLayout() {
   );
 
   const showOverview = canAccessOverview(user?.role);
+  const showOrdersTab = canAccessPath(user?.role, "/orders/query");
+  const showCustomersTab = canAccessPath(user?.role, "/data/customers");
   const currentPage = useMemo(() => {
     if (location.pathname === "/overview") return { label: "營運總覽", groupTitle: "首頁" };
     return pageMeta.find((item) => location.pathname.startsWith(item.to)) ?? {
@@ -148,20 +174,55 @@ export default function AdminLayout() {
     };
   }, [location.pathname]);
 
+  const filteredNavGroups = useMemo(() => {
+    const q = navQuery.trim().toLowerCase();
+    if (!q) return visibleNavGroups;
+    return visibleNavGroups
+      .map((group) => ({
+        ...group,
+        items: group.items.filter(
+          (item) => item.label.toLowerCase().includes(q) || group.title.toLowerCase().includes(q),
+        ),
+      }))
+      .filter((group) => group.items.length > 0);
+  }, [visibleNavGroups, navQuery]);
+
+  const searching = navQuery.trim().length > 0;
+  const showOverviewLink = showOverview && (!searching || "總覽".includes(navQuery.trim().toLowerCase()));
+
   useEffect(() => {
-    const activeId = groupIdFromPath(location.pathname);
-    setOpenGroups(activeId ? new Set([activeId]) : new Set());
     setNavOpen(false);
+    setNavQuery("");
   }, [location.pathname]);
 
   useEffect(() => {
-    if (!isMobile) setNavOpen(false);
+    try {
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    if (!isMobile) {
+      setNavOpen(false);
+      setNavQuery("");
+    }
   }, [isMobile]);
 
   useEffect(() => {
     document.body.classList.toggle("admin-nav-body-lock", isMobile && navOpen);
     return () => document.body.classList.remove("admin-nav-body-lock");
   }, [isMobile, navOpen]);
+
+  useEffect(() => {
+    if (!navOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setNavOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [navOpen]);
 
   useEffect(() => {
     const main = mainRef.current;
@@ -182,35 +243,114 @@ export default function AdminLayout() {
     });
   };
 
-  const closeNav = () => setNavOpen(false);
+  const closeNav = () => {
+    setNavOpen(false);
+    setNavQuery("");
+  };
 
-  return (
-    <div className="admin-app">
-      <header className="admin-header">
-        <div className="admin-header__inner">
-          <div className="admin-header__brand-block">
-            {isMobile ? (
+  const openGroupsForRender = searching ? new Set(filteredNavGroups.map((group) => group.id)) : openGroups;
+
+  const mobileTabs = [
+    ...(showOverview ? [{ id: "home", to: "/overview", label: "總覽" }] : []),
+    ...(showOrdersTab ? [{ id: "orders", to: "/orders/query", label: "訂單" }] : []),
+    ...(showCustomersTab ? [{ id: "customers", to: "/data/customers", label: "客戶" }] : []),
+    { id: "menu", label: "選單" },
+  ];
+
+  const renderNav = (inDrawer: boolean) => (
+    <nav
+      id="admin-primary-nav"
+      className={`admin-nav${inDrawer ? " admin-nav--drawer" : ""}${navOpen ? " admin-nav--open" : ""}`}
+      aria-label="後台主要選單"
+      aria-hidden={(inDrawer && !navOpen) || (!inDrawer && sidebarCollapsed) ? true : undefined}
+    >
+      <div className="admin-nav__inner">
+        {inDrawer ? (
+          <div className="admin-nav__drawer-head">
+            <div>
+              <p className="admin-nav__drawer-kicker">超好企業進銷存系統</p>
+              <strong>{user?.name ?? "使用者"}</strong>
+              <span>{user?.employeeCode}</span>
+            </div>
+            <button type="button" className="admin-nav__drawer-close" aria-label="關閉選單" onClick={closeNav}>
+              ×
+            </button>
+          </div>
+        ) : null}
+
+        {inDrawer ? (
+          <label className="admin-nav__search">
+            <span className="sr-only">搜尋功能</span>
+            <input
+              type="search"
+              value={navQuery}
+              onChange={(e) => setNavQuery(e.target.value)}
+              placeholder="搜尋功能，例如：查詢訂單"
+              enterKeyHint="search"
+            />
+          </label>
+        ) : null}
+
+        {showOverviewLink ? (
+          <NavLink to="/overview" end className={({ isActive }) => navLinkClass(isActive, false)} onClick={closeNav}>
+            總覽
+          </NavLink>
+        ) : null}
+
+        {filteredNavGroups.map((g) => {
+          const routeActive = groupIdFromPath(location.pathname) === g.id;
+          const isOpen = openGroupsForRender.has(g.id);
+
+          return (
+            <div key={g.id} className={`admin-nav__accordion admin-nav__accordion--${g.id}`}>
               <button
                 type="button"
-                className="admin-header__menu-btn"
-                aria-label={navOpen ? "關閉選單" : "開啟選單"}
-                aria-expanded={navOpen}
-                aria-controls="admin-primary-nav"
-                onClick={() => setNavOpen((open) => !open)}
+                className={`admin-nav__accordion-head${isOpen ? " admin-nav__accordion-head--open" : ""}${routeActive ? " admin-nav__accordion-head--route-active" : ""}`}
+                aria-expanded={isOpen}
+                aria-controls={`nav-panel-${g.id}`}
+                onClick={() => toggleGroup(g.id)}
               >
-                <span className="admin-header__menu-icon" aria-hidden="true">
-                  <span />
-                  <span />
-                  <span />
+                <span className="admin-nav__accordion-title">{g.title}</span>
+                <span className={`admin-nav__chevron${isOpen ? " admin-nav__chevron--open" : ""}`} aria-hidden="true">
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
                 </span>
               </button>
-            ) : null}
-            <div>
-              <h1 className="admin-brand">超好企業進銷存系統</h1>
-              <p className="admin-tagline">營運後台 · 訂單作業、主檔資料、收入報表與系統設定</p>
+
+              <div
+                id={`nav-panel-${g.id}`}
+                role="region"
+                aria-label={g.title}
+                hidden={!isOpen}
+                className={`admin-nav__collapse${isOpen ? " admin-nav__collapse--open" : ""}`}
+              >
+                <div className="admin-nav__collapse-inner">
+                  <div className="admin-nav__sublist">
+                    {g.items.map((item) => (
+                      <NavLink
+                        key={item.to}
+                        to={item.to}
+                        end
+                        className={({ isActive }) => `admin-nav__sublink${isActive ? " admin-nav__sublink--active" : ""}`}
+                        onClick={closeNav}
+                      >
+                        {item.label}
+                      </NavLink>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </div>
-          </div>
-          <div className="admin-header__meta">
+          );
+        })}
+
+        {inDrawer && searching && filteredNavGroups.length === 0 && !showOverviewLink ? (
+          <p className="admin-nav__empty">找不到符合的功能</p>
+        ) : null}
+
+        {inDrawer ? (
+          <div className="admin-nav__drawer-foot">
             <div className="theme-switch" role="group" aria-label="配色版本">
               {(["light", "dark"] as AdminTheme[]).map((option) => (
                 <button
@@ -224,13 +364,74 @@ export default function AdminLayout() {
                 </button>
               ))}
             </div>
-            <span className="pill pill--subtle admin-header__user-pill">
-              {user?.name ?? "使用者"} · {user?.employeeCode}
-            </span>
-            <button type="button" className="btn btn--secondary btn--sm" onClick={logout}>
+            <button type="button" className="btn btn--secondary" onClick={logout}>
               登出
             </button>
           </div>
+        ) : null}
+      </div>
+    </nav>
+  );
+
+  return (
+    <div className={`admin-app${isMobile ? " admin-app--mobile" : ""}${!isMobile && sidebarCollapsed ? " admin-app--nav-collapsed" : ""}`}>
+      <header className="admin-header">
+        <div className="admin-header__inner">
+          <div className="admin-header__brand-block">
+            <button
+              type="button"
+              className={`admin-header__menu-btn${(isMobile ? navOpen : !sidebarCollapsed) ? " admin-header__menu-btn--open" : ""}`}
+              aria-label={isMobile ? (navOpen ? "關閉選單" : "開啟選單") : sidebarCollapsed ? "開啟選單" : "關閉選單"}
+              aria-expanded={isMobile ? navOpen : !sidebarCollapsed}
+              aria-controls="admin-primary-nav"
+              onClick={() => {
+                if (isMobile) setNavOpen((open) => !open);
+                else setSidebarCollapsed((collapsed) => !collapsed);
+              }}
+            >
+              <span className="admin-header__menu-icon" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+              </span>
+            </button>
+            <div className="admin-header__titles">
+              {isMobile ? (
+                <>
+                  <p className="admin-header__section">{currentPage.groupTitle}</p>
+                  <h1 className="admin-brand">{currentPage.label}</h1>
+                </>
+              ) : (
+                <>
+                  <h1 className="admin-brand">超好企業進銷存系統</h1>
+                  <p className="admin-tagline">營運後台 · 訂單作業、主檔資料、收入報表與系統設定</p>
+                </>
+              )}
+            </div>
+          </div>
+          {!isMobile ? (
+            <div className="admin-header__meta">
+              <div className="theme-switch" role="group" aria-label="配色版本">
+                {(["light", "dark"] as AdminTheme[]).map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    className={`theme-switch__option${theme === option ? " theme-switch__option--active" : ""}`}
+                    onClick={() => setTheme(option)}
+                    aria-pressed={theme === option}
+                  >
+                    {option === "light" ? "淺色" : "暗色"}
+                  </button>
+                ))}
+              </div>
+              <span className="pill pill--subtle admin-header__user-pill">
+                {user?.name ?? "使用者"} · {user?.employeeCode}
+              </span>
+              <button type="button" className="btn btn--secondary btn--sm" onClick={logout}>
+                登出
+              </button>
+            </div>
+          ) : null}
         </div>
       </header>
 
@@ -239,68 +440,7 @@ export default function AdminLayout() {
           <button type="button" className="admin-nav-backdrop" aria-label="關閉選單" onClick={closeNav} />
         ) : null}
 
-        <nav
-          id="admin-primary-nav"
-          className={`admin-nav${isMobile ? " admin-nav--drawer" : ""}${navOpen ? " admin-nav--open" : ""}`}
-          aria-label="後台主要選單"
-          aria-hidden={isMobile && !navOpen ? true : undefined}
-        >
-          <div className="admin-nav__inner">
-            {showOverview ? (
-              <NavLink to="/overview" end className={({ isActive }) => navLinkClass(isActive, false)} onClick={closeNav}>
-                總覽
-              </NavLink>
-            ) : null}
-
-            {visibleNavGroups.map((g) => {
-              const routeActive = groupIdFromPath(location.pathname) === g.id;
-              const isOpen = openGroups.has(g.id);
-
-              return (
-                <div key={g.id} className={`admin-nav__accordion admin-nav__accordion--${g.id}`}>
-                  <button
-                    type="button"
-                    className={`admin-nav__accordion-head${isOpen ? " admin-nav__accordion-head--open" : ""}${routeActive ? " admin-nav__accordion-head--route-active" : ""}`}
-                    aria-expanded={isOpen}
-                    aria-controls={`nav-panel-${g.id}`}
-                    onClick={() => toggleGroup(g.id)}
-                  >
-                    <span className="admin-nav__accordion-title">{g.title}</span>
-                    <span className={`admin-nav__chevron${isOpen ? " admin-nav__chevron--open" : ""}`} aria-hidden="true">
-                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                        <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    </span>
-                  </button>
-
-                  <div
-                    id={`nav-panel-${g.id}`}
-                    role="region"
-                    aria-label={g.title}
-                    hidden={!isOpen}
-                    className={`admin-nav__collapse${isOpen ? " admin-nav__collapse--open" : ""}`}
-                  >
-                    <div className="admin-nav__collapse-inner">
-                      <div className="admin-nav__sublist">
-                        {g.items.map((item) => (
-                          <NavLink
-                            key={item.to}
-                            to={item.to}
-                            end
-                            className={({ isActive }) => `admin-nav__sublink${isActive ? " admin-nav__sublink--active" : ""}`}
-                            onClick={closeNav}
-                          >
-                            {item.label}
-                          </NavLink>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </nav>
+        {renderNav(isMobile)}
 
         <main className="admin-main" ref={mainRef}>
           {error ? <div className="alert alert--error">{error}</div> : null}
@@ -315,12 +455,81 @@ export default function AdminLayout() {
             </div>
             <div className="admin-page-heading__date" aria-label="今天日期">
               <span>今天</span>
-              <strong>{new Intl.DateTimeFormat("zh-TW", { year: "numeric", month: "2-digit", day: "2-digit", weekday: "short" }).format(new Date())}</strong>
+              <strong>
+                {new Intl.DateTimeFormat("zh-TW", {
+                  year: "numeric",
+                  month: "2-digit",
+                  day: "2-digit",
+                  weekday: "short",
+                }).format(new Date())}
+              </strong>
             </div>
           </div>
           <Outlet />
         </main>
       </div>
+
+      {isMobile ? (
+        <nav className="admin-tabbar" aria-label="手機快捷選單">
+          {mobileTabs.map((tab) => {
+            const active = isTabActive(tab.id, location.pathname, navOpen);
+            if (tab.id === "menu" || !tab.to) {
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  className={`admin-tabbar__item${active ? " admin-tabbar__item--active" : ""}`}
+                  aria-current={active ? "page" : undefined}
+                  onClick={() => setNavOpen((open) => !open)}
+                >
+                  <TabIcon name="menu" />
+                  <span>{tab.label}</span>
+                </button>
+              );
+            }
+            return (
+              <NavLink
+                key={tab.id}
+                to={tab.to}
+                className={`admin-tabbar__item${active ? " admin-tabbar__item--active" : ""}`}
+                onClick={closeNav}
+              >
+                <TabIcon name={tab.id} />
+                <span>{tab.label}</span>
+              </NavLink>
+            );
+          })}
+        </nav>
+      ) : null}
     </div>
+  );
+}
+
+function TabIcon({ name }: { name: string }) {
+  if (name === "home") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4.5 10.5 12 4.5l7.5 6V20a1 1 0 0 1-1 1h-4.2v-6.2h-4.6V21H5.5a1 1 0 0 1-1-1z" />
+      </svg>
+    );
+  }
+  if (name === "orders") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M7 4.5h10a1.5 1.5 0 0 1 1.5 1.5v13.2L12 16.4 5.5 19.2V6A1.5 1.5 0 0 1 7 4.5Zm1.6 4h6.8v1.5H8.6V8.5Zm0 3.2h4.8v1.5H8.6v-1.5Z" />
+      </svg>
+    );
+  }
+  if (name === "customers") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 12.2a3.4 3.4 0 1 0-3.4-3.4A3.4 3.4 0 0 0 12 12.2Zm0 1.6c3.3 0 7.5 1.7 7.5 4.2V20H4.5v-2c0-2.5 4.2-4.2 7.5-4.2Z" />
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M5 6.2h14v1.8H5V6.2Zm0 4.9h14v1.8H5v-1.8Zm0 4.9h14V18H5v-1.9Z" />
+    </svg>
   );
 }

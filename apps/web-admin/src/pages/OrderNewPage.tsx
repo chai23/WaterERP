@@ -901,29 +901,6 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
               <hr className="order-new__surface-rule" />
 
               <div className="order-new__tool-section">
-                <p className="order-new__tool-section-label">送貨點</p>
-                <div className="field">
-                  <label htmlFor="order-new-delivery">送貨地址</label>
-                  <select
-                    id="order-new-delivery"
-                    className="order-new__select-block"
-                    value={form.deliveryAddressId}
-                    onChange={(e) => setForm({ ...form, deliveryAddressId: e.target.value })}
-                  >
-                    <option value="">請選擇</option>
-                    {(selectedCustomer?.addresses ?? []).map((a) => (
-                      <option key={String(a.id)} value={String(a.id)}>
-                        {a.label ? `${a.label} — ` : ""}
-                        {a.addressLine}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <hr className="order-new__surface-rule" />
-
-              <div className="order-new__tool-section">
                 <p className="order-new__tool-section-label">配送與現金區發票</p>
                 <div className="order-new__inline-row">
                   <div className="field order-new__field--date">
@@ -992,76 +969,6 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
                 </header>
 
                 <div className="order-new__cust-billing-grid">
-                  <div className="order-new__cust-col">
-                    <div className="order-new__panel-label-row">
-                      <p className="order-new__panel-label">送貨點</p>
-                      {(() => {
-                        const selectedAddr = (selectedCustomer.addresses ?? []).find(
-                          (a) => String(a.id) === form.deliveryAddressId,
-                        );
-                        const totalBarrels = sumCustomerBarrelsOnSite(selectedCustomer);
-                        return (
-                          <span className="order-new__barrel-chip">
-                            空桶{" "}
-                            {selectedAddr ? (
-                              <>
-                                此點 <strong>{selectedAddr.barrelsOnSite ?? 0}</strong>
-                                {(selectedCustomer.addresses ?? []).length > 1 ? (
-                                  <span className="text-muted">／合計 {totalBarrels}</span>
-                                ) : null}
-                              </>
-                            ) : (
-                              <>
-                                合計 <strong>{totalBarrels}</strong>
-                              </>
-                            )}
-                          </span>
-                        );
-                      })()}
-                    </div>
-
-                    {(selectedCustomer.addresses ?? []).length > 0 ? (
-                      <ul className="order-new__addr-cards" role="listbox" aria-label="送貨點">
-                        {(selectedCustomer.addresses ?? []).map((a) => {
-                          const selected = String(a.id) === form.deliveryAddressId;
-                          return (
-                            <li key={String(a.id)}>
-                              <button
-                                type="button"
-                                role="option"
-                                aria-selected={selected}
-                                className={`order-new__addr-card${selected ? " order-new__addr-card--selected" : ""}`}
-                                onClick={() =>
-                                  setForm((prev) => ({ ...prev, deliveryAddressId: String(a.id) }))
-                                }
-                              >
-                                <div className="order-new__addr-card-top">
-                                  <span className="order-new__addr-card-label">
-                                    {a.isDefault ? <span className="badge badge--ok">預設</span> : null}
-                                    {a.label?.trim() ? a.label : "送貨點"}
-                                  </span>
-                                  <span className="order-new__addr-card-barrels">
-                                    空桶 {a.barrelsOnSite ?? 0}
-                                  </span>
-                                </div>
-                                <p className="order-new__addr-card-line">{a.addressLine}</p>
-                                {(a.contactName || a.contactMobile || a.contactPhone) ? (
-                                  <p className="order-new__addr-card-contact">
-                                    {[a.contactName, a.contactMobile || a.contactPhone]
-                                      .filter(Boolean)
-                                      .join(" · ")}
-                                  </p>
-                                ) : null}
-                              </button>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    ) : (
-                      <p className="text-muted order-new__placeholder-sm">尚無送貨地址</p>
-                    )}
-                  </div>
-
                   <div className="order-new__billing-col">
                     <p className="order-new__panel-label">帳務摘要</p>
                     {summaryLoading ? (
@@ -1120,78 +1027,87 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
                       </p>
                     )}
                     <p className="order-new__billing-note">
-                      單內可混現金／月結／預付；預付桶儲值於明細勾選。點左側卡片可切換送貨點。
+                      單內可混現金／月結／預付；預付桶儲值於明細勾選。點送貨點列可切換地址。
                     </p>
+                  </div>
+
+                  <div className="order-new__cust-col">
+                    <div className="order-new__panel-label-row">
+                      <p className="order-new__panel-label">送貨點</p>
+                      {(() => {
+                        const selectedAddr = (selectedCustomer.addresses ?? []).find(
+                          (a) => String(a.id) === form.deliveryAddressId,
+                        );
+                        const totalBarrels = sumCustomerBarrelsOnSite(selectedCustomer);
+                        return (
+                          <span className="order-new__barrel-chip">
+                            空桶{" "}
+                            {selectedAddr ? (
+                              <>
+                                此點 <strong>{selectedAddr.barrelsOnSite ?? 0}</strong>
+                                {(selectedCustomer.addresses ?? []).length > 1 ? (
+                                  <span className="text-muted">／合計 {totalBarrels}</span>
+                                ) : null}
+                              </>
+                            ) : (
+                              <>
+                                合計 <strong>{totalBarrels}</strong>
+                              </>
+                            )}
+                          </span>
+                        );
+                      })()}
+                    </div>
+
+                    {(selectedCustomer.addresses ?? []).length > 0 ? (
+                      <ul className="order-new__addr-cards" role="listbox" aria-label="送貨點">
+                        {(selectedCustomer.addresses ?? []).map((a) => {
+                          const selected = String(a.id) === form.deliveryAddressId;
+                          return (
+                            <li key={String(a.id)}>
+                              <button
+                                type="button"
+                                role="option"
+                                aria-selected={selected}
+                                aria-current={selected ? "true" : undefined}
+                                className={`order-new__addr-card${selected ? " order-new__addr-card--selected" : ""}`}
+                                onClick={() =>
+                                  setForm((prev) => ({ ...prev, deliveryAddressId: String(a.id) }))
+                                }
+                              >
+                                <span className="order-new__addr-card-mark" aria-hidden="true">
+                                  {selected ? "✓" : ""}
+                                </span>
+                                <span className="order-new__addr-card-label">
+                                  {a.isDefault ? <span className="badge badge--ok">預設</span> : null}
+                                  {a.label?.trim() ? a.label : "送貨點"}
+                                </span>
+                                <p className="order-new__addr-card-line">
+                                  {selected ? <span className="order-new__addr-card-pick">已選</span> : null}
+                                  <span className="order-new__addr-card-line-text">{a.addressLine}</span>
+                                </p>
+                                <span className="order-new__addr-card-barrels">
+                                  空桶 {a.barrelsOnSite ?? 0}
+                                </span>
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    ) : (
+                      <p className="text-muted order-new__placeholder-sm">尚無送貨地址</p>
+                    )}
                   </div>
                 </div>
               </div>
             ) : (
               <div className="order-new__empty-state">
                 <p className="order-new__empty-state-title">尚未選定客戶</p>
-                <p className="text-muted order-new__empty-state-desc">請於區塊 ① 輸入客戶編號或關鍵字。</p>
+                <p className="text-muted order-new__empty-state-desc">請於上方輸入客戶編號或關鍵字。</p>
               </div>
             )}
             </div>
           </section>
-
-          <aside className="order-new__zone order-new__zone--history" aria-label="客戶歷史訂單">
-            <header className="order-new__zone-head">
-              <span className="order-new__zone-index order-new__zone-index--amber" aria-hidden="true">
-                3
-              </span>
-              <div className="order-new__zone-head-text">
-                <p className="order-new__zone-eyebrow">參考</p>
-                <h3 className="order-new__zone-title">歷史叫貨清單</h3>
-              </div>
-            </header>
-            <div className="order-new__zone-body order-new__zone-body--history">
-            {!form.customerId ? (
-              <p className="text-muted order-new__placeholder-sm">選定客戶後顯示</p>
-            ) : historyLoading ? (
-              <p className="text-muted order-new__placeholder-sm">載入中…</p>
-            ) : sortedHistoryOrders.length === 0 ? (
-              <p className="text-muted order-new__placeholder-sm">尚無紀錄</p>
-            ) : (
-              <>
-                <p className="order-new__meta-line order-new__history-caption">
-                  {sortedHistoryOrders.length} 筆 · 配送日近→遠 · 最多 100 筆 · 雙擊可帶入商品明細
-                </p>
-                <div className="order-new__history-table" role="list">
-                  {sortedHistoryOrders.map((o) => {
-                    const dateStr = historyDisplayYmd(o);
-                    const statusRaw = String(o.status ?? "");
-                    const goods = historyGoodsSummary(o);
-                    const emptyBarrels = historyEmptyBarrels(o);
-                    const title = `${historyRowDetailTitle(o)}\n\n雙擊：帶入商品、單價與數量到下方列表`;
-                    return (
-                      <div
-                        role="listitem"
-                        key={String(o.id)}
-                        className="order-new__history-row order-new__history-row--applyable"
-                        title={title}
-                        onDoubleClick={() => applyHistoryOrderToLines(o)}
-                      >
-                        <div className="order-new__history-row__date-line">
-                          <span className="order-new__history-row__ymd mono-text">{dateStr}</span>
-                          <span className={orderStatusBadgeClass(statusRaw)}>{orderStatusLabel(o.status)}</span>
-                        </div>
-                        <p className="order-new__history-row__goods">{goods || "無明細"}</p>
-                        <div className="order-new__history-row__meta">
-                          {emptyBarrels != null ? (
-                            <span className="order-new__history-row__empty">收空 {emptyBarrels}</span>
-                          ) : (
-                            <span className="order-new__history-row__empty order-new__history-row__empty--na">收空 —</span>
-                          )}
-                          <span className="order-new__history-row__no mono-text">{o.orderNo}</span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </>
-            )}
-            </div>
-          </aside>
         </div>
 
         <section
@@ -1201,7 +1117,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
         >
           <header className="order-new__zone-head order-new__zone-head--flush">
             <span className="order-new__zone-index order-new__zone-index--brand" aria-hidden="true">
-              4
+              3
             </span>
             <div className="order-new__zone-head-text">
               <p className="order-new__zone-eyebrow">明細 · 計價</p>
@@ -1440,106 +1356,174 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
               </ul>
             </div>
           ) : null}
-            </div>
-          </div>
-        </section>
 
-        <div className="order-new__trail">
           {selectedCustomer && estimatedByBilling.cash > 0 ? (
             <p className="order-new__cash-policy">
               <strong>現金列：</strong>建議收款＝本單現金 AR＋可催收舊欠 − 預收錢包；核銷時<strong>本單優先</strong>沖 AR，溢收進預收錢包。
             </p>
           ) : null}
 
-          <div className="order-new__invoice-detail">
-            <div className="order-new__invoice-detail-head">
-              <div className="order-new__invoice-detail-titles">
-                <h3 className="order-new__invoice-detail-title">發票試算</h3>
-                <p className="order-new__invoice-detail-lead">
-                  現金／儲值區發票請在左上「現金區發票」選擇。稅外加時現金應收為含稅；月結批次發票於 AR 作業台處理。
-                </p>
-              </div>
-              <span className="order-new__invoice-rate-pill">稅率 {DEFAULT_VAT_RATE * 100}%</span>
-            </div>
-
-            {form.cashInvoiceMode !== "none" && estimatedByBilling.cash <= 0 ? (
-              <p className="order-new__invoice-empty">目前無現金列小計，加入現金商品後即可預覽。</p>
-            ) : null}
-
-            {cashInvoicePreview ? (
-              <div className="order-new__tax-preview">
-                <div className="order-new__tax-preview-head">
-                  <span className="order-new__tax-preview-title">現金列發票</span>
-                  <span className="order-new__tax-mode-pill">
-                    {cashInvoicePreview.mode === "tax_exclusive" ? "稅外加" : "含稅"}
-                  </span>
+          <div className="order-new__lines-extras">
+            <div className="order-new__invoice-detail">
+              <div className="order-new__invoice-detail-head">
+                <div className="order-new__invoice-detail-titles">
+                  <h3 className="order-new__invoice-detail-title">發票試算</h3>
+                  <p className="order-new__invoice-detail-lead">
+                    現金／儲值區發票請在步驟一「現金區發票」選擇。稅外加時現金應收為含稅；月結批次發票於 AR 作業台處理。
+                  </p>
                 </div>
-                <div className="order-new__tax-rows">
-                  <div className="order-new__tax-row">
-                    <span className="order-new__tax-row__label">未稅合計</span>
-                    <span className="order-new__tax-row__value num">
-                      ${" "}
-                      {cashInvoicePreview.untaxedAmount.toLocaleString(undefined, {
-                        minimumFractionDigits: 2,
-                        maximumFractionDigits: 2,
-                      })}
-                    </span>
-                  </div>
-                  <div className="order-new__tax-row">
-                    <span className="order-new__tax-row__label">營業稅</span>
-                    <span className="order-new__tax-row__value num">
-                      ${" "}
-                      {cashInvoicePreview.taxAmount.toLocaleString(undefined, {
-                        minimumFractionDigits: 2,
-                        maximumFractionDigits: 2,
-                      })}
-                    </span>
-                  </div>
-                  <div className="order-new__tax-row order-new__tax-row--total">
-                    <span className="order-new__tax-row__label">含稅總額</span>
-                    <span className="order-new__tax-row__value num">
-                      ${" "}
-                      {cashInvoicePreview.totalWithTax.toLocaleString(undefined, {
-                        minimumFractionDigits: 2,
-                        maximumFractionDigits: 2,
-                      })}
-                    </span>
-                  </div>
-                </div>
-                <p className="order-new__tax-preview-note">
-                  {cashInvoicePreview.mode === "tax_exclusive"
-                    ? "稅外加：現金列合計視為未稅，系統另計稅額；司機收款以含稅為準。"
-                    : "含稅：現金列合計為含稅總額，系統反拆未稅與稅額（憑證參考）。"}
-                </p>
+                <span className="order-new__invoice-rate-pill">稅率 {DEFAULT_VAT_RATE * 100}%</span>
               </div>
-            ) : null}
-          </div>
 
-          <div className="order-new__footer-row">
-          <div className="field order-new__field--remark">
-            <label htmlFor="order-new-remark">商品／訂單備註（紙上，選填）</label>
-            <textarea
-              id="order-new-remark"
-              className="order-new__input-remark"
-              rows={2}
-              placeholder="例如：代收貨款、指定時段、請放管理室…；亦可點選下方標語快速加入"
-              value={form.remark}
-              onChange={(e) => setForm({ ...form, remark: e.target.value })}
-            />
-            <RemarkSloganPicker value={form.remark} onChange={(remark) => setForm({ ...form, remark })} />
-          </div>
-          <div className="order-new__submit-area order-new__submit-area--inline">
-            <div className="form-actions">
-              <button type="submit" className="btn btn--primary" disabled={saving}>
-                {saving ? "建立中..." : "建立訂單"}
-              </button>
-              {formMessage ? (
-                <span className={formMessage.includes("成功") ? "feedback feedback--ok" : "feedback feedback--err"}>{formMessage}</span>
+              {form.cashInvoiceMode !== "none" && estimatedByBilling.cash <= 0 ? (
+                <p className="order-new__invoice-empty">目前無現金列小計，加入現金商品後即可預覽。</p>
+              ) : null}
+
+              {cashInvoicePreview ? (
+                <div className="order-new__tax-preview">
+                  <div className="order-new__tax-preview-head">
+                    <span className="order-new__tax-preview-title">現金列發票</span>
+                    <span className="order-new__tax-mode-pill">
+                      {cashInvoicePreview.mode === "tax_exclusive" ? "稅外加" : "含稅"}
+                    </span>
+                  </div>
+                  <div className="order-new__tax-rows">
+                    <div className="order-new__tax-row">
+                      <span className="order-new__tax-row__label">未稅合計</span>
+                      <span className="order-new__tax-row__value num">
+                        ${" "}
+                        {cashInvoicePreview.untaxedAmount.toLocaleString(undefined, {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        })}
+                      </span>
+                    </div>
+                    <div className="order-new__tax-row">
+                      <span className="order-new__tax-row__label">營業稅</span>
+                      <span className="order-new__tax-row__value num">
+                        ${" "}
+                        {cashInvoicePreview.taxAmount.toLocaleString(undefined, {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        })}
+                      </span>
+                    </div>
+                    <div className="order-new__tax-row order-new__tax-row--total">
+                      <span className="order-new__tax-row__label">含稅總額</span>
+                      <span className="order-new__tax-row__value num">
+                        ${" "}
+                        {cashInvoicePreview.totalWithTax.toLocaleString(undefined, {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        })}
+                      </span>
+                    </div>
+                  </div>
+                  <p className="order-new__tax-preview-note">
+                    {cashInvoicePreview.mode === "tax_exclusive"
+                      ? "稅外加：現金列合計視為未稅，系統另計稅額；司機收款以含稅為準。"
+                      : "含稅：現金列合計為含稅總額，系統反拆未稅與稅額（憑證參考）。"}
+                  </p>
+                </div>
               ) : null}
             </div>
+
+            <div className="order-new__lines-extras-remark">
+              <div className="field order-new__field--remark">
+                <label htmlFor="order-new-remark">商品／訂單備註（紙上，選填）</label>
+                <textarea
+                  id="order-new-remark"
+                  className="order-new__input-remark"
+                  rows={2}
+                  placeholder="例如：代收貨款、指定時段、請放管理室…；亦可點選下方標語快速加入"
+                  value={form.remark}
+                  onChange={(e) => setForm({ ...form, remark: e.target.value })}
+                />
+                <RemarkSloganPicker value={form.remark} onChange={(remark) => setForm({ ...form, remark })} />
+              </div>
+              <div className="order-new__submit-area order-new__submit-area--inline">
+                <div className="form-actions">
+                  <button type="submit" className="btn btn--primary" disabled={saving}>
+                    {saving ? "建立中..." : "建立訂單"}
+                  </button>
+                  {formMessage ? (
+                    <span className={formMessage.includes("成功") ? "feedback feedback--ok" : "feedback feedback--err"}>
+                      {formMessage}
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+            </div>
           </div>
-        </div>
-        </div>
+            </div>
+          </div>
+        </section>
+
+        <aside className="order-new__zone order-new__zone--history" aria-label="客戶歷史訂單">
+          <header className="order-new__zone-head">
+            <span className="order-new__zone-index order-new__zone-index--amber" aria-hidden="true">
+              4
+            </span>
+            <div className="order-new__zone-head-text">
+              <p className="order-new__zone-eyebrow">參考</p>
+              <h3 className="order-new__zone-title">歷史叫貨清單</h3>
+            </div>
+          </header>
+          <div className="order-new__zone-body order-new__zone-body--history">
+            {!form.customerId ? (
+              <p className="text-muted order-new__placeholder-sm">選定客戶後顯示</p>
+            ) : historyLoading ? (
+              <p className="text-muted order-new__placeholder-sm">載入中…</p>
+            ) : sortedHistoryOrders.length === 0 ? (
+              <p className="text-muted order-new__placeholder-sm">尚無紀錄</p>
+            ) : (
+              <>
+                <p className="order-new__meta-line order-new__history-caption">
+                  {sortedHistoryOrders.length} 筆 · 配送日近→遠 · 最多 100 筆 · 雙擊可帶入商品明細
+                </p>
+                <div className="order-new__history-table" role="list">
+                  <div className="order-new__history-head" aria-hidden="true">
+                    <span>配送日</span>
+                    <span>狀態</span>
+                    <span>品項</span>
+                    <span>收空</span>
+                    <span>單號</span>
+                  </div>
+                  {sortedHistoryOrders.map((o) => {
+                    const dateStr = historyDisplayYmd(o);
+                    const statusRaw = String(o.status ?? "");
+                    const goods = historyGoodsSummary(o);
+                    const emptyBarrels = historyEmptyBarrels(o);
+                    const title = `${historyRowDetailTitle(o)}\n\n雙擊：帶入商品、單價與數量到商品明細`;
+                    return (
+                      <div
+                        role="listitem"
+                        key={String(o.id)}
+                        className="order-new__history-row order-new__history-row--applyable"
+                        title={title}
+                        onDoubleClick={() => applyHistoryOrderToLines(o)}
+                      >
+                        <div className="order-new__history-row__date-line">
+                          <span className="order-new__history-row__ymd mono-text">{dateStr}</span>
+                          <span className={orderStatusBadgeClass(statusRaw)}>{orderStatusLabel(o.status)}</span>
+                        </div>
+                        <p className="order-new__history-row__goods">{goods || "無明細"}</p>
+                        <div className="order-new__history-row__meta">
+                          {emptyBarrels != null ? (
+                            <span className="order-new__history-row__empty">收空 {emptyBarrels}</span>
+                          ) : (
+                            <span className="order-new__history-row__empty order-new__history-row__empty--na">收空 —</span>
+                          )}
+                          <span className="order-new__history-row__no mono-text">{o.orderNo}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+        </aside>
       </form>
   );
 
@@ -1555,8 +1539,8 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
           </div>
         </div>
         <p className="order-new__hero-lead">
-          區塊 <strong>①②③</strong> 為客戶與參考資訊；區塊 <strong>④</strong> 為商品明細。左欄輸入<strong>6 碼編號</strong>
-          或電話／名稱即自動匹配，右欄可對照歷史叫貨。
+          左欄搜尋客戶與配送條件，右欄核對帳務與送貨點；接著填商品明細與發票／備註，最後可對照歷史叫貨。輸入<strong>6 碼編號</strong>
+          或電話／名稱即可匹配；雙擊歷史列可帶入商品。
         </p>
       </header>
       {formBody}
