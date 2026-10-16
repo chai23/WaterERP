@@ -4,7 +4,7 @@ import { useDashboard } from "../DashboardContext";
 type Mode = "overview" | "daily" | "monthly";
 
 export default function AccountingStatsSection({ mode }: { mode: Mode }) {
-  const { summary, summaryFilter, setSummaryFilter, loadSummary } = useDashboard();
+  const { summary, summaryFilter, setSummaryFilter, loadSummary, summaryStatus } = useDashboard();
 
   const showToolbar = mode === "overview";
   const pendingMonthly = Number(summary.periodPendingMonthly ?? 0);
@@ -13,7 +13,7 @@ export default function AccountingStatsSection({ mode }: { mode: Mode }) {
   const receivableTotal = Number(summary.periodReceivableTotal ?? arOutstanding + pendingMonthly);
 
   return (
-    <section className="card">
+    <section className={`card${showToolbar ? " overview-metrics" : ""}`} aria-busy={summaryStatus === "loading"}>
       <h2 className="card__title card__title--stacked">
         {mode === "overview" && "營運指標"}
         {mode === "daily" && "日報表 · 營運指標"}
@@ -33,6 +33,7 @@ export default function AccountingStatsSection({ mode }: { mode: Mode }) {
       {showToolbar ? (
         <div className="stats-toolbar">
           <span className="stats-toolbar__label">統計區間</span>
+          <div className="stats-period-options" role="group" aria-label="統計區間">
           <label>
             <input
               type="radio"
@@ -60,8 +61,11 @@ export default function AccountingStatsSection({ mode }: { mode: Mode }) {
             />
             自訂
           </label>
+          </div>
+          <div className="stats-custom-dates" hidden={summaryFilter.range !== "custom"}>
           <input
             type="date"
+            aria-label="統計開始日期"
             value={summaryFilter.startDate}
             onChange={(e) => setSummaryFilter((prev) => ({ ...prev, startDate: e.target.value }))}
             disabled={summaryFilter.range !== "custom"}
@@ -69,10 +73,12 @@ export default function AccountingStatsSection({ mode }: { mode: Mode }) {
           <span>~</span>
           <input
             type="date"
+            aria-label="統計結束日期"
             value={summaryFilter.endDate}
             onChange={(e) => setSummaryFilter((prev) => ({ ...prev, endDate: e.target.value }))}
             disabled={summaryFilter.range !== "custom"}
           />
+          </div>
           <span className="stats-range-hint">
             待收＝本區間完成訂單之 AR 未清＋尚未開立月結批次 · 變更後會自動重新載入
           </span>
@@ -89,6 +95,13 @@ export default function AccountingStatsSection({ mode }: { mode: Mode }) {
         </div>
       )}
 
+      {showToolbar && summaryStatus !== "ready" ? (
+        <div className="overview-data-state" role="status">
+          <strong>{summaryStatus === "loading" ? "正在整理營運數據…" : "營運數據暫時無法載入"}</strong>
+          <p>{summaryStatus === "loading" ? "稍候即可查看所選區間的營運狀況。" : "請確認連線後重試，避免將未取得的數據誤認為零。"}</p>
+          {summaryStatus === "error" && <button type="button" className="btn btn--secondary" onClick={() => void loadSummary()}>重新載入</button>}
+        </div>
+      ) : <>
       <div className="stats-grid stats-grid--metrics">
         <article className="stat-card stat-card--revenue">
           <div className="stat-card__label">區間營收</div>
@@ -159,6 +172,7 @@ export default function AccountingStatsSection({ mode }: { mode: Mode }) {
           AR 滾動僅套用客戶篩選；司機／結帳方式不影響上列 AR 數字（避免與營收口徑混淆）。
         </p>
       )}
+      </>}
     </section>
   );
 }

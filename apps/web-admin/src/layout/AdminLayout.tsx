@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../AuthContext";
 import { useDashboard } from "../DashboardContext";
@@ -6,6 +6,7 @@ import { canAccessOverview, canAccessPath } from "../rolePermissions";
 import { setupResponsiveTables } from "../responsiveTables";
 import { useTheme, type AdminTheme } from "../ThemeContext";
 import { useMediaQuery } from "../useMediaQuery";
+import { InterfaceIcon, WaterMark } from "../components/WaterIdentity";
 
 const navGroups: { id: string; title: string; items: { to: string; label: string }[] }[] = [
   {
@@ -106,7 +107,7 @@ function readSidebarCollapsed(): boolean {
   } catch {
     /* ignore */
   }
-  return true;
+  return false;
 }
 
 const pageMeta = navGroups.flatMap((group) =>
@@ -147,7 +148,7 @@ export default function AdminLayout() {
   const location = useLocation();
   const isMobile = useMediaQuery("(max-width: 768px)");
   const mainRef = useRef<HTMLElement>(null);
-  const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set());
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set([groupIdFromPath(location.pathname) ?? ""]));
   const [navOpen, setNavOpen] = useState(false);
   const [navQuery, setNavQuery] = useState("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
@@ -193,6 +194,8 @@ export default function AdminLayout() {
   useEffect(() => {
     setNavOpen(false);
     setNavQuery("");
+    const group = groupIdFromPath(location.pathname);
+    if (group) setOpenGroups(new Set([group]));
   }, [location.pathname]);
 
   useEffect(() => {
@@ -217,11 +220,21 @@ export default function AdminLayout() {
 
   useEffect(() => {
     if (!navOpen) return;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const nav = document.getElementById("admin-primary-nav");
+    nav?.querySelector<HTMLElement>("button, input, a")?.focus();
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") setNavOpen(false);
+      if (event.key === "Tab" && nav) {
+        const controls = Array.from(nav.querySelectorAll<HTMLElement>('a[href], button:not(:disabled), input:not(:disabled)')).filter((element) => element.getClientRects().length > 0);
+        const first = controls[0];
+        const last = controls[controls.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+      }
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => { window.removeEventListener("keydown", onKey); previousFocus?.focus(); };
   }, [navOpen]);
 
   useEffect(() => {
@@ -263,8 +276,10 @@ export default function AdminLayout() {
       className={`admin-nav${inDrawer ? " admin-nav--drawer" : ""}${navOpen ? " admin-nav--open" : ""}`}
       aria-label="後台主要選單"
       aria-hidden={(inDrawer && !navOpen) || (!inDrawer && sidebarCollapsed) ? true : undefined}
+      inert={(inDrawer && !navOpen) || (!inDrawer && sidebarCollapsed) ? true : undefined}
     >
       <div className="admin-nav__inner">
+        {!inDrawer && <div className="admin-nav__identity"><WaterMark /><div>超好企業<small>營運工作空間</small></div></div>}
         {inDrawer ? (
           <div className="admin-nav__drawer-head">
             <div>
@@ -278,9 +293,9 @@ export default function AdminLayout() {
           </div>
         ) : null}
 
-        {inDrawer ? (
-          <label className="admin-nav__search">
+        <label className="admin-nav__search">
             <span className="sr-only">搜尋功能</span>
+            <InterfaceIcon name="search" />
             <input
               type="search"
               value={navQuery}
@@ -288,12 +303,11 @@ export default function AdminLayout() {
               placeholder="搜尋功能，例如：查詢訂單"
               enterKeyHint="search"
             />
-          </label>
-        ) : null}
+        </label>
 
         {showOverviewLink ? (
           <NavLink to="/overview" end className={({ isActive }) => navLinkClass(isActive, false)} onClick={closeNav}>
-            總覽
+            <InterfaceIcon name="overview" /> 營運總覽
           </NavLink>
         ) : null}
 
@@ -310,7 +324,7 @@ export default function AdminLayout() {
                 aria-controls={`nav-panel-${g.id}`}
                 onClick={() => toggleGroup(g.id)}
               >
-                <span className="admin-nav__accordion-title">{g.title}</span>
+                <span className="admin-nav__accordion-title"><InterfaceIcon name={g.id} />{g.title}</span>
                 <span className={`admin-nav__chevron${isOpen ? " admin-nav__chevron--open" : ""}`} aria-hidden="true">
                   <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                     <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -345,7 +359,7 @@ export default function AdminLayout() {
           );
         })}
 
-        {inDrawer && searching && filteredNavGroups.length === 0 && !showOverviewLink ? (
+        {searching && filteredNavGroups.length === 0 && !showOverviewLink ? (
           <p className="admin-nav__empty">找不到符合的功能</p>
         ) : null}
 
@@ -375,6 +389,7 @@ export default function AdminLayout() {
 
   return (
     <div className={`admin-app${isMobile ? " admin-app--mobile" : ""}${!isMobile && sidebarCollapsed ? " admin-app--nav-collapsed" : ""}`}>
+      <a className="admin-skip-link" href="#admin-content">跳至主要內容</a>
       <header className="admin-header">
         <div className="admin-header__inner">
           <div className="admin-header__brand-block">
@@ -403,8 +418,8 @@ export default function AdminLayout() {
                 </>
               ) : (
                 <>
-                  <h1 className="admin-brand">超好企業進銷存系統</h1>
-                  <p className="admin-tagline">營運後台 · 訂單作業、主檔資料、收入報表與系統設定</p>
+                  <h1 className="admin-brand">超好企業<span className="admin-brand__suffix">營運管理</span></h1>
+                  <p className="admin-tagline">WATER ERP · EVERY DROP, CONNECTED.</p>
                 </>
               )}
             </div>
@@ -442,7 +457,7 @@ export default function AdminLayout() {
 
         {renderNav(isMobile)}
 
-        <main className="admin-main" ref={mainRef}>
+        <main className="admin-main" id="admin-content" tabIndex={-1} ref={mainRef} inert={isMobile && navOpen ? true : undefined}>
           {error ? <div className="alert alert--error">{error}</div> : null}
           <div className="admin-page-heading">
             <div>
@@ -465,7 +480,9 @@ export default function AdminLayout() {
               </strong>
             </div>
           </div>
-          <Outlet />
+          <Suspense fallback={<div className="card" role="status">載入頁面中…</div>}>
+            <Outlet />
+          </Suspense>
         </main>
       </div>
 

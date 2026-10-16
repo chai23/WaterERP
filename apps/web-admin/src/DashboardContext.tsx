@@ -158,6 +158,7 @@ export type DashboardContextValue = {
   completedDeliveries: any[];
   payments: any[];
   summary: SummaryState;
+  summaryStatus: "loading" | "ready" | "error";
   summaryFilter: {
     range: string;
     startDate: string;
@@ -307,6 +308,8 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   const [completedDeliveries, setCompletedDeliveries] = useState<any[]>([]);
   const [payments, setPayments] = useState<any[]>([]);
   const [summary, setSummary] = useState<SummaryState>(() => defaultSummaryState(today));
+  const [summaryStatus, setSummaryStatus] = useState<"loading" | "ready" | "error">("loading");
+  const summaryRequestRef = useRef(0);
   const [summaryFilter, setSummaryFilter] = useState({
     range: "today",
     startDate: today,
@@ -506,6 +509,8 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const loadSummary = useCallback(async (): Promise<void> => {
+    const request = ++summaryRequestRef.current;
+    setSummaryStatus("loading");
     try {
       const params = new URLSearchParams();
       params.set("range", summaryFilter.range);
@@ -524,13 +529,24 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       if (summaryFilter.driverId) params.set("driverId", summaryFilter.driverId);
       if (summaryFilter.billingType) params.set("billingType", summaryFilter.billingType);
       const [h, s] = await Promise.all([
-        fetch("/api/health").then((r) => r.json()),
-        fetch(`/api/accounting/summary?${params.toString()}`).then((r) => r.json()),
+        fetch("/api/health").then(async (r) => {
+          if (!r.ok) throw new Error("連線失敗");
+          return r.json();
+        }),
+        fetch(`/api/accounting/summary?${params.toString()}`).then(async (r) => {
+          if (!r.ok) throw new Error("摘要載入失敗");
+          return r.json();
+        }),
       ]);
+      if (request !== summaryRequestRef.current) return;
+      if (!s || typeof s !== "object" || s.ok === false) throw new Error("摘要載入失敗");
       setHealth(JSON.stringify(h));
       setSummary(asSummaryState(s, today));
+      setSummaryStatus("ready");
     } catch {
-      setHealth("無法連線 API（請確認 apps/api 已啟動）");
+      if (request !== summaryRequestRef.current) return;
+      setHealth("營運資料連線異常，請稍後重試");
+      setSummaryStatus("error");
     }
   }, [
     summaryFilter.range,
@@ -955,6 +971,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     completedDeliveries,
     payments,
     summary,
+    summaryStatus,
     summaryFilter,
     setSummaryFilter,
     error,
