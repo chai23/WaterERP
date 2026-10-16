@@ -17,16 +17,24 @@ import {
   barrelPickupStatusBadgeClass,
   barrelPickupStatusLabel,
   billingTypeLabel,
+  emptyPatrolForm,
   fmtLocalYmd,
   formatBarrelSiteChangeSummary,
   geocodeStatusMeta,
   ledgerEntryTypeLabel,
   moneyText,
   orderStatusBadgeClass,
+  PATROL_INTERVAL_OPTIONS,
   PATROL_WEEKDAY_OPTIONS,
-  patrolWeekdayLabel,
+  patrolFormFromAddress,
+  patrolFormToApi,
+  patrolScheduleLabel,
+  mondayOfWeekYmd,
   sumCustomerBarrelsOnSite,
   todayLocalYmd,
+  withPatrolInterval,
+  withPatrolWeekdayToggle,
+  type PatrolFormValue,
 } from "../adminUtils";
 import AddressGeocodePanel from "../components/AddressGeocodePanel";
 import { OrderDetailModal, type OrderRecord } from "../components/OrderDetailModal";
@@ -74,7 +82,7 @@ type AddressFormRow = {
   contactMobile: string;
   isDefault: boolean;
   barrelsOnSite: string;
-  patrolWeekday: string;
+  patrol: PatrolFormValue;
   targetWaterLevel: string;
   patrolProductId: string;
 };
@@ -89,10 +97,74 @@ function emptyAddressRow(isDefault: boolean): AddressFormRow {
     contactMobile: "",
     isDefault,
     barrelsOnSite: "0",
-    patrolWeekday: "",
+    patrol: emptyPatrolForm(),
     targetWaterLevel: "",
     patrolProductId: "",
   };
+}
+
+function PatrolScheduleFields({
+  value,
+  onChange,
+  idPrefix,
+}: {
+  value: PatrolFormValue;
+  onChange: (next: PatrolFormValue) => void;
+  idPrefix: string;
+}) {
+  const intervalNum = Math.floor(Number(value.intervalWeeks)) || 0;
+  const multiAllowed = intervalNum <= 1;
+  return (
+    <>
+      <label className="customer-address-field">
+        <span>巡查頻率</span>
+        <select
+          id={`${idPrefix}-interval`}
+          value={value.intervalWeeks}
+          onChange={(e) => onChange(withPatrolInterval(value, e.target.value, todayLocalYmd()))}
+        >
+          <option value="">不參加週期巡查</option>
+          {PATROL_INTERVAL_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      {value.intervalWeeks ? (
+        <div className="customer-address-field customer-address-field--wide">
+          <span>{multiAllowed ? "巡查星期（可複選）" : "巡查星期（僅能選一天）"}</span>
+          <div className="patrol-weekday-picks" role="group" aria-label="巡查星期">
+            {PATROL_WEEKDAY_OPTIONS.map((o) => {
+              const on = value.weekdays.includes(o.value);
+              return (
+                <button
+                  key={o.value}
+                  type="button"
+                  className={`patrol-weekday-pick${on ? " patrol-weekday-pick--on" : ""}`}
+                  aria-pressed={on}
+                  onClick={() => onChange(withPatrolWeekdayToggle(value, o.value))}
+                >
+                  {o.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+      {intervalNum >= 2 ? (
+        <label className="customer-address-field">
+          <span>起始週（週一）</span>
+          <input
+            id={`${idPrefix}-anchor`}
+            type="date"
+            value={value.cycleAnchor}
+            onChange={(e) => onChange({ ...value, cycleAnchor: mondayOfWeekYmd(e.target.value) })}
+          />
+        </label>
+      ) : null}
+    </>
+  );
 }
 
 type CustomerBarrelCollectionRow = {
@@ -479,7 +551,7 @@ export default function DataCustomersPage() {
   const [newAddrContactMobile, setNewAddrContactMobile] = useState("");
   const [newAddrDefault, setNewAddrDefault] = useState(false);
   const [newAddrFloor, setNewAddrFloor] = useState("");
-  const [newAddrPatrolWeekday, setNewAddrPatrolWeekday] = useState("");
+  const [newAddrPatrol, setNewAddrPatrol] = useState<PatrolFormValue>(() => emptyPatrolForm());
   const [newAddrTargetWaterLevel, setNewAddrTargetWaterLevel] = useState("");
   const [newAddrPatrolProductId, setNewAddrPatrolProductId] = useState("");
   const [addingAddr, setAddingAddr] = useState(false);
@@ -518,7 +590,7 @@ export default function DataCustomersPage() {
   const [editAddrDefault, setEditAddrDefault] = useState(false);
   const [editAddrBarrels, setEditAddrBarrels] = useState("0");
   const [editAddrFloor, setEditAddrFloor] = useState("");
-  const [editAddrPatrolWeekday, setEditAddrPatrolWeekday] = useState("");
+  const [editAddrPatrol, setEditAddrPatrol] = useState<PatrolFormValue>(() => emptyPatrolForm());
   const [editAddrTargetWaterLevel, setEditAddrTargetWaterLevel] = useState("");
   const [editAddrPatrolProductId, setEditAddrPatrolProductId] = useState("");
   const [patchAddrSaving, setPatchAddrSaving] = useState(false);
@@ -760,7 +832,7 @@ export default function DataCustomersPage() {
     setEditAddrDefault(Boolean(a.isDefault));
     setEditAddrBarrels(String(a.barrelsOnSite ?? 0));
     setEditAddrFloor(a.deliveryFloor != null ? String(a.deliveryFloor) : "");
-    setEditAddrPatrolWeekday(a.patrolWeekday != null ? String(a.patrolWeekday) : "");
+    setEditAddrPatrol(patrolFormFromAddress(a));
     setEditAddrTargetWaterLevel(a.targetWaterLevel != null ? String(a.targetWaterLevel) : "");
     setEditAddrPatrolProductId(a.patrolProductId != null ? String(a.patrolProductId) : a.patrolProduct?.id ? String(a.patrolProduct.id) : "");
     setPatchAddrMsg("");
@@ -890,10 +962,9 @@ export default function DataCustomersPage() {
       setPatchAddrMsg("送貨樓層須為非零整數（地下樓可填 -1）或留空");
       return;
     }
-    const weekdayTrim = editAddrPatrolWeekday.trim();
-    const patrolWeekday = weekdayTrim === "" ? null : Math.floor(Number(weekdayTrim));
-    if (weekdayTrim !== "" && (!Number.isFinite(patrolWeekday) || patrolWeekday! < 1 || patrolWeekday! > 7)) {
-      setPatchAddrMsg("巡查星期須為週一～週日或留空");
+    const patrolParsed = patrolFormToApi(editAddrPatrol);
+    if (!patrolParsed.ok) {
+      setPatchAddrMsg(patrolParsed.message);
       return;
     }
     const levelTrim = editAddrTargetWaterLevel.trim();
@@ -903,7 +974,7 @@ export default function DataCustomersPage() {
       return;
     }
     const patrolProductId = editAddrPatrolProductId.trim() || null;
-    if (patrolWeekday != null && !patrolProductId) {
+    if (patrolParsed.body.patrolWeekday != null && !patrolProductId) {
       setPatchAddrMsg("啟用巡查時請指定預設商品");
       return;
     }
@@ -921,7 +992,7 @@ export default function DataCustomersPage() {
           contactMobile: editAddrContactMobile.trim() || null,
           isDefault: editAddrDefault,
           barrelsOnSite: barrels,
-          patrolWeekday,
+          ...patrolParsed.body,
           targetWaterLevel,
           patrolProductId,
         }),
@@ -1014,18 +1085,15 @@ export default function DataCustomersPage() {
       .map((r) => {
         const barrels = Math.floor(Number(r.barrelsOnSite));
         if (!Number.isFinite(barrels) || barrels < 0) return null;
-        const weekdayTrim = r.patrolWeekday.trim();
-        const patrolWeekday = weekdayTrim === "" ? null : Math.floor(Number(weekdayTrim));
-        if (weekdayTrim !== "" && (!Number.isFinite(patrolWeekday) || patrolWeekday! < 1 || patrolWeekday! > 7)) {
-          return "INVALID_PATROL" as const;
-        }
+        const patrolParsed = patrolFormToApi(r.patrol);
+        if (!patrolParsed.ok) return "INVALID_PATROL" as const;
         const levelTrim = r.targetWaterLevel.trim();
         const targetWaterLevel = levelTrim === "" ? null : Math.floor(Number(levelTrim));
         if (levelTrim !== "" && (!Number.isFinite(targetWaterLevel) || targetWaterLevel! < 0)) {
           return "INVALID_PATROL" as const;
         }
         const patrolProductId = r.patrolProductId.trim() || null;
-        if (patrolWeekday != null && !patrolProductId) return "INVALID_PATROL" as const;
+        if (patrolParsed.body.patrolWeekday != null && !patrolProductId) return "INVALID_PATROL" as const;
         return {
           label: r.label.trim() || undefined,
           addressLine: r.addressLine.trim(),
@@ -1034,13 +1102,13 @@ export default function DataCustomersPage() {
           contactMobile: r.contactMobile.trim() || undefined,
           isDefault: r.isDefault,
           barrelsOnSite: barrels,
-          patrolWeekday,
+          ...patrolParsed.body,
           targetWaterLevel,
           patrolProductId,
         };
       });
     if (addresses.some((a) => a === "INVALID_PATROL")) {
-      setFormMessage("巡查設定無效：啟用星期時須選預設商品；目標水位為非負整數或留空。");
+      setFormMessage("巡查設定無效：請選頻率與星期；兩週以上只能選一天；啟用時須選預設商品。");
       return;
     }
     const validAddresses = addresses.filter(
@@ -1129,10 +1197,9 @@ export default function DataCustomersPage() {
       setAddAddrMsg("送貨樓層須為非零整數（地下樓可填 -1）或留空");
       return;
     }
-    const weekdayTrim = newAddrPatrolWeekday.trim();
-    const patrolWeekday = weekdayTrim === "" ? null : Math.floor(Number(weekdayTrim));
-    if (weekdayTrim !== "" && (!Number.isFinite(patrolWeekday) || patrolWeekday! < 1 || patrolWeekday! > 7)) {
-      setAddAddrMsg("巡查星期須為週一～週日或留空");
+    const patrolParsed = patrolFormToApi(newAddrPatrol);
+    if (!patrolParsed.ok) {
+      setAddAddrMsg(patrolParsed.message);
       return;
     }
     const levelTrim = newAddrTargetWaterLevel.trim();
@@ -1142,7 +1209,7 @@ export default function DataCustomersPage() {
       return;
     }
     const patrolProductId = newAddrPatrolProductId.trim() || null;
-    if (patrolWeekday != null && !patrolProductId) {
+    if (patrolParsed.body.patrolWeekday != null && !patrolProductId) {
       setAddAddrMsg("啟用巡查時請指定預設商品");
       return;
     }
@@ -1159,7 +1226,7 @@ export default function DataCustomersPage() {
           contactPhone: newAddrContactPhone.trim() || undefined,
           contactMobile: newAddrContactMobile.trim() || undefined,
           isDefault: newAddrDefault,
-          patrolWeekday,
+          ...patrolParsed.body,
           targetWaterLevel,
           patrolProductId,
         }),
@@ -1177,7 +1244,7 @@ export default function DataCustomersPage() {
       setNewAddrContactMobile("");
       setNewAddrDefault(false);
       setNewAddrFloor("");
-      setNewAddrPatrolWeekday("");
+      setNewAddrPatrol(emptyPatrolForm());
       setNewAddrTargetWaterLevel("");
       setNewAddrPatrolProductId("");
       setShowAddAddressForm(false);
@@ -1700,20 +1767,11 @@ export default function DataCustomersPage() {
                         />
                       </div>
                       <div className="form-row-2">
-                        <div className="field">
-                          <span>巡查星期（選填）</span>
-                          <select
-                            value={row.patrolWeekday}
-                            onChange={(e) => updateAddressRow(row.key, { patrolWeekday: e.target.value })}
-                          >
-                            <option value="">不參加週期巡查</option>
-                            {PATROL_WEEKDAY_OPTIONS.map((o) => (
-                              <option key={o.value} value={o.value}>
-                                {o.label}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
+                        <PatrolScheduleFields
+                          idPrefix={`create-addr-${row.key}`}
+                          value={row.patrol}
+                          onChange={(patrol) => updateAddressRow(row.key, { patrol })}
+                        />
                         <div className="field">
                           <span>目標水位（桶）</span>
                           <input
@@ -1727,7 +1785,7 @@ export default function DataCustomersPage() {
                         </div>
                       </div>
                       <div className="field">
-                        <span>巡查預設商品{row.patrolWeekday ? "（必填）" : "（選填）"}</span>
+                        <span>巡查預設商品{row.patrol.intervalWeeks ? "（必填）" : "（選填）"}</span>
                         <select
                           value={row.patrolProductId}
                           onChange={(e) => updateAddressRow(row.key, { patrolProductId: e.target.value })}
@@ -2229,9 +2287,9 @@ export default function DataCustomersPage() {
                             {a.deliveryFloor != null ? (
                               <span className="badge badge--default">{formatDeliveryFloor(a.deliveryFloor)}</span>
                             ) : null}
-                            {a.patrolWeekday != null ? (
+                            {patrolScheduleLabel(a) ? (
                               <span className="badge badge--delivering">
-                                巡查 {patrolWeekdayLabel(a.patrolWeekday)}
+                                巡查 {patrolScheduleLabel(a)}
                                 {a.targetWaterLevel != null ? ` · 水位 ${a.targetWaterLevel}` : ""}
                               </span>
                             ) : null}
@@ -2703,20 +2761,11 @@ export default function DataCustomersPage() {
                     <div className="customer-address-edit-panel__section">
                       <div className="customer-address-edit-panel__section-title">週期巡查</div>
                       <div className="customer-address-edit-panel__grid">
-                        <label className="customer-address-field">
-                          <span>巡查星期</span>
-                          <select
-                            value={editAddrPatrolWeekday}
-                            onChange={(e) => setEditAddrPatrolWeekday(e.target.value)}
-                          >
-                            <option value="">不參加週期巡查</option>
-                            {PATROL_WEEKDAY_OPTIONS.map((o) => (
-                              <option key={o.value} value={o.value}>
-                                {o.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
+                        <PatrolScheduleFields
+                          idPrefix="edit-addr"
+                          value={editAddrPatrol}
+                          onChange={setEditAddrPatrol}
+                        />
                         <label className="customer-address-field customer-address-field--sm">
                           <span>目標水位（桶）</span>
                           <input
@@ -2729,7 +2778,7 @@ export default function DataCustomersPage() {
                           />
                         </label>
                         <label className="customer-address-field customer-address-field--wide">
-                          <span>巡查預設商品{editAddrPatrolWeekday ? "（必填）" : ""}</span>
+                          <span>巡查預設商品{editAddrPatrol.intervalWeeks ? "（必填）" : ""}</span>
                           <select
                             value={editAddrPatrolProductId}
                             onChange={(e) => setEditAddrPatrolProductId(e.target.value)}
@@ -2744,7 +2793,7 @@ export default function DataCustomersPage() {
                         </label>
                       </div>
                       <p className="customer-address-edit-panel__hint">
-                        一鍵產單用；結帳跟客戶主檔（目前：
+                        一鍵產單用。每週可選一天或多天；兩週以上只能選一天並指定起始週。結帳跟客戶主檔（目前：
                         {billingTypeLabel(detail?.billingType ?? workspaceCustomer?.billingType)}）
                       </p>
                     </div>
@@ -2791,9 +2840,9 @@ export default function DataCustomersPage() {
                             {a.deliveryFloor != null ? (
                               <span className="badge badge--default">{formatDeliveryFloor(a.deliveryFloor)}</span>
                             ) : null}
-                            {a.patrolWeekday != null ? (
+                            {patrolScheduleLabel(a) ? (
                               <span className="badge badge--delivering">
-                                巡查 {patrolWeekdayLabel(a.patrolWeekday)}
+                                巡查 {patrolScheduleLabel(a)}
                                 {a.targetWaterLevel != null ? ` · 水位 ${a.targetWaterLevel}` : ""}
                                 {a.patrolProduct?.name ? ` · ${a.patrolProduct.name}` : ""}
                               </span>
@@ -2907,20 +2956,11 @@ export default function DataCustomersPage() {
                     <div className="customer-address-edit-panel__section">
                       <div className="customer-address-edit-panel__section-title">週期巡查</div>
                       <div className="customer-address-edit-panel__grid">
-                        <label className="customer-address-field">
-                          <span>巡查星期</span>
-                          <select
-                            value={newAddrPatrolWeekday}
-                            onChange={(e) => setNewAddrPatrolWeekday(e.target.value)}
-                          >
-                            <option value="">不參加週期巡查</option>
-                            {PATROL_WEEKDAY_OPTIONS.map((o) => (
-                              <option key={o.value} value={o.value}>
-                                {o.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
+                        <PatrolScheduleFields
+                          idPrefix="new-addr"
+                          value={newAddrPatrol}
+                          onChange={setNewAddrPatrol}
+                        />
                         <label className="customer-address-field customer-address-field--sm">
                           <span>目標水位（桶）</span>
                           <input
@@ -2933,7 +2973,7 @@ export default function DataCustomersPage() {
                           />
                         </label>
                         <label className="customer-address-field customer-address-field--wide">
-                          <span>巡查預設商品{newAddrPatrolWeekday ? "（必填）" : ""}</span>
+                          <span>巡查預設商品{newAddrPatrol.intervalWeeks ? "（必填）" : ""}</span>
                           <select
                             value={newAddrPatrolProductId}
                             onChange={(e) => setNewAddrPatrolProductId(e.target.value)}
@@ -2948,7 +2988,7 @@ export default function DataCustomersPage() {
                         </label>
                       </div>
                       <p className="customer-address-edit-panel__hint">
-                        一鍵產單用；結帳跟客戶主檔（目前：
+                        一鍵產單用。每週可選一天或多天；兩週以上只能選一天並指定起始週。結帳跟客戶主檔（目前：
                         {billingTypeLabel(detail?.billingType ?? workspaceCustomer?.billingType)}）
                       </p>
                     </div>

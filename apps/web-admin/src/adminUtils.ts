@@ -12,6 +12,12 @@ export type Address = {
   deliveryFloor?: number | null;
   /** 巡查星期：1=週一 … 7=週日；null=不參加 */
   patrolWeekday?: number | null;
+  /** 巡查頻率：1=每週、2/3/4=每N週 */
+  patrolIntervalWeeks?: number | null;
+  /** 巡查星期，逗號分隔或陣列 */
+  patrolWeekdays?: string | number[] | null;
+  /** 頻率>=2 的起始週週一 YYYY-MM-DD */
+  patrolCycleAnchor?: string | null;
   /** 目標水位（桶） */
   targetWaterLevel?: number | null;
   patrolProductId?: string | null;
@@ -53,6 +59,132 @@ export const PATROL_WEEKDAY_OPTIONS: { value: number; label: string }[] = [
 export function patrolWeekdayLabel(weekday: number | null | undefined): string {
   if (weekday == null) return "—";
   return PATROL_WEEKDAY_OPTIONS.find((o) => o.value === weekday)?.label ?? String(weekday);
+}
+
+export const PATROL_INTERVAL_OPTIONS: { value: number; label: string }[] = [
+  { value: 1, label: "每週" },
+  { value: 2, label: "每 2 週" },
+  { value: 3, label: "每 3 週" },
+  { value: 4, label: "每 4 週" },
+];
+
+export type PatrolFormValue = {
+  intervalWeeks: string;
+  weekdays: number[];
+  cycleAnchor: string;
+};
+
+export function emptyPatrolForm(): PatrolFormValue {
+  return { intervalWeeks: "", weekdays: [], cycleAnchor: "" };
+}
+
+export function parseStoredPatrolWeekdays(a: Pick<Address, "patrolWeekday" | "patrolWeekdays">): number[] {
+  const raw = a.patrolWeekdays;
+  if (Array.isArray(raw) && raw.length > 0) {
+    return [...new Set(raw.map((n) => Math.floor(Number(n))).filter((n) => n >= 1 && n <= 7))].sort((x, y) => x - y);
+  }
+  if (typeof raw === "string" && raw.trim()) {
+    return [
+      ...new Set(
+        raw
+          .split(",")
+          .map((s) => Math.floor(Number(s.trim())))
+          .filter((n) => n >= 1 && n <= 7),
+      ),
+    ].sort((x, y) => x - y);
+  }
+  if (a.patrolWeekday != null && a.patrolWeekday >= 1 && a.patrolWeekday <= 7) return [a.patrolWeekday];
+  return [];
+}
+
+export function mondayOfWeekYmd(ymd: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim());
+  if (!m) return ymd;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  const iso = d.getDay() === 0 ? 7 : d.getDay();
+  d.setDate(d.getDate() - (iso - 1));
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${mm}-${dd}`;
+}
+
+export function patrolFormFromAddress(a: Address): PatrolFormValue {
+  const weekdays = parseStoredPatrolWeekdays(a);
+  const interval = a.patrolIntervalWeeks != null ? String(a.patrolIntervalWeeks) : weekdays.length > 0 ? "1" : "";
+  const rawAnchor = a.patrolCycleAnchor != null ? String(a.patrolCycleAnchor).slice(0, 10) : "";
+  return {
+    intervalWeeks: interval,
+    weekdays,
+    cycleAnchor: rawAnchor && /^\d{4}-\d{2}-\d{2}$/.test(rawAnchor) ? mondayOfWeekYmd(rawAnchor) : "",
+  };
+}
+
+export function patrolScheduleLabel(a: Address): string {
+  const days = parseStoredPatrolWeekdays(a);
+  if (days.length === 0) return "";
+  const interval = a.patrolIntervalWeeks ?? 1;
+  const freq = PATROL_INTERVAL_OPTIONS.find((o) => o.value === interval)?.label ?? (interval <= 1 ? "每週" : `每 ${interval} 週`);
+  return `${freq} · ${days.map((d) => patrolWeekdayLabel(d)).join("、")}`;
+}
+
+export function patrolFormToApi(form: PatrolFormValue):
+  | {
+      ok: true;
+      body: {
+        patrolIntervalWeeks: number | null;
+        patrolWeekdays: number[] | null;
+        patrolWeekday: number | null;
+        patrolCycleAnchor: string | null;
+      };
+    }
+  | { ok: false; message: string } {
+  if (!form.intervalWeeks.trim()) {
+    return {
+      ok: true,
+      body: { patrolIntervalWeeks: null, patrolWeekdays: null, patrolWeekday: null, patrolCycleAnchor: null },
+    };
+  }
+  const interval = Math.floor(Number(form.intervalWeeks));
+  if (![1, 2, 3, 4].includes(interval)) {
+    return { ok: false, message: "巡查頻率須為每週或每 2～4 週" };
+  }
+  const days = [...new Set(form.weekdays.filter((n) => n >= 1 && n <= 7))].sort((a, b) => a - b);
+  if (days.length === 0) {
+    return { ok: false, message: "請選擇巡查星期" };
+  }
+  if (interval >= 2 && days.length !== 1) {
+    return { ok: false, message: "兩週以上只能選一天" };
+  }
+  const cycleAnchor = interval >= 2 ? mondayOfWeekYmd(form.cycleAnchor.trim() || todayLocalYmd()) : null;
+  return {
+    ok: true,
+    body: {
+      patrolIntervalWeeks: interval,
+      patrolWeekdays: days,
+      patrolWeekday: days[0] ?? null,
+      patrolCycleAnchor: cycleAnchor,
+    },
+  };
+}
+
+export function withPatrolInterval(form: PatrolFormValue, intervalWeeks: string, todayYmd: string): PatrolFormValue {
+  if (!intervalWeeks) {
+    return { intervalWeeks: "", weekdays: [], cycleAnchor: "" };
+  }
+  const n = Math.floor(Number(intervalWeeks));
+  const weekdays = n >= 2 ? form.weekdays.slice(0, 1) : form.weekdays;
+  const cycleAnchor = n >= 2 ? form.cycleAnchor || mondayOfWeekYmd(todayYmd) : "";
+  return { intervalWeeks, weekdays, cycleAnchor };
+}
+
+export function withPatrolWeekdayToggle(form: PatrolFormValue, day: number): PatrolFormValue {
+  const interval = Math.floor(Number(form.intervalWeeks)) || 1;
+  if (interval >= 2) {
+    return { ...form, weekdays: [day] };
+  }
+  const has = form.weekdays.includes(day);
+  const weekdays = has ? form.weekdays.filter((d) => d !== day) : [...form.weekdays, day].sort((a, b) => a - b);
+  return { ...form, weekdays };
 }
 
 /** 加總客戶各送貨地址未收回空桶（相容舊 barrelsOnSite 欄位） */

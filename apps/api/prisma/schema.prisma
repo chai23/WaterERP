@@ -331,8 +331,14 @@ model DeliveryAddress {
   isDefault     Boolean  @default(false) @map("is_default")
   /// 此送貨點未收回空桶數：核銷送達時依押桶商品與回桶數自動增減，亦可手動調整
   barrelsOnSite Int      @default(0) @map("barrels_on_site")
-  /// 巡查星期：1=週一 … 7=週日；null=不參加週期巡查
+  /// 巡查星期（相容欄）：1=週一 … 7=週日；多天時存第一天；null=不參加週期巡查
   patrolWeekday Int?     @map("patrol_weekday") @db.UnsignedTinyInt
+  /// 巡查頻率：1=每週、2/3/4=每N週；null=不參加
+  patrolIntervalWeeks Int? @map("patrol_interval_weeks") @db.UnsignedTinyInt
+  /// 巡查星期，逗號分隔 1=週一…7=週日
+  patrolWeekdays String? @map("patrol_weekdays") @db.VarChar(16)
+  /// 頻率>=2 的起始週週一
+  patrolCycleAnchor DateTime? @map("patrol_cycle_anchor") @db.Date
   /// 目標水位（桶）：現場不足時補到此量（實際桶數於配送回報填）
   targetWaterLevel Int?  @map("target_water_level") @db.UnsignedInt
   /// 巡查預設商品（一鍵產生巡查單用）；結帳方式仍依客戶 billingType

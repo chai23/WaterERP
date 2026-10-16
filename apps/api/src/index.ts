@@ -2195,6 +2195,107 @@ function parseOptionalPatrolWeekday(raw: unknown): number | null | "INVALID" {
   return n;
 }
 
+function parsePatrolWeekdayList(raw: unknown): number[] | "INVALID" {
+  if (raw === null || raw === undefined || raw === "") return [];
+  const parts = Array.isArray(raw)
+    ? raw
+    : String(raw)
+        .split(/[,|\s]+/)
+        .filter((s) => s !== "");
+  const days: number[] = [];
+  for (const p of parts) {
+    const n = Math.floor(Number(p));
+    if (!Number.isFinite(n) || n < 1 || n > 7) return "INVALID";
+    if (!days.includes(n)) days.push(n);
+  }
+  days.sort((a, b) => a - b);
+  return days;
+}
+
+function parsePatrolIntervalWeeks(raw: unknown): number | null | "INVALID" {
+  if (raw === null || raw === undefined || raw === "") return null;
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n) || n < 1 || n > 4) return "INVALID";
+  return n;
+}
+
+function mondayDateFromYmd(ymd: string): Date | null {
+  const r = parseLocalYmdRange(ymd);
+  if (!r) return null;
+  const d = new Date(r.start.getFullYear(), r.start.getMonth(), r.start.getDate());
+  const iso = d.getDay() === 0 ? 7 : d.getDay();
+  d.setDate(d.getDate() - (iso - 1));
+  return d;
+}
+
+function addLocalDays(d: Date, days: number): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + days);
+}
+
+function weeksBetweenLocalMondays(a: Date, b: Date): number {
+  const aUtc = Date.UTC(a.getFullYear(), a.getMonth(), a.getDate());
+  const bUtc = Date.UTC(b.getFullYear(), b.getMonth(), b.getDate());
+  return Math.round((bUtc - aUtc) / (7 * 24 * 60 * 60 * 1000));
+}
+
+type ResolvedPatrolSchedule = {
+  patrolWeekday: number | null;
+  patrolIntervalWeeks: number | null;
+  patrolWeekdays: string | null;
+  patrolCycleAnchor: Date | null;
+};
+
+function resolvePatrolSchedule(input: {
+  patrolWeekday?: unknown;
+  patrolWeekdays?: unknown;
+  patrolIntervalWeeks?: unknown;
+  patrolCycleAnchor?: unknown;
+}): ResolvedPatrolSchedule | "INVALID" {
+  const fromList = parsePatrolWeekdayList(input.patrolWeekdays);
+  if (fromList === "INVALID") return "INVALID";
+  const single = parseOptionalPatrolWeekday(input.patrolWeekday);
+  if (single === "INVALID") return "INVALID";
+  const interval = parsePatrolIntervalWeeks(input.patrolIntervalWeeks);
+  if (interval === "INVALID") return "INVALID";
+  const days = fromList.length > 0 ? fromList : single != null ? [single] : [];
+  if (days.length === 0 && interval == null) {
+    return { patrolWeekday: null, patrolIntervalWeeks: null, patrolWeekdays: null, patrolCycleAnchor: null };
+  }
+  const iv = interval ?? 1;
+  if (days.length === 0) return "INVALID";
+  if (iv >= 2 && days.length !== 1) return "INVALID";
+  let patrolCycleAnchor: Date | null = null;
+  if (iv >= 2) {
+    const rawAnchor = typeof input.patrolCycleAnchor === "string" ? input.patrolCycleAnchor.trim() : "";
+    const monday = mondayDateFromYmd(rawAnchor || toLocalYmd(new Date()));
+    if (!monday) return "INVALID";
+    patrolCycleAnchor = parseLocalYmdToDbDate(toLocalYmd(monday));
+    if (!patrolCycleAnchor) return "INVALID";
+  }
+  return {
+    patrolWeekday: days[0] ?? null,
+    patrolIntervalWeeks: iv,
+    patrolWeekdays: days.join(","),
+    patrolCycleAnchor,
+  };
+}
+
+function storedPatrolWeekdays(addr: { patrolWeekdays?: string | null; patrolWeekday?: number | null }): number[] {
+  const parsed = parsePatrolWeekdayList(addr.patrolWeekdays ?? "");
+  if (parsed !== "INVALID" && parsed.length > 0) return parsed;
+  return addr.patrolWeekday != null ? [addr.patrolWeekday] : [];
+}
+
+function isPatrolSalesOrder(o: { orderKind?: string | null; remark?: string | null }): boolean {
+  if (o.orderKind === "patrol") return true;
+  return String(o.remark ?? "").startsWith("【週期巡查】");
+}
+
+function patrolIntervalLabel(weeks: number): string {
+  if (weeks <= 1) return "每週";
+  return `每 ${weeks} 週`;
+}
+
 /** 目標水位（桶）；空＝未設定 */
 function parseOptionalTargetWaterLevel(raw: unknown): number | null | "INVALID" {
   if (raw === null || raw === undefined || raw === "") return null;
@@ -4589,6 +4690,9 @@ type AddressInput = {
   isDefault?: unknown;
   barrelsOnSite?: unknown;
   patrolWeekday?: unknown;
+  patrolWeekdays?: unknown;
+  patrolIntervalWeeks?: unknown;
+  patrolCycleAnchor?: unknown;
   targetWaterLevel?: unknown;
   patrolProductId?: unknown;
 };
@@ -4603,6 +4707,9 @@ type AddressCreateRow = {
   isDefault: boolean;
   barrelsOnSite: number;
   patrolWeekday: number | null;
+  patrolIntervalWeeks: number | null;
+  patrolWeekdays: string | null;
+  patrolCycleAnchor: Date | null;
   targetWaterLevel: number | null;
   patrolProductId: bigint | null;
 };
@@ -4622,15 +4729,20 @@ const normalizeAddressCreates = (
     if (barrelsParsed === "INVALID") return "INVALID_BARRELS";
     const floorParsed = parseOptionalDeliveryFloor(o.deliveryFloor);
     if (floorParsed === "INVALID") return "INVALID_FLOOR";
-    const weekdayParsed = parseOptionalPatrolWeekday(o.patrolWeekday);
-    if (weekdayParsed === "INVALID") return "INVALID_PATROL";
+    const schedule = resolvePatrolSchedule({
+      patrolWeekday: o.patrolWeekday,
+      patrolWeekdays: o.patrolWeekdays,
+      patrolIntervalWeeks: o.patrolIntervalWeeks,
+      patrolCycleAnchor: o.patrolCycleAnchor,
+    });
+    if (schedule === "INVALID") return "INVALID_PATROL";
     const levelParsed = parseOptionalTargetWaterLevel(o.targetWaterLevel);
     if (levelParsed === "INVALID") return "INVALID_PATROL";
     const patrolProductId =
       o.patrolProductId === null || o.patrolProductId === undefined || o.patrolProductId === ""
         ? null
         : toBigInt(o.patrolProductId);
-    if (weekdayParsed != null && !patrolProductId) return "INVALID_PATROL";
+    if (schedule.patrolWeekday != null && !patrolProductId) return "INVALID_PATROL";
     const label = trimOptionalString(o.label);
     const contactName = trimOptionalString(o.contactName);
     const contactPhone = trimOptionalString(o.contactPhone);
@@ -4649,7 +4761,10 @@ const normalizeAddressCreates = (
       contactMobile,
       isDefault,
       barrelsOnSite: barrelsParsed,
-      patrolWeekday: weekdayParsed,
+      patrolWeekday: schedule.patrolWeekday,
+      patrolIntervalWeeks: schedule.patrolIntervalWeeks,
+      patrolWeekdays: schedule.patrolWeekdays,
+      patrolCycleAnchor: schedule.patrolCycleAnchor,
       targetWaterLevel: levelParsed,
       patrolProductId,
     });
@@ -4767,7 +4882,7 @@ app.post("/api/customers", async (req, res) => {
     if (addressCreates === "INVALID_PATROL") {
       res.status(400).json({
         ok: false,
-        message: "巡查設定無效：星期須為 1–7；啟用巡查時須指定預設商品；目標水位須為非負整數或留空",
+        message: "巡查設定無效：請選頻率與星期；兩週以上只能選一天；啟用巡查時須指定預設商品；目標水位須為非負整數或留空",
       });
       return;
     }
@@ -5025,9 +5140,14 @@ app.post("/api/customers/:customerId/addresses", async (req, res) => {
       res.status(400).json({ ok: false, message: "送貨樓層須為非零整數（地下樓可填 -1、-2）或留空" });
       return;
     }
-    const weekdayParsed = parseOptionalPatrolWeekday(body.patrolWeekday);
-    if (weekdayParsed === "INVALID") {
-      res.status(400).json({ ok: false, message: "巡查星期須為 1–7（週一～週日）或留空" });
+    const schedule = resolvePatrolSchedule({
+      patrolWeekday: body.patrolWeekday,
+      patrolWeekdays: body.patrolWeekdays,
+      patrolIntervalWeeks: body.patrolIntervalWeeks,
+      patrolCycleAnchor: body.patrolCycleAnchor,
+    });
+    if (schedule === "INVALID") {
+      res.status(400).json({ ok: false, message: "巡查設定無效：請選頻率與星期；兩週以上只能選一天" });
       return;
     }
     const levelParsed = parseOptionalTargetWaterLevel(body.targetWaterLevel);
@@ -5039,7 +5159,7 @@ app.post("/api/customers/:customerId/addresses", async (req, res) => {
       body.patrolProductId === null || body.patrolProductId === undefined || body.patrolProductId === ""
         ? null
         : toBigInt(body.patrolProductId);
-    if (weekdayParsed != null && !patrolProductId) {
+    if (schedule.patrolWeekday != null && !patrolProductId) {
       res.status(400).json({ ok: false, message: "啟用巡查時請指定預設商品" });
       return;
     }
@@ -5069,7 +5189,10 @@ app.post("/api/customers/:customerId/addresses", async (req, res) => {
           contactMobile,
           isDefault: setDefault,
           barrelsOnSite: barrelsParsed,
-          patrolWeekday: weekdayParsed,
+          patrolWeekday: schedule.patrolWeekday,
+          patrolIntervalWeeks: schedule.patrolIntervalWeeks,
+          patrolWeekdays: schedule.patrolWeekdays,
+          patrolCycleAnchor: schedule.patrolCycleAnchor,
           targetWaterLevel: levelParsed,
           patrolProductId,
         },
@@ -5115,6 +5238,9 @@ app.patch("/api/customers/:customerId/addresses/:addressId", async (req, res) =>
       isDefault?: boolean;
       barrelsOnSite?: number;
       patrolWeekday?: number | null;
+      patrolIntervalWeeks?: number | null;
+      patrolWeekdays?: string | null;
+      patrolCycleAnchor?: Date | null;
       targetWaterLevel?: number | null;
       patrolProductId?: bigint | null;
       latitude?: null;
@@ -5165,13 +5291,31 @@ app.patch("/api/customers/:customerId/addresses/:addressId", async (req, res) =>
       }
       data.barrelsOnSite = barrelsParsed;
     }
-    if (body.patrolWeekday !== undefined) {
-      const weekdayParsed = parseOptionalPatrolWeekday(body.patrolWeekday);
-      if (weekdayParsed === "INVALID") {
-        res.status(400).json({ ok: false, message: "巡查星期須為 1–7（週一～週日）或留空" });
+    const patrolTouched =
+      body.patrolWeekday !== undefined ||
+      body.patrolWeekdays !== undefined ||
+      body.patrolIntervalWeeks !== undefined ||
+      body.patrolCycleAnchor !== undefined;
+    if (patrolTouched) {
+      const schedule = resolvePatrolSchedule({
+        patrolWeekday: body.patrolWeekday !== undefined ? body.patrolWeekday : existing.patrolWeekday,
+        patrolWeekdays: body.patrolWeekdays !== undefined ? body.patrolWeekdays : existing.patrolWeekdays,
+        patrolIntervalWeeks: body.patrolIntervalWeeks !== undefined ? body.patrolIntervalWeeks : existing.patrolIntervalWeeks,
+        patrolCycleAnchor:
+          body.patrolCycleAnchor !== undefined
+            ? body.patrolCycleAnchor
+            : existing.patrolCycleAnchor
+              ? fmtDbDateYmd(existing.patrolCycleAnchor)
+              : "",
+      });
+      if (schedule === "INVALID") {
+        res.status(400).json({ ok: false, message: "巡查設定無效：請選頻率與星期；兩週以上只能選一天" });
         return;
       }
-      data.patrolWeekday = weekdayParsed;
+      data.patrolWeekday = schedule.patrolWeekday;
+      data.patrolIntervalWeeks = schedule.patrolIntervalWeeks;
+      data.patrolWeekdays = schedule.patrolWeekdays;
+      data.patrolCycleAnchor = schedule.patrolCycleAnchor;
     }
     if (body.targetWaterLevel !== undefined) {
       const levelParsed = parseOptionalTargetWaterLevel(body.targetWaterLevel);
@@ -9601,7 +9745,7 @@ const PATROL_BLOCKING_ORDER_STATUSES = ["completed", "cancelled", "pending_revie
 
 function formatPatrolBlockingOrderReason(orderNo: string, scheduledDeliveryDate: string | null): string {
   const dateNote = scheduledDeliveryDate ? `配送日 ${scheduledDeliveryDate}` : "配送日未設定";
-  return `尚有未完成訂單 ${orderNo}（${dateNote}）`;
+  return `尚有未完成一般訂單 ${orderNo}（${dateNote}）`;
 }
 
 type PatrolCandidate = {
@@ -9614,6 +9758,8 @@ type PatrolCandidate = {
   addressLine: string;
   patrolWeekday: number;
   patrolWeekdayLabel: string;
+  patrolIntervalWeeks: number;
+  patrolIntervalLabel: string;
   scheduledDeliveryDate: string;
   targetWaterLevel: number | null;
   productId: string;
@@ -9635,7 +9781,7 @@ async function listPatrolCandidatesForWeek(weekAnchorYmd: string): Promise<
 
   const addresses = await prisma.deliveryAddress.findMany({
     where: {
-      patrolWeekday: { not: null },
+      OR: [{ patrolWeekdays: { not: null } }, { patrolWeekday: { not: null } }],
       patrolProductId: { not: null },
       customer: { lifecycleStatus: { not: "churned" } },
     },
@@ -9677,57 +9823,99 @@ async function listPatrolCandidatesForWeek(weekAnchorYmd: string): Promise<
             deliveryAddressId: { in: addressIds },
             status: { notIn: [...PATROL_BLOCKING_ORDER_STATUSES] },
           },
-          select: { deliveryAddressId: true, orderNo: true, scheduledDeliveryDate: true },
+          select: {
+            deliveryAddressId: true,
+            orderNo: true,
+            scheduledDeliveryDate: true,
+            orderKind: true,
+            remark: true,
+          },
           orderBy: [{ scheduledDeliveryDate: "asc" }, { id: "asc" }],
         });
   const blockingByAddress = new Map<string, { orderNo: string; scheduledDeliveryDate: string | null }>();
   for (const o of incompleteOrders) {
+    if (isPatrolSalesOrder(o)) continue;
+    const ymd = o.scheduledDeliveryDate ? fmtDbDateYmd(o.scheduledDeliveryDate) : null;
+    if (ymd && ymd > weekEnd) continue;
     const addrId = o.deliveryAddressId.toString();
     if (blockingByAddress.has(addrId)) continue;
     blockingByAddress.set(addrId, {
       orderNo: o.orderNo,
-      scheduledDeliveryDate: o.scheduledDeliveryDate ? fmtDbDateYmd(o.scheduledDeliveryDate) : null,
+      scheduledDeliveryDate: ymd,
     });
   }
+
+  const todayYmd = toLocalYmd(new Date());
 
   const candidates: PatrolCandidate[] = [];
   for (const addr of addresses) {
-    const weekday = addr.patrolWeekday!;
-    const scheduledDeliveryDate = weekMap.get(weekday);
-    if (!scheduledDeliveryDate) continue;
+    const weekdays = storedPatrolWeekdays(addr);
+    if (weekdays.length === 0) continue;
+    const interval = addr.patrolIntervalWeeks != null && addr.patrolIntervalWeeks >= 1 ? addr.patrolIntervalWeeks : 1;
     const product = addr.patrolProduct;
-    let skipReason: string | null = null;
-    let blockingOrderNo: string | null = null;
-    let blockingOrderDate: string | null = null;
-    if (!product || !product.isActive) skipReason = "預設商品停用或不存在";
     const blocking = blockingByAddress.get(addr.id.toString());
-    if (!skipReason && blocking) {
-      skipReason = formatPatrolBlockingOrderReason(blocking.orderNo, blocking.scheduledDeliveryDate);
-      blockingOrderNo = blocking.orderNo;
-      blockingOrderDate = blocking.scheduledDeliveryDate;
-    }
-    const key = `${addr.id.toString()}|${scheduledDeliveryDate}`;
-    if (!skipReason && existingKey.has(key)) skipReason = "本週同日已有訂單";
 
-    candidates.push({
-      addressId: addr.id.toString(),
-      customerId: addr.customer.id.toString(),
-      customerCode: addr.customer.customerCode,
-      customerName: addr.customer.name,
-      billingType: addr.customer.billingType,
-      addressLabel: addr.label,
-      addressLine: addr.addressLine,
-      patrolWeekday: weekday,
-      patrolWeekdayLabel: PATROL_WEEKDAY_LABELS[weekday] ?? String(weekday),
-      scheduledDeliveryDate,
-      targetWaterLevel: addr.targetWaterLevel,
-      productId: product?.id.toString() ?? "",
-      productName: product?.name ?? "—",
-      skipReason,
-      blockingOrderNo,
-      blockingOrderDate,
-    });
+    let cycleSkip: string | null = null;
+    if (interval >= 2) {
+      const anchorYmd = addr.patrolCycleAnchor ? fmtDbDateYmd(addr.patrolCycleAnchor) : "";
+      const anchorMonday = anchorYmd ? mondayOfWeekContainingYmd(anchorYmd) : null;
+      if (!anchorMonday) {
+        cycleSkip = "未設定起始週";
+      } else {
+        const w = weeksBetweenLocalMondays(anchorMonday, monday);
+        if (w < 0) {
+          cycleSkip = `尚未到起始週（${toLocalYmd(anchorMonday)}）`;
+        } else if (w % interval !== 0) {
+          const next = addLocalDays(monday, (interval - (w % interval)) * 7);
+          cycleSkip = `本週非巡查週（下一次 ${toLocalYmd(next)}）`;
+        }
+      }
+    }
+
+    for (const weekday of weekdays) {
+      const scheduledDeliveryDate = weekMap.get(weekday);
+      if (!scheduledDeliveryDate) continue;
+      let skipReason: string | null = null;
+      let blockingOrderNo: string | null = null;
+      let blockingOrderDate: string | null = null;
+      if (!product || !product.isActive) skipReason = "預設商品停用或不存在";
+      if (!skipReason && cycleSkip) skipReason = cycleSkip;
+      if (!skipReason && scheduledDeliveryDate < todayYmd) skipReason = "配送日已過";
+      if (!skipReason && blocking) {
+        skipReason = formatPatrolBlockingOrderReason(blocking.orderNo, blocking.scheduledDeliveryDate);
+        blockingOrderNo = blocking.orderNo;
+        blockingOrderDate = blocking.scheduledDeliveryDate;
+      }
+      const key = `${addr.id.toString()}|${scheduledDeliveryDate}`;
+      if (!skipReason && existingKey.has(key)) skipReason = "本週同日已有訂單";
+
+      candidates.push({
+        addressId: addr.id.toString(),
+        customerId: addr.customer.id.toString(),
+        customerCode: addr.customer.customerCode,
+        customerName: addr.customer.name,
+        billingType: addr.customer.billingType,
+        addressLabel: addr.label,
+        addressLine: addr.addressLine,
+        patrolWeekday: weekday,
+        patrolWeekdayLabel: PATROL_WEEKDAY_LABELS[weekday] ?? String(weekday),
+        patrolIntervalWeeks: interval,
+        patrolIntervalLabel: patrolIntervalLabel(interval),
+        scheduledDeliveryDate,
+        targetWaterLevel: addr.targetWaterLevel,
+        productId: product?.id.toString() ?? "",
+        productName: product?.name ?? "—",
+        skipReason,
+        blockingOrderNo,
+        blockingOrderDate,
+      });
+    }
   }
+
+  candidates.sort((a, b) => {
+    if (a.scheduledDeliveryDate !== b.scheduledDeliveryDate) return a.scheduledDeliveryDate.localeCompare(b.scheduledDeliveryDate);
+    return a.customerName.localeCompare(b.customerName, "zh-Hant");
+  });
 
   return { ok: true, weekStart, weekEnd, candidates };
 }
@@ -9757,7 +9945,7 @@ app.post("/api/sales-orders/generate-patrol", async (req, res) => {
         c.targetWaterLevel != null ? `目標水位 ${c.targetWaterLevel} 桶` : "目標水位未設定";
       const billingNote =
         c.billingType === "prepaid" ? "預付扣桶" : c.billingType === "monthly" ? "月結" : "現金";
-      const remark = `【週期巡查】${c.patrolWeekdayLabel}；${levelNote}；結帳 ${billingNote}；數量於現場回報`;
+      const remark = `【週期巡查】${c.patrolIntervalLabel} · ${c.patrolWeekdayLabel}；${levelNote}；結帳 ${billingNote}；數量於現場回報`;
       const result = await createConfirmedSalesOrder(
         {
           customerId: c.customerId,

@@ -12,6 +12,8 @@ type PatrolCandidate = {
   addressLine: string;
   patrolWeekday: number;
   patrolWeekdayLabel: string;
+  patrolIntervalWeeks: number;
+  patrolIntervalLabel: string;
   scheduledDeliveryDate: string;
   targetWaterLevel: number | null;
   productId: string;
@@ -173,7 +175,7 @@ export function OrderPatrolGeneratePanel() {
               </div>
               {preview.creatable === 0 && preview.total > 0 ? (
                 <p className="order-create-panel__note">
-                  目前沒有可新開的巡查單（見下方「狀態」欄）。同送貨點若有未完成訂單會先略過；若要開下週，請把錨點日改到下週任一日期後按「重新預覽」。
+                  目前沒有可新開的巡查單（見下方「狀態」欄）。同點若有本週或更早的未完成一般訂單、同日已有訂單、配送日已過、或本週不是該點的巡查週會略過。若要開下週，請把錨點日改到下週後按「重新預覽」。
                 </p>
               ) : null}
             </>
@@ -258,7 +260,9 @@ export function OrderPatrolGeneratePanel() {
                     <tr key={`${c.addressId}-${c.scheduledDeliveryDate}`}>
                       <td className="order-create-panel__cell-date">
                         <span className="mono-text">{c.scheduledDeliveryDate}</span>
-                        <span className="order-create-panel__sub">{c.patrolWeekdayLabel}</span>
+                        <span className="order-create-panel__sub">
+                          {c.patrolIntervalLabel} · {c.patrolWeekdayLabel}
+                        </span>
                       </td>
                       <td className="order-create-panel__cell-customer">
                         <div className="order-create-panel__cust-name">
@@ -293,7 +297,7 @@ export function OrderPatrolGeneratePanel() {
             <div className="order-new__empty-state">
               <p className="order-new__empty-state-title">本週沒有已設定巡查的送貨點</p>
               <p className="order-new__empty-state-desc">
-                請至客戶資料 → 送貨地址填寫巡查星期、目標水位、預設商品。
+                請至客戶資料 → 送貨地址填寫巡查頻率、星期、目標水位與預設商品。
               </p>
             </div>
           )}

@@ -5518,6 +5518,29 @@ button.report-flow__step:hover {
   grid-column: 1 / -1;
 }
 
+.patrol-weekday-picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.patrol-weekday-pick {
+  border: 1px solid var(--border-strong);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 0.28rem 0.7rem;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.patrol-weekday-pick--on {
+  background: var(--brand-soft);
+  border-color: var(--brand);
+  color: var(--brand);
+  font-weight: 700;
+}
+
 @media (min-width: 720px) {
   .customer-address-field--wide {
     grid-column: span 2;
