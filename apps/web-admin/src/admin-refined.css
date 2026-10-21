@@ -455,11 +455,37 @@
 @media(max-width:1100px) { .dispatch-columns { grid-template-columns:minmax(290px,1fr) minmax(290px,1fr);gap:16px; } .dispatch-driver-grid { grid-template-columns:1fr; } }
 @media(max-width:768px) { .dispatch-board {padding:16px 0;} .dispatch-columns {grid-template-columns:1fr;} .dispatch-pool-list {max-height:55vh;} .dispatch-select-all {flex-wrap:wrap;} .dispatch-select-all span {width:100%;margin:0;} }
 :root[data-theme] .admin-app .dispatch-view { background:transparent !important; border:0 !important; box-shadow:none !important; overflow:visible; }
-:root[data-theme] .dispatch-view > .order-new__hero { background:transparent; padding:0 0 18px; border-bottom:1px solid var(--border); }
+:root[data-theme] .dispatch-view > .order-new__hero { background:transparent; padding:0; border-bottom:0; }
 .dispatch-view > .order-new__hero::after, .dispatch-view .order-new__badge { display:none; }
 .dispatch-view .dispatch-board { padding:24px 0 0; }
 .dispatch-view .order-new__hero-lead { margin:10px 0 16px; }
-.dispatch-view .order-assign-tabs { margin:0; }
+/* Match the order-create tab buttons on every assign-page tab. */
+:root[data-theme] .order-assign-page .order-assign-tabs {
+  display:flex; width:100%; gap:8px; padding:0 0 14px; margin:0;
+  border:0; border-bottom:1px solid var(--border); border-radius:0; background:transparent; box-shadow:none;
+}
+:root[data-theme] .order-assign-page .order-assign-tabs__btn {
+  padding:10px 20px; min-height:44px; background:transparent; color:var(--text-secondary);
+  border:1px solid transparent; border-radius:8px; box-shadow:none; font-size:14px; font-weight:500;
+}
+:root[data-theme] .order-assign-page .order-assign-tabs__btn:hover { background:var(--brand-soft); color:var(--text); }
+:root[data-theme] .order-assign-page .order-assign-tabs__btn--active {
+  background:var(--brand); color:var(--bg-card); border-color:var(--brand);
+}
+@media (max-width:768px) {
+  :root[data-theme] .order-assign-page .order-assign-tabs { gap:4px; }
+  :root[data-theme] .order-assign-page .order-assign-tabs__btn { flex:1; padding:10px 6px; font-size:12px; }
+}
+.dispatch-columns.dispatch-columns--lookup { grid-template-columns:minmax(420px,1.45fr) minmax(260px,.72fr); }
+.dispatch-order--plain { cursor:default; }
+.dispatch-order--plain .dispatch-goods,
+.dispatch-order--plain .dispatch-order-facts,
+.dispatch-order--plain .dispatch-hint { padding-left:0; }
+.dispatch-lookup-driver select { min-width:12rem; max-width:100%; }
+.dispatch-totals { list-style:none; margin:12px 0 0; padding:0; display:flex; flex-direction:column; gap:8px; }
+.dispatch-totals li { display:flex; justify-content:space-between; gap:12px; font-size:13px; }
+.dispatch-totals strong { font-variant-numeric:tabular-nums; }
+@media (max-width:1100px) { .dispatch-columns.dispatch-columns--lookup { grid-template-columns:minmax(0,1fr); } }
 .dispatch-pool.is-return-target { outline:3px solid var(--brand-line); outline-offset:8px; border-radius:12px; background:var(--brand-soft); }
 .dispatch-return-actions {display:flex;gap:12px;align-items:center;margin-top:6px;}
 .dispatch-return-actions button {color:var(--brand);font-size:12px;text-decoration:underline;}

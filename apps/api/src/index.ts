@@ -10173,11 +10173,22 @@ app.post("/api/driver/confirm-line-deliveries", async (req, res) => {
         };
       }
 
-      const reportClaim = await tx.deliveryAssignment.updateMany({
-        where: { id: assignmentId, status: assignment.status },
-        data: assignmentPatch,
-      });
-      if (reportClaim.count !== 1) throw new Error("任務狀態已變更，請重新整理後再操作");
+      // Prisma skips updateMany with empty data and reports count 0, so lock the row instead.
+      const claimed =
+        Object.keys(assignmentPatch).length > 0
+          ? (
+              await tx.deliveryAssignment.updateMany({
+                where: { id: assignmentId, status: assignment.status },
+                data: assignmentPatch,
+              })
+            ).count
+          : (
+              await tx.$queryRaw<Array<{ id: bigint }>>`
+                SELECT id FROM delivery_assignments
+                WHERE id = ${assignmentId} AND status = ${assignment.status}
+                FOR UPDATE`
+            ).length;
+      if (claimed !== 1) throw new Error("任務狀態已變更，請重新整理後再操作");
 
       await tx.deliveryEvent.create({
         data: {
@@ -10272,6 +10283,10 @@ app.post("/api/driver/confirm-line-deliveries", async (req, res) => {
   } catch (e) {
     if (e instanceof Error && e.message === "AR_ALREADY_ALLOCATED") {
       res.status(400).json({ ok: false, message: "訂單應收已沖帳，無法變更配送數量" });
+      return;
+    }
+    if (e instanceof Error && e.message === "任務狀態已變更，請重新整理後再操作") {
+      res.status(409).json({ ok: false, message: e.message });
       return;
     }
     res.status(500).json({ ok: false, message: publicErrorMessage(e) });

@@ -11087,6 +11087,10 @@ body,
   color: var(--ok, #15803d);
   font-weight: 700;
 }
+.proxy-report-qty__status.is-err {
+  color: var(--danger, #b91c1c);
+  font-weight: 650;
+}
 
 .proxy-report-barrel-row {
   display: flex;

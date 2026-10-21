@@ -220,7 +220,7 @@ function buildLineQtyFromJob(job: AssignmentJob): Record<string, number> {
   const map: Record<string, number> = {};
   for (const line of deliveryLinesFromJob(job)) {
     const id = String(line.id);
-    if (job.status === "pending_settlement" && line.qtyDelivered != null && line.qtyDelivered > 0) {
+    if (line.qtyDelivered != null && line.qtyDelivered > 0) {
       map[id] = line.qtyDelivered;
     } else if (line.qtyOrdered != null && line.qtyOrdered > 0) {
       map[id] = line.qtyOrdered;
@@ -304,6 +304,7 @@ export default function OrderProxyReportPage() {
   const [savingId, setSavingId] = useState<string | null>(null);
   const [confirmingLineId, setConfirmingLineId] = useState<string | null>(null);
   const [lineQtyConfirmedByJob, setLineQtyConfirmedByJob] = useState<Record<string, boolean>>({});
+  const [qtyConfirmNote, setQtyConfirmNote] = useState<Record<string, { ok: boolean; text: string }>>({});
   const [formByJob, setFormByJob] = useState<Record<string, JobFormState>>({});
   /** 展開中的任務（預設收合，方便掃單） */
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
@@ -407,6 +408,11 @@ export default function OrderProxyReportPage() {
   const updateForm = (assignmentId: string, patch: Partial<JobFormState>) => {
     if (patch.lineQtyDelivered) {
       setLineQtyConfirmedByJob((prev) => ({ ...prev, [assignmentId]: false }));
+      setQtyConfirmNote((prev) => {
+        const next = { ...prev };
+        delete next[assignmentId];
+        return next;
+      });
     }
     setFormByJob((prev) => ({
       ...prev,
@@ -418,8 +424,12 @@ export default function OrderProxyReportPage() {
     const form = formByJob[assignmentId] ?? defaultJobForm();
     const jobBefore = jobs.find((j) => String(j.id) === assignmentId);
     const deliveryLines = jobBefore ? deliveryLinesFromJob(jobBefore) : [];
+    const setNote = (ok: boolean, text: string) => {
+      setQtyConfirmNote((prev) => ({ ...prev, [assignmentId]: { ok, text } }));
+    };
     if (deliveryLines.length === 0) {
       setLineQtyConfirmedByJob((prev) => ({ ...prev, [assignmentId]: true }));
+      setNote(true, "此單無配送品項，可直接填收款並提交");
       return;
     }
     const hasTbdQty = deliveryLines.some((l) => (l.qtyOrdered ?? 0) === 0);
@@ -428,7 +438,9 @@ export default function OrderProxyReportPage() {
         (l) => (l.qtyOrdered ?? 0) === 0 && (form.lineQtyDelivered[String(l.id)] ?? 0) <= 0,
       );
       if (missing.length > 0) {
-        setMessage("開單數量為 0（待定）的品項，請填寫實際配送桶數後再確認。");
+        const fail = "開單數量為 0（待定）的品項，請填寫實際配送桶數後再確認。";
+        setMessage(fail);
+        setNote(false, fail);
         return;
       }
     }
@@ -448,19 +460,38 @@ export default function OrderProxyReportPage() {
       });
       const payload = await res.json();
       if (!res.ok || !payload.ok) {
-        setMessage(payload.message ?? "確認配送數量失敗");
+        const fail = payload.message ?? "確認配送數量失敗";
+        setMessage(fail);
+        setNote(false, fail);
         return;
       }
       setLineQtyConfirmedByJob((prev) => ({ ...prev, [assignmentId]: true }));
-      const no = payload.data?.assignment?.salesOrder?.orderNo ?? assignmentId;
+      const no = payload.data?.assignment?.salesOrder?.orderNo ?? jobBefore?.salesOrder?.orderNo ?? assignmentId;
       const total = payload.data?.assignment?.salesOrder?.totalAmount;
-      const cashDue = payload.data?.driverBillingHints?.cashDue;
-      setMessage(
-        `已確認配送數量：${no}（訂單總額 $${total ?? "—"}，建議收款 $${cashDue ?? "—"}）`,
-      );
+      const cashDueHint = payload.data?.driverBillingHints?.cashDue;
+      const okText = `已確認配送數量：${no}（訂單總額 $${total ?? "—"}，建議收款 $${cashDueHint ?? "—"}）`;
+      setNote(true, okText);
+      const returnedJob = payload.data?.assignment as AssignmentJob | undefined;
+      const returnedHints = payload.data?.driverBillingHints as DriverBillingHints | undefined;
+      if (returnedJob || returnedHints) {
+        setJobs((prev) =>
+          prev.map((j) =>
+            String(j.id) === assignmentId
+              ? {
+                  ...j,
+                  salesOrder: returnedJob?.salesOrder ?? j.salesOrder,
+                  driverBillingHints: returnedHints ?? j.driverBillingHints,
+                }
+              : j,
+          ),
+        );
+      }
       await loadJobs();
+      setMessage(okText);
     } catch {
-      setMessage("確認配送數量時發生錯誤。");
+      const fail = "確認配送數量時發生錯誤。";
+      setMessage(fail);
+      setNote(false, fail);
     } finally {
       setConfirmingLineId(null);
     }
@@ -599,7 +630,7 @@ export default function OrderProxyReportPage() {
         {message ? (
           <div
             className={
-              message.includes("已提交") || message.includes("已更新")
+              message.includes("已提交") || message.includes("已更新") || message.includes("已確認")
                 ? "feedback feedback--ok"
                 : "feedback feedback--err"
             }
@@ -917,7 +948,11 @@ export default function OrderProxyReportPage() {
                                     >
                                       {confirmingLineId === id ? "確認中…" : "確認配送數量"}
                                     </button>
-                                    {lineQtyConfirmedByJob[id] ? (
+                                    {qtyConfirmNote[id]?.text ? (
+                                      <span className={`proxy-report-qty__status${qtyConfirmNote[id].ok ? " is-ok" : " is-err"}`}>
+                                        {qtyConfirmNote[id].text}
+                                      </span>
+                                    ) : lineQtyConfirmedByJob[id] ? (
                                       <span className="proxy-report-qty__status is-ok">已確認 · 金額／應收已更新</span>
                                     ) : (
                                       <span className="proxy-report-qty__status">請先確認，再填收款並提交</span>
