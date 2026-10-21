@@ -7,7 +7,7 @@ import { OrderLiffReviewPanel } from "./OrderLiffReviewPage";
 type PageTab = "new" | "patrol" | "liff";
 
 const TAB_LEAD: Record<PageTab, string> = {
-  new: "左欄搜尋客戶與配送條件，右欄核對帳務與送貨點；接著填商品明細與發票／備註，最後可對照歷史叫貨。輸入 6 碼編號或電話／名稱即可匹配；雙擊歷史列可帶入商品。",
+  new: "搜尋客戶與送貨點，再填寫商品與配送資訊。可用客戶編號、電話或名稱搜尋，雙擊歷史訂單帶入商品。",
   patrol:
     "依送貨點巡查頻率與星期開單；數量為 0（現場回報），結帳方式跟客戶主檔。同點同日已有訂單、本週或更早的未完成一般訂單、或配送日已過會略過；兩週以上只在巡查週產生。",
   liff: "客戶自 LINE 下單後會先進入待確認，請核對客戶、地址與品項後再確認或駁回。一般訂水確認後可至分配訂單派車。",
@@ -38,8 +38,7 @@ export default function OrderCreatePage() {
       <header className="order-new__hero">
         <div className="order-new__hero-top">
           <div className="order-new__hero-titles">
-            <span className="order-new__badge">建立訂單</span>
-            <h2 className="order-new__page-title">建立訂單</h2>
+            <h2 className="order-new__page-title">{pageTab === "new" ? "新增訂單" : pageTab === "patrol" ? "產生巡查單" : "確認 LINE 訂單"}</h2>
           </div>
         </div>
         <p className="order-new__hero-lead">{TAB_LEAD[pageTab]}</p>

@@ -51,6 +51,7 @@ type MonthlyUnsettledOrder = {
 };
 
 type StatementRow = {
+  invoiceMode?: string;
   rowKind?: string;
   openItemId?: string | null;
   salesOrderId?: string | null;
@@ -471,9 +472,9 @@ export default function BillingArPage() {
 
   const postMonthlyStatement = async () => {
     if (!customerId) return;
-    const pendingCount = statementRows.filter((r) => r.rowKind === "pending_statement").length;
+    const pendingCount = statementRows.filter((r) => r.rowKind === "pending_statement" && (!r.invoiceMode || r.invoiceMode === statementPostMode)).length;
     if (pendingCount === 0) {
-      setMsg("請先產生對帳清單，且清單中需有待開立批次的訂單");
+      setMsg("請先產生對帳清單；舊系統待結項目須選擇與交接時相同的發票模式");
       return;
     }
     if (!window.confirm(`將開立月結批次（截止 ${statementCutoffDate}，共 ${pendingCount} 張訂單）。確定？`)) return;

@@ -39,9 +39,11 @@ import {
   serviceTypeLabel,
 } from "./serviceTickets.js";
 import { createDeliveryAssignment } from "./createDeliveryAssignment.js";
+import { returnAssignmentToPool } from "./returnAssignmentToPool.js";
 import { registerDeliveryPlanningRoutes } from "./modules/delivery-planning/routes.js";
 import { isDeliveryPlanningEnabled } from "./modules/delivery-planning/flag.js";
 import { registerLegacyHistoryRoutes } from "./modules/legacy-history/routes.js";
+import { pendingCutoverMonthly, claimCutoverMonthly } from "./modules/legacy-history/handover.js";
 import {
   generalEffectiveLatest,
   patrolWindow,
@@ -2008,6 +2010,7 @@ const corsOriginList = process.env.CORS_ORIGIN?.split(",").map((s) => s.trim()).
 const corsOrigin = corsOriginList && corsOriginList.length > 0 ? corsOriginList : isProductionRuntime() ? false : true;
 
 app.use(cors({ origin: corsOrigin }));
+app.use("/api/legacy-cutover/handover", express.json({ limit: "20mb" }));
 app.use(
   express.json({
     verify: (req, _res, buf) => {
@@ -7939,6 +7942,9 @@ app.get("/api/billing/monthly-unsettled", async (req, res) => {
         };
       })
       .filter((r) => new Prisma.Decimal(r.outstandingAmount).greaterThan(0));
+    const openingPending = await pendingCutoverMonthly(prisma, customerId);
+    pending.push(...openingPending.map(o => ({ id: `cutover:${o.id}`, orderNo: `舊單 ${o.sourceKey}`, deliveryDate: o.day,
+      monthlyAmount: o.amount, monthlyReceivedAmount: "0", outstandingAmount: o.amount, monthlyPeriodPaid: false })));
     const totalPending = pending.reduce(
       (s, r) => s.add(new Prisma.Decimal(r.outstandingAmount)),
       new Prisma.Decimal(0),
@@ -9119,6 +9125,15 @@ app.post("/api/delivery-assignments", async (req, res) => {
 });
 
 /** 批次分派：失敗單略過並回報原因 */
+app.post("/api/delivery-assignments/:id/return-to-pool", async (req, res) => {
+  const auth = requireRole(req, res, ["admin", "accounting", "dispatcher"]);
+  if (!auth) return;
+  const id = toBigInt(req.params.id);
+  if (!id) { res.status(400).json({ok:false,message:"任務編號錯誤"}); return; }
+  try { res.json({ok:true,data:await returnAssignmentToPool(prisma,id,auth.id)}); }
+  catch(e) { res.status(409).json({ok:false,message:publicErrorMessage(e)}); }
+});
+
 app.post("/api/orders/batch-assign", async (req, res) => {
   if (!requireRole(req, res, ["admin", "accounting", "dispatcher"])) return;
   try {
@@ -10158,10 +10173,11 @@ app.post("/api/driver/confirm-line-deliveries", async (req, res) => {
         };
       }
 
-      await tx.deliveryAssignment.update({
-        where: { id: assignmentId },
+      const reportClaim = await tx.deliveryAssignment.updateMany({
+        where: { id: assignmentId, status: assignment.status },
         data: assignmentPatch,
       });
+      if (reportClaim.count !== 1) throw new Error("任務狀態已變更，請重新整理後再操作");
 
       await tx.deliveryEvent.create({
         data: {
@@ -10446,8 +10462,8 @@ app.post("/api/driver/complete", async (req, res) => {
       }
 
       if (!delivered) {
-        await tx.deliveryAssignment.update({
-          where: { id: assignmentId },
+        const reportClaim = await tx.deliveryAssignment.updateMany({
+          where: { id: assignmentId, status: assignment.status },
           data: {
             status: "pending_settlement",
             ...(!isAmendPending ? { driverReportedAt: now } : {}),
@@ -10463,6 +10479,7 @@ app.post("/api/driver/complete", async (req, res) => {
             settlementNote: note || null,
           } as Prisma.DeliveryAssignmentUpdateInput,
         });
+        if (reportClaim.count !== 1) throw new Error("任務狀態已變更，請重新整理後再操作");
         await tx.floorDeliveryBonusRecord.deleteMany({
           where: { deliveryAssignmentId: assignmentId },
         });
@@ -10566,8 +10583,8 @@ app.post("/api/driver/complete", async (req, res) => {
         settlementOutcome = "delivered_cash_over";
       }
 
-      await tx.deliveryAssignment.update({
-        where: { id: assignmentId },
+      const reportClaim = await tx.deliveryAssignment.updateMany({
+        where: { id: assignmentId, status: assignment.status },
         data: {
           status: "pending_settlement",
           ...(!isAmendPending ? { driverReportedAt: now } : {}),
@@ -10583,6 +10600,7 @@ app.post("/api/driver/complete", async (req, res) => {
           settlementNote: note || null,
         } as Prisma.DeliveryAssignmentUpdateInput,
       });
+      if (reportClaim.count !== 1) throw new Error("任務狀態已變更，請重新整理後再操作");
 
       await tx.deliveryEvent.create({
         data: {
@@ -12162,17 +12180,18 @@ app.post("/api/billing/statements/post", async (req, res) => {
       }
     }
 
-    if (eligible.length === 0) {
-      res.status(400).json({ ok: false, message: "沒有可納入本期結帳的月結訂單" });
+    const invoiceMode = normalizeStatementInvoiceMode(body.invoiceMode);
+    const openingPending = explicitIds ? [] : (await pendingCutoverMonthly(prisma, customerId, cutoffDate)).filter(o => o.invoiceMode === invoiceMode);
+    if (eligible.length === 0 && openingPending.length === 0) {
+      res.status(400).json({ ok: false, message: "沒有可納入本期結帳的月結訂單；舊系統待結項目需選擇與交接時一致的發票模式。" });
       return;
     }
 
-    const invoiceMode = normalizeStatementInvoiceMode(body.invoiceMode);
     const taxRateRaw = Number(body.taxRate ?? NaN);
     const taxRate =
       Number.isFinite(taxRateRaw) && taxRateRaw >= 0 ? new Prisma.Decimal(String(taxRateRaw)) : DEFAULT_VAT_RATE;
 
-    let untaxedTotal = new Prisma.Decimal(0);
+    let untaxedTotal = openingPending.reduce((s, o) => s.add(o.amount), new Prisma.Decimal(0));
     const linesPayload = eligible.map((o) => {
       const cap = orderMonthlyCap(o);
       untaxedTotal = untaxedTotal.add(cap);
@@ -12228,6 +12247,7 @@ app.post("/api/billing/statements/post", async (req, res) => {
         },
       });
 
+      await claimCutoverMonthly(tx, openingPending, stmt.id);
       await tx.billingStatementOrder.createMany({
         data: linesPayload.map((x) => ({
           billingStatementId: stmt.id,
@@ -12265,7 +12285,7 @@ app.post("/api/billing/statements/post", async (req, res) => {
         },
       });
 
-      const orderNos = eligible.map((o) => o.orderNo).join("、");
+      const orderNos = [...eligible.map((o) => o.orderNo), ...openingPending.map(o => `舊單 ${o.sourceKey}`)].join("、");
       await tx.customerLedgerEntry.create({
         data: {
           customerId,
@@ -12274,7 +12294,7 @@ app.post("/api/billing/statements/post", async (req, res) => {
           salesOrderId: null,
           sourceType: "billing_statement",
           sourceId: stmt.id,
-          note: `月結批次立帳 ${stmt.statementNo}（應收 ${arAmount.toString()}／未稅合計 ${invoiceUntaxed.toString()}）：${orderNos}`,
+          note: `月結批次立帳 ${stmt.statementNo}（應收 ${arAmount.toString()}／未稅合計 ${invoiceUntaxed.toString()}）：${orderNos}`.slice(0, 500),
           createdByUserId: DEFAULT_CREATOR_USER_ID,
         },
       });
@@ -12301,11 +12321,15 @@ app.post("/api/billing/statements/post", async (req, res) => {
           arDocuments: { include: { openItems: true } },
         },
       });
-      return { billingStatement: full, taxInvoice };
+      return { billingStatement: full, taxInvoice, openingItems: openingPending };
     });
 
     res.status(201).json({ ok: true, data: postedBundle });
   } catch (e) {
+    if (e instanceof Error && e.message.includes("舊月結已由其他人結帳")) {
+      res.status(409).json({ ok: false, message: e.message });
+      return;
+    }
     res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
@@ -12545,11 +12569,20 @@ app.get("/api/billing/statements", async (req, res) => {
       };
     });
 
+    const openingPending = await pendingCutoverMonthly(prisma, customerId, cutoffDate);
+    const openingRows = openingPending.map(o => ({ rowKind: "pending_statement", invoiceMode: o.invoiceMode,
+      openItemId: null, salesOrderId: null, arNo: "—（舊系統待結）", orderNo: `舊單 ${o.sourceKey}`,
+      actualDeliveryDate: o.day, dueDate: null, status: "pending_post", originalAmount: o.amount,
+      allocatedAmount: "0", outstandingAmount: o.amount,
+      lineItems: [{ productName: `舊系統交接 ${o.sourceKey}（${o.invoiceMode === "none" ? "不開發票" : o.invoiceMode === "tax_inclusive" ? "含稅" : "未稅"}）`, unitPrice: o.amount, qty: 1, subtotal: o.amount }],
+    }));
+    pendingUntaxed = openingPending.reduce((s, o) => s.add(o.amount), pendingUntaxed);
+
     const opens = await prisma.arOpenItem.findMany({
       where: {
         customerId,
         outstandingAmount: { gt: new Prisma.Decimal(0) },
-        arDocument: { billingType: "monthly" },
+        arDocument: { billingType: "monthly", status: { not: "voided" } },
       },
       include: {
         arDocument: true,
@@ -12573,7 +12606,8 @@ app.get("/api/billing/statements", async (req, res) => {
     });
     const filteredLegacy = opens.filter((o) => {
       const so = o.salesOrder;
-      if (!so || so.status !== "completed") return false;
+      if (!so) return o.arDocument.postedAt.getTime() < deliveryUpper.getTime();
+      if (so.status !== "completed") return false;
       if (!orderHasMonthlyPortion(so)) return false;
       const t = actualDeliveryInstant(so);
       return t != null && t.getTime() < deliveryUpper.getTime();
@@ -12583,7 +12617,7 @@ app.get("/api/billing/statements", async (req, res) => {
       openItemId: o.id.toString(),
       salesOrderId: o.salesOrderId?.toString() ?? null,
       arNo: o.arDocument.arNo,
-      orderNo: o.salesOrder?.orderNo ?? null,
+      orderNo: o.salesOrder?.orderNo ?? (o.arDocument.documentType === "opening_balance" ? "舊系統期初" : "月結批次"),
       actualDeliveryDate: (() => {
         const a = o.salesOrder?.assignments?.[0];
         const d = a?.driverReportedAt ?? a?.assignmentDate ?? o.salesOrder?.scheduledDeliveryDate ?? null;
@@ -12615,7 +12649,7 @@ app.get("/api/billing/statements", async (req, res) => {
         legacyOutstandingTotal: legacyOutstanding.toFixed(2),
         totalOriginal: totalOriginalNum.toFixed(2),
         totalOutstanding: totalOutstandingNum.toFixed(2),
-        rows: [...pendingRows, ...legacyRows],
+        rows: [...pendingRows, ...openingRows, ...legacyRows],
       },
     });
   } catch (e) {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { LegacyMasterSync } from "../components/LegacyMasterSync";
 import type {
   Address,
   Customer,
@@ -1296,9 +1297,10 @@ export default function DataCustomersPage() {
       <header className="customer-hub__header">
         <div className="customer-hub__header-main">
           <h2 className="card__title">客戶資料</h2>
-          <p className="customer-hub__lead">左側選客戶、右側看帳務與訂單；切換系統時可用「切換日開帳」帶入舊欠款。</p>
+          <p className="customer-hub__lead">左側選客戶、右側看帳務與訂單；切換系統時可用「上線交接」核對舊欠款、預收與桶數。</p>
         </div>
         <div className="customer-hub__header-actions">
+          {user?.role === "admin" ? <LegacyMasterSync onSynced={async () => { await refreshMasters(["customers"], true); if (detailId) await fetchDetail(detailId); }} /> : null}
           {pageMode === "create" ? (
             <button type="button" className="btn btn--ghost" onClick={exitCreateCustomer}>
               返回瀏覽

@@ -261,7 +261,7 @@ export default function CustomerLegacyOrdersPage() {
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <Link className="btn btn--ghost" to="/data/legacy-cutover">
-            切換日開帳
+            上線交接
           </Link>
           <Link className="btn btn--ghost" to="/data/customers">
             返回客戶資料

@@ -1,577 +1,129 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { billingTypeLabel, moneyText, todayLocalYmd } from "../adminUtils";
+import { moneyText, todayLocalYmd } from "../adminUtils";
 
-type BillingType = "cash" | "monthly" | "prepaid";
-
-type UnpaidOrder = {
-  orderId: string;
-  customerId: string;
-  billingLabel: string | null;
-  billingType: BillingType;
-  orderDay: string | null;
-  orderOk: boolean;
-  amount: number;
-  remitted: number;
-  outstanding: number;
-};
-
-type CutoverRow = {
-  customerCode: string;
-  legacyCustomerIds: string[];
-  newCustomerId: string | null;
-  customerName: string | null;
-  billingTypePreferred: BillingType | null;
-  unpaidByType: Record<BillingType, { amount: number; orderCount: number }>;
-  unpaidTotal: number;
-  unpaidOrderCount: number;
-  orders: UnpaidOrder[];
-  newSystem: {
-    prepaidBarrelBalance: number | null;
-    barrelsOnSite: number | null;
-    openArOutstanding: number | null;
-    existingOpeningArCount: number;
-  };
-  legacyBalances: {
-    prepaidBarrelBalance: number | null;
-    barrelsOnSite: number | null;
-  };
-  mapped: boolean;
-};
-
-type PreviewData = {
-  asOf: string | null;
-  orderCount: number;
-  customerCount: number;
-  mappedCustomerCount: number;
-  unmappedCustomerCount: number;
-  totals: Record<BillingType, number>;
-  rows: CutoverRow[];
-};
-
-type ApplyResult = {
-  created: number;
-  skipped: number;
-  failed: number;
-  createdArNos: string[];
-  errors: string[];
-};
-
-type SyncResult = {
-  updated: number;
-  skipped: number;
-  failed: number;
-  errors: string[];
-};
-
-const ALL_TYPES: BillingType[] = ["cash", "monthly", "prepaid"];
+type Order = { id: string; day: string; outstanding: number; received: number; completed: boolean; billing: string;
+  disposition: string; finalAmount: number; dueDate: string; invoiceMode: string; note: string; arNo?: string };
+type Row = { key: string; code: string; name: string; customerId: string | null; included: boolean; warnings: string[];
+  reviewed: boolean; note: string; prepayment: number | null; prepaidBarrels: number; sourcePrepaidBarrels: number; legacyBarrels: number;
+  addresses: { id: string; label: string; barrels: number; original: number }[]; orders: Order[] };
+type Snapshot = { startDate: string; cutoffDate: string; capturedAt: string; sourceFrozen: boolean; totalsConfirmed: boolean; rows: Row[]; blockers: string[] };
+type State = { revision: number; status: string; snapshot: Snapshot | null; appliedAt: string | null; errors: string[] };
+const labels: Record<string, string> = { cash: "一般未收款", monthly_billed: "月結已出帳未收", monthly_pending: "月結尚未出帳", exclude: "排除／待辦移交" };
 
 export default function LegacyCutoverPage() {
-  const [asOf, setAsOf] = useState(todayLocalYmd());
-  const [cutoverDate, setCutoverDate] = useState(todayLocalYmd());
-  const [customerFilter, setCustomerFilter] = useState("");
-  const [billingTypes, setBillingTypes] = useState<BillingType[]>([...ALL_TYPES]);
-  const [granularity, setGranularity] = useState<"by_order" | "by_customer">("by_order");
-  const [preview, setPreview] = useState<PreviewData | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [applying, setApplying] = useState(false);
-  const [syncing, setSyncing] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set());
+  const [state, setState] = useState<State | null>(null);
+  const [draft, setDraft] = useState<Snapshot | null>(null);
+  const [startDate, setStartDate] = useState(todayLocalYmd());
+  const [step, setStep] = useState(1);
+  const [busy, setBusy] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [search, setSearch] = useState("");
+  const [onlyPending, setOnlyPending] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [onlyMapped, setOnlyMapped] = useState(true);
-  const [onlyUnsyncedOpening, setOnlyUnsyncedOpening] = useState(false);
-
-  const toggleType = (t: BillingType) => {
-    setBillingTypes((prev) => {
-      if (prev.includes(t)) {
-        const next = prev.filter((x) => x !== t);
-        return next.length ? next : prev;
-      }
-      return [...prev, t];
-    });
+  const [confirmation, setConfirmation] = useState<"regenerate" | "activate" | "review" | null>(null);
+  const [page, setPage] = useState(1);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => { if (confirmation) dialogRef.current?.showModal(); }, [confirmation]);
+  const applied = state?.status === "applied";
+  const accept = (s: State) => { setState(s); setDraft(s.snapshot); setDirty(false); if (s.snapshot) setStartDate(s.snapshot.startDate); };
+  const request = async (path = "", method = "GET", body?: unknown): Promise<State> => {
+    const res = await fetch(`/api/legacy-cutover/handover${path}`, { method, ...(body ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}) });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.message ?? "操作失敗");
+    return data.data;
   };
-
-  const loadPreview = useCallback(async () => {
-    setLoading(true);
-    setErr(null);
-    setMsg(null);
-    try {
-      const qs = new URLSearchParams();
-      if (asOf) qs.set("asOf", asOf);
-      if (customerFilter.trim()) qs.set("customer", customerFilter.trim());
-      qs.set("billingTypes", billingTypes.join(","));
-      const res = await fetch(`/api/legacy-cutover/preview?${qs}`);
-      const data = await res.json().catch(() => null);
-      if (!res.ok || !data?.ok) {
-        setPreview(null);
-        setErr(typeof data?.message === "string" ? data.message : "預覽失敗");
-        return;
-      }
-      const payload = data.data as PreviewData;
-      setPreview(payload);
-      setSelectedCodes(new Set(payload.rows.filter((r) => r.mapped).map((r) => r.customerCode)));
-    } catch {
-      setPreview(null);
-      setErr("預覽失敗");
-    } finally {
-      setLoading(false);
-    }
-  }, [asOf, customerFilter, billingTypes]);
-
+  useEffect(() => { let live = true; setBusy(true); request().then(s => { if (live) { accept(s); setStep(s.status === "applied" ? 4 : s.snapshot ? 2 : 1); } }).catch(e => { if (live) setError(e.message); }).finally(() => { if (live) setBusy(false); }); return () => { live = false; }; }, []);
   useEffect(() => {
-    void loadPreview();
-  }, [loadPreview]);
-
-  const visibleRows = useMemo(() => {
-    if (!preview) return [];
-    return preview.rows.filter((r) => {
-      if (onlyMapped && !r.mapped) return false;
-      if (onlyUnsyncedOpening && r.newSystem.existingOpeningArCount > 0) return false;
-      return true;
-    });
-  }, [preview, onlyMapped, onlyUnsyncedOpening]);
-
-  const selectedVisible = useMemo(
-    () => visibleRows.filter((r) => selectedCodes.has(r.customerCode)),
-    [visibleRows, selectedCodes],
-  );
-
-  const selectedTotals = useMemo(() => {
-    const t = { cash: 0, monthly: 0, prepaid: 0, customers: 0, orders: 0 };
-    for (const r of selectedVisible) {
-      t.customers += 1;
-      t.orders += r.unpaidOrderCount;
-      t.cash += r.unpaidByType.cash.amount;
-      t.monthly += r.unpaidByType.monthly.amount;
-      t.prepaid += r.unpaidByType.prepaid.amount;
-    }
-    return t;
-  }, [selectedVisible]);
-
-  const toggleCode = (code: string) => {
-    setSelectedCodes((prev) => {
-      const next = new Set(prev);
-      if (next.has(code)) next.delete(code);
-      else next.add(code);
-      return next;
-    });
+    const warn = (e: BeforeUnloadEvent) => { if (dirty) { e.preventDefault(); e.returnValue = ""; } };
+    window.addEventListener("beforeunload", warn); return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+  const mutate = (change: (d: Snapshot) => void) => {
+    if (!draft || applied || busy) return;
+    const d = structuredClone(draft); change(d); d.totalsConfirmed = false; setDraft(d); setDirty(true); setMessage("");
   };
-
-  const selectAllVisible = () => {
-    setSelectedCodes(new Set(visibleRows.filter((r) => r.mapped).map((r) => r.customerCode)));
+  const editRow = (key: string, change: (r: Row) => void, preserveReview = false) => mutate(d => {
+    const r = d.rows.find(r => r.key === key)!; change(r); if (!preserveReview) r.reviewed = false;
+  });
+  const run = async (action: () => Promise<void>) => { setBusy(true); setError(""); setMessage(""); try { await action(); } catch (e) { setError(e instanceof Error ? e.message : "操作失敗"); } finally { setBusy(false); } };
+  const save = async () => { const s = await request("/draft", "PUT", { revision: state?.revision, snapshot: draft }); accept(s); return s; };
+  const generate = () => run(async () => { accept(await request("/draft", "POST", { startDate, revision: state?.revision })); setStep(2); setMessage("交接草稿已保存，尚未寫入任何帳務餘額。"); });
+  const rows = useMemo(() => draft?.rows.filter(r => (!onlyPending || !r.reviewed || !r.included) && `${r.code} ${r.name}`.includes(search.trim())) ?? [], [draft, search, onlyPending]);
+  const pageCount = Math.max(1, Math.ceil(rows.length / 100));
+  const currentPage = Math.min(page, pageCount);
+  const pageRows = rows.slice((currentPage - 1) * 100, currentPage * 100);
+  const bulkRows = pageRows.filter(r => r.included && r.customerId && !r.reviewed && !r.warnings.length && !r.orders.length && (r.prepayment === null || r.prepayment === 0));
+  useEffect(() => { setPage(1); }, [search, onlyPending]);
+  const totals = useMemo(() => {
+    const t: Record<string, number> = { cash: 0, monthly_billed: 0, monthly_pending: 0, prepayment: 0, prepaid: 0, barrels: 0, included: 0, reviewed: 0, excluded: 0 };
+    for (const r of draft?.rows ?? []) {
+      if (!r.included) { t.excluded++; continue; } t.included++; if (r.reviewed) t.reviewed++;
+      t.prepayment += r.prepayment ?? 0; t.prepaid += r.prepaidBarrels; t.barrels += r.addresses.reduce((s, a) => s + a.barrels, 0);
+      for (const o of r.orders) if (o.disposition !== "exclude") t[o.disposition] += o.finalAmount;
+    } return t;
+  }, [draft]);
+  const exportReport = () => {
+    if (!draft) return;
+    const cell = (v: unknown) => `"${String(v ?? "").replace(/^[=+@-]/, "'$&").replace(/"/g, '""')}"`;
+    const lines: unknown[][] = [["啟用日", draft.startDate, "截止日", draft.cutoffDate, "狀態", applied ? "已啟用" : "草稿"], ["客戶代號", "客戶", "承接", "項目", "來源", "金額或桶數", "到期日", "處理說明"]];
+    for (const r of draft.rows) {
+      for (const o of r.orders) lines.push([r.code, r.name, r.included ? "是" : "否", labels[o.disposition], o.arNo ? `${o.id} → ${o.arNo}` : o.id, o.finalAmount, o.dueDate, o.note || r.note]);
+      for (const [label, value] of [["金額預收", r.prepayment], ["預付桶", r.prepaidBarrels]]) lines.push([r.code, r.name, r.included ? "是" : "否", label, "交接核對", value, "", r.note]);
+      for (const a of r.addresses) lines.push([r.code, r.name, r.included ? "是" : "否", "地址空桶", a.label, a.barrels, "", r.note]);
+    }
+    const url = URL.createObjectURL(new Blob(["\uFEFF" + lines.map(l => l.map(cell).join(",")).join("\r\n")], { type: "text/csv;charset=utf-8" }));
+    const a = document.createElement("a"); a.href = url; a.download = `上線交接-${draft.startDate}.csv`; a.click(); URL.revokeObjectURL(url);
   };
-
-  const clearSelection = () => setSelectedCodes(new Set());
-
-  const applyOpening = async (dryRun: boolean) => {
-    if (selectedVisible.length === 0) {
-      window.alert("請先勾選已對應主檔的客戶");
-      return;
-    }
-    if (!dryRun) {
-      const ok = window.confirm(
-        `將為 ${selectedVisible.length} 位客戶寫入期初應收（粒度：${
-          granularity === "by_order" ? "每舊單一筆" : "每客戶每結帳方式一筆"
-        }）。\n不會建立新系統訂單。\n確定繼續？`,
-      );
-      if (!ok) return;
-    }
-    setApplying(true);
-    setErr(null);
-    setMsg(null);
-    try {
-      const res = await fetch("/api/legacy-cutover/apply", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          cutoverDate,
-          asOf,
-          billingTypes,
-          granularity,
-          customerCodes: selectedVisible.map((r) => r.customerCode),
-          dryRun,
-        }),
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok || !data?.ok) {
-        setErr(typeof data?.message === "string" ? data.message : "開帳失敗");
-        return;
-      }
-      const r = data.data as ApplyResult;
-      setMsg(
-        `${dryRun ? "預估" : "完成"}：建立 ${r.created}、略過 ${r.skipped}、失敗 ${r.failed}` +
-          (r.errors.length ? `；錯誤例：${r.errors.slice(0, 3).join("；")}` : ""),
-      );
-      if (!dryRun) void loadPreview();
-    } catch {
-      setErr("開帳失敗");
-    } finally {
-      setApplying(false);
-    }
-  };
-
-  const syncBalances = async (dryRun: boolean) => {
-    if (selectedVisible.length === 0) {
-      window.alert("請先勾選客戶");
-      return;
-    }
-    if (!dryRun) {
-      const ok = window.confirm(
-        `將從舊庫同步 ${selectedVisible.length} 位客戶的空桶數與預付剩餘桶到新系統主檔。確定？`,
-      );
-      if (!ok) return;
-    }
-    setSyncing(true);
-    setErr(null);
-    setMsg(null);
-    try {
-      const res = await fetch("/api/legacy-cutover/sync-balances", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          customerCodes: selectedVisible.map((r) => r.customerCode),
-          dryRun,
-        }),
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok || !data?.ok) {
-        setErr(typeof data?.message === "string" ? data.message : "同步失敗");
-        return;
-      }
-      const r = data.data as SyncResult;
-      setMsg(
-        `${dryRun ? "預估同步" : "同步完成"}：更新 ${r.updated}、略過 ${r.skipped}、失敗 ${r.failed}`,
-      );
-      if (!dryRun) void loadPreview();
-    } catch {
-      setErr("同步失敗");
-    } finally {
-      setSyncing(false);
-    }
-  };
-
-  return (
-    <section className="card cutover-page">
-      <header className="cutover-page__header">
-        <div>
-          <h2 className="card__title">切換日開帳</h2>
-          <p className="cutover-page__lead">
-            舊庫未收款 → 新系統期初應收（不建訂單）。之後到 AR 沖帳收款。
-          </p>
-        </div>
-        <div className="cutover-page__header-links">
-          <Link className="btn btn--ghost btn--sm" to="/data/legacy-orders">
-            歷史訂單
-          </Link>
-          <Link className="btn btn--ghost btn--sm" to="/reports/billing-ar">
-            AR 沖帳
-          </Link>
-        </div>
-      </header>
-
-      <div className="cutover-panel">
-        <div className="cutover-panel__filters">
-          <label className="cutover-field">
-            <span>未收款截止</span>
-            <input type="date" value={asOf} onChange={(e) => setAsOf(e.target.value)} />
-          </label>
-          <label className="cutover-field">
-            <span>切換日</span>
-            <input type="date" value={cutoverDate} onChange={(e) => setCutoverDate(e.target.value)} />
-          </label>
-          <label className="cutover-field cutover-field--grow">
-            <span>客戶代號</span>
-            <input
-              value={customerFilter}
-              onChange={(e) => setCustomerFilter(e.target.value)}
-              placeholder="空白＝全部"
-              autoComplete="off"
-            />
-          </label>
-          <div className="cutover-field">
-            <span>結帳類型</span>
-            <div className="cutover-type-pills" role="group" aria-label="結帳類型">
-              {ALL_TYPES.map((t) => {
-                const on = billingTypes.includes(t);
-                return (
-                  <button
-                    key={t}
-                    type="button"
-                    className={`cutover-type-pill${on ? " cutover-type-pill--on" : ""}`}
-                    aria-pressed={on}
-                    onClick={() => toggleType(t)}
-                  >
-                    {billingTypeLabel(t)}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-          <button
-            type="button"
-            className="btn btn--primary btn--sm cutover-panel__reload"
-            disabled={loading}
-            onClick={() => void loadPreview()}
-          >
-            {loading ? "載入中…" : "預覽"}
-          </button>
-        </div>
-
-        {preview ? (
-          <div className="cutover-summary" aria-label="預覽彙總">
-            <div className="cutover-summary__item">
-              <span className="cutover-summary__label">客戶</span>
-              <strong className="cutover-summary__value">{preview.customerCount}</strong>
-              <span className="cutover-summary__hint">
-                對應 {preview.mappedCustomerCount}／未對應 {preview.unmappedCustomerCount}
-              </span>
-            </div>
-            <div className="cutover-summary__item">
-              <span className="cutover-summary__label">舊單</span>
-              <strong className="cutover-summary__value">{preview.orderCount}</strong>
-            </div>
-            <div className="cutover-summary__item">
-              <span className="cutover-summary__label">現金</span>
-              <strong className="cutover-summary__value">$ {moneyText(preview.totals.cash)}</strong>
-            </div>
-            <div className="cutover-summary__item">
-              <span className="cutover-summary__label">月結</span>
-              <strong className="cutover-summary__value">$ {moneyText(preview.totals.monthly)}</strong>
-            </div>
-            <div className="cutover-summary__item">
-              <span className="cutover-summary__label">預收$</span>
-              <strong className="cutover-summary__value">$ {moneyText(preview.totals.prepaid)}</strong>
-            </div>
-          </div>
-        ) : null}
-      </div>
-
-      {err ? <div className="alert alert--error">{err}</div> : null}
-      {msg ? <div className="alert alert--success">{msg}</div> : null}
-
-      {preview ? (
-        <>
-          <div className="cutover-toolbar">
-            <div className="cutover-toolbar__left">
-              <label className="cutover-check">
-                <input type="checkbox" checked={onlyMapped} onChange={(e) => setOnlyMapped(e.target.checked)} />
-                只看已對應
-              </label>
-              <label className="cutover-check">
-                <input
-                  type="checkbox"
-                  checked={onlyUnsyncedOpening}
-                  onChange={(e) => setOnlyUnsyncedOpening(e.target.checked)}
-                />
-                隱藏已開期初
-              </label>
-              <button type="button" className="btn btn--ghost btn--sm" onClick={selectAllVisible}>
-                全選
-              </button>
-              <button type="button" className="btn btn--ghost btn--sm" onClick={clearSelection}>
-                清除
-              </button>
-              <label className="cutover-granularity">
-                <span>粒度</span>
-                <select
-                  value={granularity}
-                  onChange={(e) => setGranularity(e.target.value as "by_order" | "by_customer")}
-                >
-                  <option value="by_order">每舊單一筆</option>
-                  <option value="by_customer">每客戶×類型一筆</option>
-                </select>
-              </label>
-            </div>
-            <div className="cutover-toolbar__right">
-              <span className="cutover-toolbar__selected">
-                已選 <strong>{selectedVisible.length}</strong> 戶
-                <span className="cutover-toolbar__selected-amt">
-                  $ {moneyText(selectedTotals.cash + selectedTotals.monthly + selectedTotals.prepaid)}
-                </span>
-                <span className="cutover-toolbar__selected-break">
-                  現 {moneyText(selectedTotals.cash)}／月 {moneyText(selectedTotals.monthly)}／預{" "}
-                  {moneyText(selectedTotals.prepaid)} · {selectedTotals.orders} 單
-                </span>
-              </span>
-              <div className="cutover-toolbar__actions">
-                <button
-                  type="button"
-                  className="btn btn--ghost btn--sm"
-                  disabled={applying || selectedVisible.length === 0}
-                  onClick={() => void applyOpening(true)}
-                >
-                  預估筆數
-                </button>
-                <button
-                  type="button"
-                  className="btn btn--primary btn--sm"
-                  disabled={applying || selectedVisible.length === 0}
-                  onClick={() => void applyOpening(false)}
-                >
-                  {applying ? "寫入中…" : "寫入期初應收"}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn--ghost btn--sm"
-                  disabled={syncing || selectedVisible.length === 0}
-                  onClick={() => void syncBalances(false)}
-                  title="從舊庫同步空桶與預付剩餘桶"
-                >
-                  {syncing ? "同步中…" : "同步桶數"}
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div className="cutover-table-wrap">
-            <table className="cutover-table">
-              <thead>
-                <tr>
-                  <th className="cutover-table__check" />
-                  <th className="cutover-table__customer">客戶</th>
-                  <th>類型</th>
-                  <th className="cutover-table__num">未收合計</th>
-                  <th className="cutover-table__num">現金</th>
-                  <th className="cutover-table__num">月結</th>
-                  <th className="cutover-table__num">預收$</th>
-                  <th className="cutover-table__bal">舊庫桶／預付</th>
-                  <th className="cutover-table__bal">新系統桶／預付</th>
-                  <th className="cutover-table__num">現有 AR</th>
-                  <th className="cutover-table__actions">操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleRows.length === 0 ? (
-                  <tr>
-                    <td colSpan={11}>
-                      <p className="legacy-order-empty" style={{ marginTop: 0 }}>
-                        此條件沒有未收款資料
-                      </p>
-                    </td>
-                  </tr>
-                ) : (
-                  visibleRows.map((r) => (
-                    <Fragment key={r.customerCode}>
-                      <tr className={!r.mapped ? "cutover-table__row--muted" : undefined}>
-                        <td className="cutover-table__check">
-                          <input
-                            type="checkbox"
-                            disabled={!r.mapped}
-                            checked={selectedCodes.has(r.customerCode)}
-                            onChange={() => toggleCode(r.customerCode)}
-                          />
-                        </td>
-                        <td className="cutover-table__customer">
-                          <div className="cutover-table__code mono-text">{r.customerCode}</div>
-                          <div className="cutover-table__name" title={r.customerName ?? undefined}>
-                            {r.customerName ?? "—"}
-                          </div>
-                          <div className="cutover-table__tags">
-                            {!r.mapped ? <span className="badge badge--warn">未對應主檔</span> : null}
-                            {r.newSystem.existingOpeningArCount > 0 ? (
-                              <span className="badge badge--default">已有期初 {r.newSystem.existingOpeningArCount}</span>
-                            ) : null}
-                          </div>
-                        </td>
-                        <td className="cutover-table__type">
-                          {r.billingTypePreferred ? billingTypeLabel(r.billingTypePreferred) : "—"}
-                        </td>
-                        <td className="cutover-table__num">
-                          <strong>$ {moneyText(r.unpaidTotal)}</strong>
-                          <span className="cutover-table__sub">{r.unpaidOrderCount} 單</span>
-                        </td>
-                        <td className="cutover-table__num">$ {moneyText(r.unpaidByType.cash.amount)}</td>
-                        <td className="cutover-table__num">$ {moneyText(r.unpaidByType.monthly.amount)}</td>
-                        <td className="cutover-table__num">$ {moneyText(r.unpaidByType.prepaid.amount)}</td>
-                        <td className="cutover-table__bal">
-                          <span>{r.legacyBalances.barrelsOnSite ?? "—"}</span>
-                          <span className="cutover-table__sep">／</span>
-                          <span>{r.legacyBalances.prepaidBarrelBalance ?? "—"}</span>
-                        </td>
-                        <td className="cutover-table__bal">
-                          <span>{r.newSystem.barrelsOnSite ?? "—"}</span>
-                          <span className="cutover-table__sep">／</span>
-                          <span>{r.newSystem.prepaidBarrelBalance ?? "—"}</span>
-                        </td>
-                        <td className="cutover-table__num">
-                          {r.newSystem.openArOutstanding == null
-                            ? "—"
-                            : `$ ${moneyText(r.newSystem.openArOutstanding)}`}
-                        </td>
-                        <td className="cutover-table__actions">
-                          <button
-                            type="button"
-                            className="btn btn--ghost btn--sm"
-                            onClick={() => setExpanded((v) => (v === r.customerCode ? null : r.customerCode))}
-                          >
-                            {expanded === r.customerCode ? "收合" : "明細"}
-                          </button>
-                          {r.newCustomerId ? (
-                            <Link
-                              className="btn btn--ghost btn--sm"
-                              to={`/data/legacy-orders?customerId=${r.newCustomerId}`}
-                            >
-                              歷史
-                            </Link>
-                          ) : null}
-                        </td>
-                      </tr>
-                      {expanded === r.customerCode ? (
-                        <tr className="cutover-table__detail-row">
-                          <td colSpan={11}>
-                            <div className="cutover-order-detail">
-                              <table className="legacy-order-detail-table">
-                                <thead>
-                                  <tr>
-                                    <th>舊單號</th>
-                                    <th>出貨日</th>
-                                    <th>結帳</th>
-                                    <th>狀態</th>
-                                    <th className="cutover-table__num">應收</th>
-                                    <th className="cutover-table__num">已匯</th>
-                                    <th className="cutover-table__num">未收</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {r.orders.map((o) => (
-                                    <tr key={o.orderId}>
-                                      <td className="mono-text">{o.orderId}</td>
-                                      <td>{o.orderDay ?? "—"}</td>
-                                      <td>{o.billingLabel ?? billingTypeLabel(o.billingType)}</td>
-                                      <td>{o.orderOk ? "已完成" : "未完成"}</td>
-                                      <td className="cutover-table__num">$ {moneyText(o.amount)}</td>
-                                      <td className="cutover-table__num">$ {moneyText(o.remitted)}</td>
-                                      <td className="cutover-table__num">
-                                        <strong>$ {moneyText(o.outstanding)}</strong>
-                                      </td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          </td>
-                        </tr>
-                      ) : null}
-                    </Fragment>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="cutover-help">
-            <p className="cutover-help__title">說明</p>
-            <ul>
-              <li>未收款＝舊庫 collect_OK ≠ True，並已扣該單匯款。</li>
-              <li>預收$＝舊單標「預收」但錢未收齊；預付剩餘桶請用「同步桶數」。</li>
-              <li>月結建議切換前先在舊系統結完本期，再核對後開帳。</li>
-              <li>重複開帳會略過已寫入項目；清空交易資料可一併清除期初。</li>
-            </ul>
-          </div>
-        </>
-      ) : null}
-    </section>
-  );
+  return <section className="handover-page">
+    <header className="handover-header"><div><span className="handover-eyebrow">舊系統 → 新系統</span><h2>上線交接</h2><p>把尚未完成的帳務與桶數核對清楚，再一次啟用。</p></div><Link className="btn btn--ghost" to="/reports/billing-ar">前往帳務作業台</Link></header>
+    <nav className="handover-steps" aria-label="交接步驟">{["設定啟用日", "核對客戶交接表", "核對總額", "正式啟用"].map((label, i) => <button key={label} className={step === i + 1 ? "is-active" : ""} disabled={busy || (!draft && i > 0)} onClick={() => setStep(i + 1)}><span>{i + 1}</span>{label}</button>)}</nav>
+    {error && <div className="alert alert--error handover-message" role="alert">{error}</div>}
+    {message && <div className="alert handover-message" role="status">{message}</div>}
+    {confirmation && <dialog ref={dialogRef} className="handover-confirm-box" onCancel={() => setConfirmation(null)} aria-labelledby="handover-confirm-title"><h3 id="handover-confirm-title">{confirmation === "regenerate" ? "重新產生交接草稿？" : confirmation === "review" ? "批次確認本頁正常客戶？" : "確認正式啟用交接？"}</h3><p>{confirmation === "regenerate" ? "這會替換尚未啟用的草稿與人工核對內容。" : confirmation === "review" ? `本頁 ${bulkRows.length} 位客戶沒有待處理舊單或異常。確認後金額預收設為 0，保留畫面的預付桶及地址空桶並標記已核對。請先確認這些客戶確實沒有金額預收。` : `將啟用 ${draft?.startDate} 的交接，共 ${totals.included} 位客戶。成功後鎖定，不能再覆寫餘額。`}</p><div className="handover-footer"><button className="btn" onClick={() => setConfirmation(null)}>取消</button><button className="btn btn--primary" onClick={() => { const action = confirmation; setConfirmation(null); if (action === "regenerate") void generate(); else if (action === "review") { const keys = new Set(bulkRows.map(r => r.key)); mutate(d => { for (const r of d.rows) if (keys.has(r.key)) { r.prepayment = 0; r.reviewed = true; } }); } else void run(async () => { accept(await request("/apply", "POST", { revision: state?.revision })); setMessage("交接已成功啟用，所有帳務一次完成。"); }); }}>{confirmation === "regenerate" ? "確認重新產生" : confirmation === "review" ? "確認無金額預收並核對" : "確認啟用"}</button></div></dialog>}
+    {applied && <div className="handover-success"><strong>交接已啟用，餘額與來源紀錄已鎖定。</strong><p>{state?.appliedAt && new Date(state.appliedAt).toLocaleString("zh-TW")} 完成。後續收款請在新系統處理；差異以帳務調整保留紀錄。</p></div>}
+    {step === 1 && <div className="card handover-panel"><h3>新系統從哪一天開始？</h3><p>自動承接前一天營業結束的資料。建議選擇月結邊界，先完成舊系統結帳，再移交尚未收清的餘額。</p>
+      <label className="handover-field">新系統啟用日<input type="date" value={startDate} disabled={busy || applied} onInput={e => setStartDate(e.currentTarget.value)} onChange={e => setStartDate(e.target.value)} /></label>
+      <p>本次選擇啟用日：<strong>{startDate || "尚未選擇"}</strong></p>
+      <div className="handover-note">舊庫必須是截止日的凍結資料或備份。歷史現金收款與桶數不能靠修改日期還原。預收金額需依舊帳人工填入，沒有預收也請明確填 0。</div>
+      <button className="btn btn--primary" disabled={busy || applied || !state || !startDate} onClick={() => {
+        if (draft) setConfirmation("regenerate"); else void generate();
+      }}>{busy ? "讀取中…" : draft ? "重新產生交接草稿" : "產生交接草稿"}</button></div>}
+    {draft && <>
+      <div className="handover-meta"><span>啟用 {draft.startDate} · 承接截至 {draft.cutoffDate}</span><span>快照 {new Date(draft.capturedAt).toLocaleString("zh-TW")} · 版本 {state?.revision}{dirty ? " · 有未儲存變更" : " · 已保存"}</span></div>
+      {!!draft.blockers.length && <div className="alert alert--error"><strong>正式啟用前必須處理</strong><ul>{draft.blockers.map((b, i) => <li key={i}>{b}</li>)}</ul></div>}
+      {step === 2 && <div className="card handover-panel">
+        <div className="handover-toolbar"><label className="handover-field">搜尋客戶<input placeholder="客戶代號或名稱" value={search} onChange={e => setSearch(e.target.value)} /></label><label><input type="checkbox" checked={onlyPending} onChange={e => setOnlyPending(e.target.checked)} /> 只看待確認／排除</label><span>已確認 {totals.reviewed} / {totals.included} 位 · 排除 {totals.excluded} 位</span></div>
+        <p>展開客戶逐項核對。月結請區分已出帳與尚未出帳；未配送單留作待辦移交。</p>
+        <div className="handover-toolbar handover-pagination"><span>符合 {rows.length} 位 · 第 {currentPage} / {pageCount} 頁（每頁 100 位）</span><button className="btn" disabled={currentPage === 1 || busy} onClick={() => setPage(currentPage - 1)}>上一頁</button><button className="btn" disabled={currentPage === pageCount || busy} onClick={() => setPage(currentPage + 1)}>下一頁</button>{!applied && <button className="btn" disabled={busy || !bulkRows.length} onClick={() => setConfirmation("review")}>批次確認本頁正常客戶（{bulkRows.length}）</button>}</div>
+        <div className="handover-customers">{!rows.length && <p>沒有符合條件的客戶。</p>}{pageRows.map(r => <article key={r.key} className={`handover-customer ${!r.included ? "is-excluded" : ""}`}>
+          <button className="handover-customer-head" aria-expanded={expanded === r.key} onClick={() => setExpanded(expanded === r.key ? null : r.key)}><span><b>{r.code} · {r.name}</b><small>{r.orders.length} 筆待處理舊單 · 舊預付 {r.sourcePrepaidBarrels} 桶 · 舊空桶 {r.legacyBarrels} 桶</small></span><span className={`handover-status ${r.reviewed ? "is-done" : ""}`}>{!r.included ? "已排除" : r.reviewed ? "已確認" : r.warnings.length ? "待處理異常" : "待核對"}</span><span>{expanded === r.key ? "收合 −" : "展開 ＋"}</span></button>
+          {expanded === r.key && <fieldset disabled={busy || applied} className="handover-customer-body">
+            <label><input type="checkbox" checked={r.included} onChange={e => editRow(r.key, r => { r.included = e.target.checked; })} /> 納入本次交接</label>
+            {!!r.warnings.length && <ul className="handover-warnings">{r.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>}
+            {r.included && <><div className="handover-balance-fields"><label className="handover-field">金額預收（元，無則填 0）<input type="number" min="0" step="0.01" value={r.prepayment ?? ""} onChange={e => editRow(r.key, r => { r.prepayment = e.target.value === "" ? null : Number(e.target.value); })} /></label><label className="handover-field">預付桶數<input type="number" step="1" value={r.prepaidBarrels} onChange={e => editRow(r.key, r => { r.prepaidBarrels = Number(e.target.value); })} /></label></div>
+            <h4>各配送地址空桶</h4><div className="handover-addresses">{r.addresses.map(a => <label className="handover-field" key={a.id}>{a.label}<input type="number" min="0" step="1" value={a.barrels} onChange={e => editRow(r.key, r => { r.addresses.find(x => x.id === a.id)!.barrels = Number(e.target.value); })} /></label>)}{!r.addresses.length && <p>尚無配送地址</p>}</div>
+            <h4>舊單逐筆交接</h4>{r.orders.map(o => <div className="handover-order" key={o.id}><strong>舊單 {o.id}</strong><small>{o.day} · {o.billing} · {o.completed ? "配送完成" : "未完成配送"} · 已收 {moneyText(o.received)}／餘額 {moneyText(o.outstanding)}</small><div className="handover-order-fields">
+              <label className="handover-field">交接方式<select value={o.disposition} onChange={e => editRow(r.key, r => { r.orders.find(x => x.id === o.id)!.disposition = e.target.value; })}>{Object.entries(labels).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>
+              <label className="handover-field">交接金額<input type="number" min="0" step="0.01" value={o.finalAmount} onChange={e => editRow(r.key, r => { r.orders.find(x => x.id === o.id)!.finalAmount = Number(e.target.value); })} /></label>
+              {o.disposition !== "monthly_pending" && o.disposition !== "exclude" && <label className="handover-field">到期日<input type="date" value={o.dueDate} onInput={e => { const value = e.currentTarget.value; editRow(r.key, r => { r.orders.find(x => x.id === o.id)!.dueDate = value; }); }} onChange={e => editRow(r.key, r => { r.orders.find(x => x.id === o.id)!.dueDate = e.target.value; })} /></label>}
+              {o.disposition === "monthly_pending" && <label className="handover-field">待結金額口徑<select value={o.invoiceMode} onChange={e => editRow(r.key, r => { r.orders.find(x => x.id === o.id)!.invoiceMode = e.target.value; })}><option value="none">不開發票</option><option value="tax_inclusive">含稅</option><option value="tax_exclusive">未稅（結帳外加稅）</option></select></label>}
+              <label className="handover-field handover-field--wide">舊單調整／排除原因<input value={o.note} maxLength={400} placeholder="未配送請記錄由哪個系統接續處理" onChange={e => editRow(r.key, r => { r.orders.find(x => x.id === o.id)!.note = e.target.value; })} /></label>
+            </div>{o.disposition === "monthly_pending" && <p className="handover-note">開立月結時才產生應收，請選擇與後續月結相同的稅額口徑。已有部分收款者，請先在舊系統結帳，以已出帳餘額承接。</p>}</div>)}</>}
+            <label className="handover-field">客戶核對說明／排除後處理方式<textarea maxLength={400} value={r.note} onChange={e => editRow(r.key, r => { r.note = e.target.value; })} placeholder="有異常、調整桶數或排除客戶時必填" /></label>
+            {r.included && <label className="handover-review"><input type="checkbox" checked={r.reviewed} onChange={e => editRow(r.key, r => { r.reviewed = e.target.checked; }, true)} /> 已逐項核對此客戶的欠款、月結、預收與桶數</label>}
+          </fieldset>}
+        </article>)}</div>
+        <div className="handover-footer"><button className="btn" disabled={busy || applied || !dirty} onClick={() => void run(async () => { await save(); setMessage("草稿已保存，尚未正式入帳。"); })}>儲存草稿</button><button className="btn btn--primary" disabled={busy} onClick={() => void run(async () => { if (dirty) await save(); setStep(3); })}>下一步：核對總額</button></div>
+      </div>}
+      {(step === 3 || step === 4) && <div className="card handover-panel"><h3>{step === 3 ? "核對各類交接總額" : applied ? "交接完成" : "正式啟用前確認"}</h3><div className="handover-totals">{[["一般未收款", moneyText(totals.cash)], ["月結已出帳未收", moneyText(totals.monthly_billed)], ["月結尚未出帳", moneyText(totals.monthly_pending)], ["金額預收", moneyText(totals.prepayment)], ["預付桶", `${totals.prepaid} 桶`], ["各地址空桶", `${totals.barrels} 桶`]].map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div>
+        <p>交接 {totals.included} 位客戶，已確認 {totals.reviewed} 位，排除 {totals.excluded} 位。待結月結與預收分開保留，不在此互相抵銷。</p>
+        {!applied && <fieldset disabled={busy} className="handover-confirmations"><label><input type="checkbox" checked={draft.sourceFrozen} onChange={e => mutate(d => { d.sourceFrozen = e.target.checked; })} /> 舊系統已停止新增帳務；資料為 {draft.cutoffDate} 營業結束的凍結資料，收款與桶數已核對。</label><label><input type="checkbox" checked={draft.totalsConfirmed} onChange={e => { setDraft({ ...draft, totalsConfirmed: e.target.checked }); setDirty(true); }} /> 各類總額已與舊系統核對，排除項目已有後續處理安排。</label></fieldset>}
+        {!applied && state && !dirty && !!state.errors.length && <div className="handover-warnings"><strong>尚有 {state.errors.length} 項待處理</strong><ul>{state.errors.slice(0, 15).map((e, i) => <li key={i}>{e}</li>)}</ul>{state.errors.length > 15 && <p>其餘請回客戶交接表逐戶核對。</p>}</div>}
+        <div className="handover-footer"><button className="btn" onClick={exportReport}>下載交接清單 CSV</button>{!applied && <><button className="btn" disabled={busy} onClick={() => setStep(2)}>返回客戶核對</button><button className="btn btn--primary" disabled={busy} onClick={() => void run(async () => { const s = dirty ? await save() : state!; if (s.errors.length) { setMessage("已保存，請處理待確認項目。"); return; } setStep(4); setMessage("核對通過，可正式啟用。"); })}>儲存並檢查</button></>}</div>
+        {step === 4 && !applied && <div className="handover-activate"><p>正式啟用會一次寫入期初應收、待結月結、預收及桶數，成功後鎖定；重複提交不會重複開帳。</p><button className="btn btn--primary" disabled={busy || dirty || !state || state.errors.length > 0} onClick={() => setConfirmation("activate")}>{busy ? "啟用中…" : "正式啟用交接"}</button></div>}
+      </div>}
+    </>}
+  </section>;
 }

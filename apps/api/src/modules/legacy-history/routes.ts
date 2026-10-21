@@ -1,13 +1,9 @@
 import type { Express, Request, Response } from "express";
+import { syncLegacyMasters } from "./master-sync.js";
 import type { PrismaClient } from "@prisma/client";
 import { describeDbUrl, getLegacyPrisma, resolveLegacyDatabaseUrl } from "./client.js";
-import {
-  applyCutoverOpeningAr,
-  buildCutoverPreview,
-  syncLegacyBarrelBalances,
-  type CutoverBillingType,
-} from "./cutover.js";
 import { getLegacyOrderDetail, listLegacyOrdersForCustomer } from "./queries.js";
+import { applyHandover, buildHandover, mergeDraft, readHandover, saveHandover, totals, validationErrors } from "./handover.js";
 
 type AuthUser = {
   id: bigint;
@@ -47,6 +43,65 @@ function parseOffset(raw: unknown): number {
 
 export function registerLegacyHistoryRoutes(args: RegisterArgs): void {
   const { app, prisma, getAuthUser, requireRole, toBigInt } = args;
+  let syncingMasters = false;
+  app.post("/api/legacy-history/sync-masters", async (req, res) => {
+    if (!requireRole(req, res, ["admin"])) return;
+    if (syncingMasters) { res.status(409).json({ ok: false, message: "同步進行中，請稍後再試。" }); return; }
+    const legacy = getLegacyPrisma();
+    if (!legacy) { res.status(503).json({ ok: false, message: "未設定舊庫連線" }); return; }
+    syncingMasters = true;
+    try { res.json({ ok: true, data: await syncLegacyMasters(legacy, prisma) }); }
+    catch (e) { console.error("Master sync failed", e); res.status(409).json({ ok: false, message: "同步失敗，所有變更已回復。請檢查舊庫連線、資料長度及舊新對照後重試。" }); }
+    finally { syncingMasters = false; }
+  });
+
+  app.all(["/api/legacy-cutover/preview", "/api/legacy-cutover/apply", "/api/legacy-cutover/sync-balances"], (req, res) => {
+    if (!requireRole(req, res, ["admin", "accounting"])) return;
+    res.status(410).json({ ok: false, message: "舊版開帳及覆寫同步已停用，請改用上線交接草稿。" });
+  });
+  const handoverResponse = (s: Awaited<ReturnType<typeof readHandover>>) => ({ ...s,
+    totals: s.snapshot ? totals(s.snapshot) : null, errors: s.snapshot ? validationErrors(s.snapshot) : [],
+  });
+  const handoverError = (res: Response, e: unknown) => {
+    const detail = e instanceof Error ? e.message : String(e);
+    const message = /doesn't exist|does not exist|P2021/.test(detail)
+      ? "請先執行資料庫結構升級（004_cutover_handover），再使用上線交接。" : detail;
+    res.status(409).json({ ok: false, message });
+  };
+  app.get("/api/legacy-cutover/handover", async (req, res) => {
+    if (!requireRole(req, res, ["admin", "accounting"])) return;
+    try { res.json({ ok: true, data: handoverResponse(await readHandover(prisma)) }); }
+    catch (e) { handoverError(res, e); }
+  });
+  app.post("/api/legacy-cutover/handover/draft", async (req, res) => {
+    const auth = requireRole(req, res, ["admin", "accounting"]); if (!auth) return;
+    const legacy = getLegacyPrisma();
+    if (!legacy) { res.status(503).json({ ok: false, message: "未設定舊庫連線" }); return; }
+    try {
+      const current = await readHandover(prisma);
+      if (current.status === "applied") throw new Error("交接已啟用，不能重新產生");
+      if (current.revision !== req.body?.revision) throw new Error("草稿版本不同，請重新載入");
+      const snapshot = await buildHandover(legacy, prisma, req.body?.startDate);
+      res.json({ ok: true, data: handoverResponse(await saveHandover(prisma, current.revision, snapshot, auth.id)) });
+    } catch (e) { handoverError(res, e); }
+  });
+  app.put("/api/legacy-cutover/handover/draft", async (req, res) => {
+    const auth = requireRole(req, res, ["admin", "accounting"]); if (!auth) return;
+    try {
+      const current = await readHandover(prisma);
+      if (!current.snapshot || current.revision !== req.body?.revision) throw new Error("草稿版本不同，請重新載入");
+      const snapshot = mergeDraft(current.snapshot, req.body?.snapshot);
+      res.json({ ok: true, data: handoverResponse(await saveHandover(prisma, current.revision, snapshot, auth.id)) });
+    } catch (e) { handoverError(res, e); }
+  });
+  app.post("/api/legacy-cutover/handover/apply", async (req, res) => {
+    const auth = requireRole(req, res, ["admin", "accounting"]); if (!auth) return;
+    const legacy = getLegacyPrisma();
+    if (!legacy) { res.status(503).json({ ok: false, message: "未設定舊庫連線" }); return; }
+    try {
+      res.json({ ok: true, data: handoverResponse(await applyHandover(legacy, prisma, req.body?.revision, auth.id)) });
+    } catch (e) { handoverError(res, e); }
+  });
 
   app.get("/api/legacy-history/status", async (req, res) => {
     const auth = getAuthUser(req);
@@ -235,114 +290,4 @@ export function registerLegacyHistoryRoutes(args: RegisterArgs): void {
     }
   });
 
-  function parseBillingTypes(raw: unknown): CutoverBillingType[] {
-    const allowed: CutoverBillingType[] = ["cash", "monthly", "prepaid"];
-    if (raw == null || raw === "") return [...allowed];
-    const parts = String(raw)
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const picked = allowed.filter((t) => parts.includes(t));
-    return picked.length ? picked : [...allowed];
-  }
-
-  app.get("/api/legacy-cutover/preview", async (req, res) => {
-    if (!requireRole(req, res, ["admin", "accounting", "dispatcher"])) return;
-    const legacy = getLegacyPrisma();
-    if (!legacy) {
-      res.status(503).json({ ok: false, message: "舊庫連線未設定（LEGACY_DATABASE_URL）" });
-      return;
-    }
-    const asOf = parseYmd(req.query.asOf);
-    if (req.query.asOf && !asOf) {
-      res.status(400).json({ ok: false, message: "asOf 須為 YYYY-MM-DD" });
-      return;
-    }
-    const customerCode =
-      typeof req.query.customer === "string" && req.query.customer.trim()
-        ? req.query.customer.trim()
-        : null;
-    try {
-      const data = await buildCutoverPreview(legacy, prisma, {
-        asOf,
-        customerCode,
-        billingTypes: parseBillingTypes(req.query.billingTypes),
-      });
-      res.json({ ok: true, data });
-    } catch (e) {
-      res.status(502).json({
-        ok: false,
-        message: `預覽失敗：${e instanceof Error ? e.message : String(e)}`,
-      });
-    }
-  });
-
-  app.post("/api/legacy-cutover/apply", async (req, res) => {
-    const auth = requireRole(req, res, ["admin", "accounting"]);
-    if (!auth) return;
-    const legacy = getLegacyPrisma();
-    if (!legacy) {
-      res.status(503).json({ ok: false, message: "舊庫連線未設定（LEGACY_DATABASE_URL）" });
-      return;
-    }
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    const cutoverDate = parseYmd(body.cutoverDate) ?? parseYmd(body.asOf);
-    if (!cutoverDate) {
-      res.status(400).json({ ok: false, message: "請提供 cutoverDate（YYYY-MM-DD）" });
-      return;
-    }
-    const asOf = parseYmd(body.asOf) ?? cutoverDate;
-    const granularity = body.granularity === "by_customer" ? "by_customer" : "by_order";
-    const customerCode =
-      typeof body.customer === "string" && body.customer.trim() ? body.customer.trim() : null;
-    const customerCodes = Array.isArray(body.customerCodes)
-      ? body.customerCodes.map((x) => String(x).trim()).filter(Boolean)
-      : null;
-    const orderIds = Array.isArray(body.orderIds)
-      ? body.orderIds.map((x) => String(x).trim()).filter(Boolean)
-      : null;
-    const dryRun = Boolean(body.dryRun);
-    try {
-      const data = await applyCutoverOpeningAr(legacy, prisma, {
-        asOf,
-        customerCode,
-        billingTypes: parseBillingTypes(body.billingTypes),
-        granularity,
-        customerCodes,
-        orderIds,
-        cutoverDate,
-        createdByUserId: auth.id,
-        dryRun,
-      });
-      res.json({ ok: true, data });
-    } catch (e) {
-      res.status(502).json({
-        ok: false,
-        message: `開帳失敗：${e instanceof Error ? e.message : String(e)}`,
-      });
-    }
-  });
-
-  app.post("/api/legacy-cutover/sync-balances", async (req, res) => {
-    if (!requireRole(req, res, ["admin", "accounting"])) return;
-    const legacy = getLegacyPrisma();
-    if (!legacy) {
-      res.status(503).json({ ok: false, message: "舊庫連線未設定（LEGACY_DATABASE_URL）" });
-      return;
-    }
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    const customerCodes = Array.isArray(body.customerCodes)
-      ? body.customerCodes.map((x) => String(x).trim()).filter(Boolean)
-      : null;
-    const dryRun = Boolean(body.dryRun);
-    try {
-      const data = await syncLegacyBarrelBalances(legacy, prisma, { customerCodes, dryRun });
-      res.json({ ok: true, data });
-    } catch (e) {
-      res.status(502).json({
-        ok: false,
-        message: `同步桶數失敗：${e instanceof Error ? e.message : String(e)}`,
-      });
-    }
-  });
 }

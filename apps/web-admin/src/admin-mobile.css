@@ -41,7 +41,7 @@ body.admin-nav-body-lock {
   width: 2.75rem;
   height: 2.75rem;
   padding: 0;
-  border: 1px solid rgba(0, 138, 122, 0.32);
+  border: 1px solid rgba(32, 62, 103, 0.32);
   border-radius: 0.85rem;
   background: #ffffff;
   color: var(--brand-hover);
@@ -182,7 +182,7 @@ body.admin-nav-body-lock {
     transition: transform 0.24s ease;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
-    background: #f7fbfa !important;
+    background: #f7f9fc !important;
   }
 
   .admin-nav--drawer.admin-nav--open {
@@ -220,7 +220,7 @@ body.admin-nav-body-lock {
     gap: 0.75rem;
     margin-bottom: 0.65rem;
     padding: 0.85rem 0.9rem;
-    border: 1px solid rgba(0, 138, 122, 0.18);
+    border: 1px solid rgba(32, 62, 103, 0.18);
     border-radius: 1rem;
     background: #fff;
   }
@@ -446,7 +446,7 @@ body.admin-nav-body-lock {
     align-items: stretch;
     place-items: unset;
     padding: calc(1rem + var(--safe-top)) 1rem calc(1.5rem + var(--safe-bottom));
-    background: #eef5f4 !important;
+    background: #eef3f8 !important;
   }
 
   .login-theme {
@@ -867,7 +867,7 @@ body.admin-nav-body-lock {
 }
 
 .ov-mobile__kpi--revenue {
-  border-color: rgba(0, 138, 122, 0.28);
+  border-color: rgba(32, 62, 103, 0.28);
 }
 .ov-mobile__kpi--cash {
   border-color: rgba(22, 128, 82, 0.28);
@@ -1161,8 +1161,8 @@ body.admin-nav-body-lock {
 }
 
 :root[data-theme="dark"] .admin-header__menu-btn {
-  background: rgba(33, 199, 177, 0.12);
-  border-color: rgba(33, 199, 177, 0.38);
+  background: rgba(172, 201, 237, 0.12);
+  border-color: rgba(172, 201, 237, 0.38);
   color: var(--brand-hover);
   box-shadow: none;
 }
@@ -1179,5 +1179,5 @@ body.admin-nav-body-lock {
 }
 
 :root[data-theme="dark"] .admin-tabbar__item--active {
-  background: rgba(33, 199, 177, 0.16);
+  background: rgba(172, 201, 237, 0.16);
 }

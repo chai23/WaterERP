@@ -281,18 +281,6 @@ export default function OrderAssignPage() {
   const pendingSalesOrderIdRef = useRef<string | null>(null);
   const skipAutoMatchRef = useRef(false);
 
-  const goAssignFromQueue = useCallback(
-    (customerId: string, salesOrderId: string) => {
-      appliedQueryKeyRef.current = "";
-      const next = new URLSearchParams();
-      next.set("tab", "assign");
-      next.set("customerId", customerId);
-      if (salesOrderId) next.set("salesOrderId", salesOrderId);
-      setSearchParams(next);
-    },
-    [setSearchParams],
-  );
-
   const alternateCandidates = useMemo(() => {
     const q = customerKeyword.trim();
     if (!q) return [];
@@ -482,7 +470,7 @@ export default function OrderAssignPage() {
   const selectedOrderSummary = incompleteOrders.find((o) => String(o.id) === assignForm.salesOrderId);
 
   return (
-    <section className="card order-new-page order-new-page--pro order-assign-page">
+    <section className={`card order-new-page order-new-page--pro order-assign-page${pageTab === "status" ? " dispatch-view" : ""}`}>
       <header className="order-new__hero">
         <div className="order-new__hero-top">
           <div className="order-new__hero-titles">
@@ -492,7 +480,7 @@ export default function OrderAssignPage() {
         </div>
         <p className="order-new__hero-lead">
           {pageTab === "status"
-            ? "先查看未分派／已分派佇列，避免漏派；需要派車時再切到「分配訂單」。"
+            ? "左側勾選待派訂單，右側查看司機任務與額度；支援批次指派及拖放操作。"
             : pageTab === "ai"
               ? "選班別、確認出勤與跑區，勾選訂單後一鍵排班；確認發布才寫入正式派單。"
               : "區塊 ①② 輸入客戶後列出未完成訂單；區塊 ③ 顯示司機當日任務；區塊 ④ 確認分派。"}
@@ -531,7 +519,7 @@ export default function OrderAssignPage() {
       </header>
 
       {pageTab === "status" ? (
-        <AssignmentStatusPanel onGoAssign={goAssignFromQueue} />
+        <AssignmentStatusPanel />
       ) : pageTab === "ai" ? (
         <AiSuggestAssignPanel />
       ) : (

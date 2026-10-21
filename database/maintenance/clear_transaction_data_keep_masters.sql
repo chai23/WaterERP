@@ -22,6 +22,13 @@ SET NAMES utf8mb4;
 
 SET FOREIGN_KEY_CHECKS = 0;
 
+SET @sql := IF((SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='cutover_monthly_items')>0, 'DELETE FROM cutover_monthly_items', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql := IF((SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='cutover_handover')>0, 'UPDATE cutover_handover SET revision=revision+1, status=''empty'', snapshot=NULL, created_by=NULL, applied_by=NULL, applied_at=NULL, updated_at=NOW(3) WHERE id=1', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+
 -- 帳務／沖帳（核心表：結構升級後應已存在）
 TRUNCATE TABLE `ar_allocation_maps`;
 TRUNCATE TABLE `credit_note_allocations`;

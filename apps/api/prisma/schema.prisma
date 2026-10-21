@@ -9,6 +9,32 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model CutoverHandover {
+  id Int @id
+  revision Int @default(0)
+  status String @default("empty") @db.VarChar(20)
+  snapshot Json?
+  createdBy BigInt? @map("created_by") @db.UnsignedBigInt
+  appliedBy BigInt? @map("applied_by") @db.UnsignedBigInt
+  appliedAt DateTime? @map("applied_at") @db.DateTime(3)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.DateTime(3)
+  @@map("cutover_handover")
+}
+
+model CutoverMonthlyItem {
+  id BigInt @id @default(autoincrement()) @db.UnsignedBigInt
+  sourceKey String @unique(map: "uq_cutover_monthly_source") @map("source_key") @db.VarChar(128)
+  customerId BigInt @map("customer_id") @db.UnsignedBigInt
+  orderDay DateTime @map("order_day") @db.Date
+  amount Decimal @db.Decimal(14, 2)
+  note String @db.Text
+  billingStatementId BigInt? @map("billing_statement_id") @db.UnsignedBigInt
+  customer Customer @relation(fields: [customerId], references: [id], map: "fk_cutover_monthly_customer")
+  billingStatement BillingStatement? @relation(fields: [billingStatementId], references: [id], map: "fk_cutover_monthly_statement")
+  @@index([customerId, billingStatementId, orderDay], map: "ix_cutover_monthly_pending")
+  @@map("cutover_monthly_items")
+}
+
 model User {
   id           BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
   employeeCode String   @unique @map("employee_code") @db.VarChar(50)
@@ -244,6 +270,7 @@ model Customer {
   prepaidProductBalances CustomerPrepaidProductBalance[]
   creditNotes CreditNote[]
   billingStatements BillingStatement[]
+  cutoverMonthlyItems CutoverMonthlyItem[]
   taxInvoices       TaxInvoice[]
   barrelPickups     BarrelPickup[]
   expenseLines      ExpenseLine[]
@@ -905,6 +932,7 @@ model BillingStatement {
   orders      BillingStatementOrder[]
   arDocuments ArDocument[]
   taxInvoices TaxInvoice[]
+  cutoverMonthlyItems CutoverMonthlyItem[]
 
   @@index([customerId, postedAt])
   @@map("billing_statements")

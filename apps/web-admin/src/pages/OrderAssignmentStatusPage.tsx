@@ -1,432 +1,277 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  deliveryAssignmentStatusBadgeClass,
-  deliveryAssignmentStatusLabel,
-  driverEmployeeCode,
-  driverIsActive,
-  fmtLocalYmd,
-  moneyText,
-  orderStatusBadgeClass,
-  orderStatusLabel,
-} from "../adminUtils";
-import { OrderDetailModal, type OrderRecord } from "../components/OrderDetailModal";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useDashboard } from "../DashboardContext";
-
-type QueueScope = "unassigned" | "assigned";
-
-type QueueOrder = OrderRecord & {
-  orderBillableAmount?: string | number;
-  source?: string;
-  remark?: string | null;
-  customer?: {
-    id?: string | number;
-    name?: string;
-    customerCode?: string | null;
-    phone?: string | null;
-    mobile?: string | null;
-  };
-  deliveryAddress?: { label?: string | null; addressLine?: string | null };
-  lines?: Array<{
-    qtyOrdered?: number;
-    linePurpose?: string | null;
-    isPromotionGift?: boolean;
-    isReplenishment?: boolean;
-    product?: { name?: string | null; unit?: string | null } | null;
-  }>;
-  activeAssignments?: Array<{
+import { driverEmployeeCode, driverIsActive, fmtLocalYmd, deliveryAssignmentStatusLabel, orderStatusLabel } from "../adminUtils";
+import { OrderDetailModal } from "../components/OrderDetailModal";
+type PoolOrder = {
     id: string;
-    status?: string;
-    assignmentDate?: string | null;
-    driver?: { user?: { name?: string; employeeCode?: string | null } | null } | null;
-    vehicle?: { plateNo?: string | null } | null;
-  }>;
+    orderNo: string;
+    status: string;
+    scheduledDeliveryDate?: string | null;
+    customerId?: string;
+    preferredTimeNote?: string | null;
+    deliveryWindowStart?: string | null;
+    deliveryWindowEnd?: string | null;
+    dispatchPriority?: string | null;
+    source?: string;
+    remark?: string | null;
+    customer?: {
+        id?: string;
+        name?: string;
+        customerCode?: string;
+    };
+    deliveryAddress?: {
+        addressLine?: string;
+        label?: string;
+    };
+    lines?: Array<{
+        qtyOrdered?: number;
+        linePurpose?: string;
+        product?: {
+            name?: string;
+            unit?: string;
+            countsDepositBarrel?: boolean;
+        };
+    }>;
 };
-
-function goodsSummary(o: QueueOrder, maxLen = 48): string {
-  const lines = Array.isArray(o.lines) ? o.lines : [];
-  if (lines.length === 0) return "—";
-  const parts = lines.map((l) => {
-    const name = l.product?.name?.trim() || "商品";
-    const qty = l.qtyOrdered ?? 0;
-    const tag =
-      l.linePurpose === "prepaid_barrel_topup"
-        ? "（儲值）"
-        : l.isPromotionGift
-          ? "（贈）"
-          : l.isReplenishment
-            ? "（補）"
-            : "";
-    return `${name}×${qty}${tag}`;
-  });
-  const s = parts.join("、");
-  if (s.length <= maxLen) return s;
-  return `${s.slice(0, Math.max(0, maxLen - 1))}…`;
-}
-
-function describeActiveAssignment(o: QueueOrder): string {
-  const a = o.activeAssignments?.[0];
-  if (!a) return "—";
-  const emp = a.driver?.user?.employeeCode ?? "";
-  const name = a.driver?.user?.name ?? "";
-  const st = deliveryAssignmentStatusLabel(a.status);
-  const d = fmtLocalYmd(a.assignmentDate);
-  const plate = a.vehicle?.plateNo ? ` · ${a.vehicle.plateNo}` : "";
-  return `${st} · ${emp}/${name} · ${d}${plate}`;
-}
-
-type Props = {
-  onGoAssign: (customerId: string, salesOrderId: string) => void;
+type Task = {
+    id: string;
+    status: string;
+    estimatedDeliverySlot?: string | null;
+    vehicle?: {
+        id: string;
+        plateNo: string;
+        description?: string;
+    };
+    salesOrder: PoolOrder;
 };
-
-/** 分派狀態佇列（嵌於分配訂單頁之分頁） */
-export default function AssignmentStatusPanel({ onGoAssign }: Props) {
-  const { drivers, vehicles } = useDashboard();
-  const [scope, setScope] = useState<QueueScope>("unassigned");
-  const [q, setQ] = useState("");
-  const [qDraft, setQDraft] = useState("");
-  const [rows, setRows] = useState<QueueOrder[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [message, setMessage] = useState("");
-  const [detailOrder, setDetailOrder] = useState<QueueOrder | null>(null);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [batchDriverId, setBatchDriverId] = useState("");
-  const [batchVehicleId, setBatchVehicleId] = useState("");
-  const [batchDate, setBatchDate] = useState(() => fmtLocalYmd(new Date()) || "");
-  const [batchBusy, setBatchBusy] = useState(false);
-
-  const activeDrivers = useMemo(
-    () =>
-      [...drivers]
-        .filter(driverIsActive)
-        .sort((a, b) => driverEmployeeCode(a).localeCompare(driverEmployeeCode(b), "zh-Hant")),
-    [drivers],
-  );
-  const activeVehicles = useMemo(() => vehicles, [vehicles]);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setMessage("");
-    try {
-      const qs = new URLSearchParams({ scope });
-      if (q.trim()) qs.set("q", q.trim());
-      const res = await fetch(`/api/sales-orders/assignment-queue?${qs.toString()}`);
-      const payload = await res.json();
-      if (!res.ok || !payload.ok) {
-        setMessage(payload.message ?? "載入分派狀態失敗");
-        setRows([]);
-        return;
-      }
-      const orders = Array.isArray(payload.data?.orders) ? (payload.data.orders as QueueOrder[]) : [];
-      setRows(orders);
-      setSelectedIds(new Set());
-    } catch {
-      setMessage("載入分派狀態時發生錯誤");
-      setRows([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [scope, q]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  const titleCount = loading ? "…" : `${rows.length} 筆`;
-  const colCount = (scope === "assigned" ? 7 : 6) + (scope === "unassigned" ? 1 : 0);
-
-  const toggleSelected = (id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
+type Fleet = {
+    tasks: Task[];
+    error?: string;
+};
+const time = (v?: string | null) => v?.match(/(?:T|^)(\d{2}:\d{2})/)?.[1] ?? '';
+const orderDay = (o: PoolOrder) => o.scheduledDeliveryDate ? fmtLocalYmd(o.scheduledDeliveryDate) : "";
+const windowLabel = (o: PoolOrder) => o.preferredTimeNote || ([time(o.deliveryWindowStart), time(o.deliveryWindowEnd)].filter(Boolean).join('–')) || '時段未指定';
+const barrels = (o: PoolOrder) => (o.lines ?? []).reduce((n, l) => n + (l.linePurpose !== 'prepaid_barrel_topup' && l.product?.countsDepositBarrel ? Number(l.qtyOrdered || 0) : 0), 0);
+const goods = (o: PoolOrder) => (o.lines ?? []).map(l => `${l.product?.name || '商品'} × ${l.qtyOrdered ?? 0}${l.product?.unit || ''}${l.linePurpose === 'prepaid_barrel_topup' ? '（儲值）' : ''}`).join('、') || '無商品明細';
+export default function AssignmentStatusPanel() {
+    const { drivers, vehicles, loadOrders } = useDashboard();
+    const [date, setDate] = useState(() => fmtLocalYmd(new Date()));
+    const [query, setQuery] = useState('');
+    const [filter, setFilter] = useState('all');
+    const [orders, setOrders] = useState<PoolOrder[]>([]);
+    const [fleet, setFleet] = useState<Record<string, Fleet>>({});
+    const [selected, setSelected] = useState<string[]>([]);
+    const [vehicleIds, setVehicleIds] = useState<Record<string, string>>({});
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState('');
+    const [notice, setNotice] = useState('');
+    const [busy, setBusy] = useState(false);
+    const [hover, setHover] = useState('');
+    const dragIds = useRef<string[]>([]);
+    const [detail, setDetail] = useState<PoolOrder | null>(null);
+    const [pending, setPending] = useState<{
+        driverId: string;
+        ids: string[];
+        vehicleId: string;
+        date: string;
+    } | null>(null);
+    const [returnTask, setReturnTask] = useState<Task | null>(null);
+    const returnDrag = useRef<Task | null>(null);
+    const [poolHover, setPoolHover] = useState(false);
+    const [selectedDriverIds, setSelectedDriverIds] = useState<string[]>([]);
+    const returnToPool = async () => {
+      if (!returnTask || busy) return; setBusy(true);
+      try { const r=await fetch(`/api/delivery-assignments/${returnTask.id}/return-to-pool`,{method:"POST"}); const p=await r.json(); if(!r.ok || !p.ok)throw new Error(p.message || "拉回失敗"); setNotice(`訂單 ${returnTask.salesOrder.orderNo} 已拉回待分配訂單池。`); setReturnTask(null); setQuery(""); setFilter("all"); await load(); await loadOrders(); }
+      catch(e){setNotice(e instanceof Error?e.message:"拉回失敗，請重新整理確認狀態");setReturnTask(null);await load();} finally {setBusy(false);}
+    };
+    const generation = useRef(0);
+    const enabled = drivers.filter(driverIsActive);
+    const driverKey = enabled.map(d => String(d.id)).sort().join(',');
+    useEffect(() => {
+        const ids = driverKey.split(',').filter(Boolean);
+        setSelectedDriverIds((prev) => {
+            const kept = prev.filter((id) => ids.includes(id));
+            if (kept.length) return kept;
+            return ids[0] ? [ids[0]] : [];
+        });
+    }, [driverKey]);
+    const load = useCallback(async () => {
+        const gen = ++generation.current;
+        setLoading(true);
+        setError('');
+        setFleet({});
+        setSelected([]);
+        try {
+            const res = await fetch('/api/sales-orders/assignment-queue?scope=unassigned&limit=500');
+            const payload = await res.json();
+            if (!res.ok || !payload.ok)
+                throw new Error(payload.message || '訂單池載入失敗');
+            if (gen !== generation.current)
+                return;
+            setOrders(payload.data.orders);
+            const snapshots = await Promise.all(driverKey.split(',').filter(Boolean).map(async (id) => {
+                try {
+                    const r = await fetch(`/api/delivery-assignments/by-driver-date?${new URLSearchParams({ driverId: id, assignmentDate: date })}`);
+                    const p = await r.json();
+                    if (!r.ok || !p.ok)
+                        throw new Error();
+                    return [id, { tasks: p.data.assignments }] as [
+                        string,
+                        Fleet
+                    ];
+                }
+                catch {
+                    return [id, { tasks: [], error: '任務載入失敗，請重新整理' }] as [
+                        string,
+                        Fleet
+                    ];
+                }
+            }));
+            if (gen === generation.current)
+                setFleet(Object.fromEntries(snapshots));
+        }
+        catch (e) {
+            if (gen === generation.current) {
+                setOrders([]);
+                setError(e instanceof Error ? e.message : '資料載入失敗');
+            }
+        }
+        finally {
+            if (gen === generation.current)
+                setLoading(false);
+        }
+    }, [date, driverKey]);
+    useEffect(() => { void load(); return () => { generation.current++; }; }, [load]);
+    const visible = orders.filter(o => {
+        const day = orderDay(o);
+        const matches = filter === 'all' || (filter === 'today' ? day === date : filter === 'future' ? day > date : !!day && day < date);
+        return matches && `${o.orderNo} ${o.customer?.name} ${o.customer?.customerCode} ${o.deliveryAddress?.addressLine}`.toLowerCase().includes(query.trim().toLowerCase());
     });
-  };
-
-  const toggleAll = () => {
-    if (selectedIds.size === rows.length) {
-      setSelectedIds(new Set());
-      return;
-    }
-    setSelectedIds(new Set(rows.map((o) => String(o.id))));
-  };
-
-  const runBatchAssign = async () => {
-    if (selectedIds.size === 0) {
-      setMessage("請先勾選要分派的訂單");
-      return;
-    }
-    if (!batchDriverId) {
-      setMessage("請選擇批次分派司機");
-      return;
-    }
-    if (!window.confirm(`確定將 ${selectedIds.size} 筆訂單批次分派給所選司機？失敗單會略過。`)) return;
-    setBatchBusy(true);
-    setMessage("");
-    try {
-      const res = await fetch("/api/orders/batch-assign", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          salesOrderIds: [...selectedIds],
-          driverId: batchDriverId,
-          vehicleId: batchVehicleId || undefined,
-          assignmentDate: batchDate || undefined,
-        }),
-      });
-      const payload = await res.json();
-      if (!res.ok || !payload?.ok) {
-        setMessage(payload?.message ?? "批次分派失敗");
-        return;
-      }
-      const succeeded = Array.isArray(payload.data?.succeeded) ? payload.data.succeeded : [];
-      const skipped = Array.isArray(payload.data?.skipped) ? payload.data.skipped : [];
-      setMessage(
-        `批次分派完成：成功 ${succeeded.length}、略過 ${skipped.length}` +
-          (skipped.length
-            ? `（例：${skipped
-                .slice(0, 3)
-                .map((s: { id: string; reason: string }) => `${s.id}:${s.reason}`)
-                .join("；")}）`
-            : ""),
-      );
-      await load();
-    } catch {
-      setMessage("批次分派時發生錯誤");
-    } finally {
-      setBatchBusy(false);
-    }
-  };
-
-  return (
-    <div className="order-assign-status">
-      <div className="order-assign-status__toolbar">
-        <div className="order-assign-status__toolbar-left">
-          <div className="order-assign-seg" role="tablist" aria-label="分派範圍">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={scope === "unassigned"}
-              className={`order-assign-seg__btn${scope === "unassigned" ? " order-assign-seg__btn--active" : ""}`}
-              onClick={() => setScope("unassigned")}
-            >
-              未分派
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={scope === "assigned"}
-              className={`order-assign-seg__btn${scope === "assigned" ? " order-assign-seg__btn--active" : ""}`}
-              onClick={() => setScope("assigned")}
-            >
-              已分派
-            </button>
-          </div>
-          <h3 className="order-assign-status__heading">
-            {scope === "unassigned" ? "未分派訂單" : "已分派訂單"}
-            <span className="card__title-count">{titleCount}</span>
-          </h3>
+    const prepare = (driverId: string, ids: string[]) => {
+        if (loading || busy || !date || fleet[driverId]?.error || !fleet[driverId])
+            return;
+        const valid = ids.filter(id => orders.some(o => String(o.id) === id));
+        if (!valid.length) {
+            setNotice('請先勾選訂單，或將訂單拖曳到司機卡片。');
+            return;
+        }
+        const d = enabled.find(d => String(d.id) === driverId);
+        setPending({ driverId, ids: valid, vehicleId: vehicleIds[driverId] ?? String(d?.vehicle?.id ?? ''), date });
+    };
+    const assign = async () => {
+        if (!pending || busy)
+            return;
+        setBusy(true);
+        setNotice('');
+        try {
+            const r = await fetch('/api/orders/batch-assign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ salesOrderIds: pending.ids, driverId: pending.driverId, vehicleId: pending.vehicleId || undefined, assignmentDate: pending.date }) });
+            const p = await r.json();
+            if (!r.ok || !p.ok)
+                throw new Error(p.message || '指派失敗');
+            const skipped = p.data.skipped ?? [];
+            setNotice(`指派完成：成功 ${p.data.succeeded.length} 筆，略過 ${skipped.length} 筆。${skipped.map((s: {
+                id: string;
+                reason: string;
+            }) => `${orders.find(o => String(o.id) === s.id)?.orderNo || s.id}：${s.reason}`).join('；')}`);
+            setPending(null);
+            await load();
+            await loadOrders();
+        }
+        catch (e) {
+            setNotice(e instanceof Error ? e.message : '連線中斷，請重新整理確認指派結果。');
+        }
+        finally {
+            setBusy(false);
+        }
+    };
+    const target = enabled.find(d => String(d.id) === pending?.driverId);
+    const pendingTasks = pending ? fleet[pending.driverId]?.tasks ?? [] : [];
+    const pendingQty = pending ? pending.ids.reduce((n, id) => n + (orders.find(o => String(o.id) === id) ? barrels(orders.find(o => String(o.id) === id)!) : 0), 0) : 0;
+    const overCapacity = !!target && ((target.maxOrderCount != null && pendingTasks.length + (pending?.ids.length ?? 0) > target.maxOrderCount) || (target.maxBarrelQty != null && pendingTasks.reduce((n, t) => n + barrels(t.salesOrder), 0) + pendingQty > target.maxBarrelQty));
+    return <div className="dispatch-board">
+    <div className="dispatch-toolbar"><div><h3>調度工作台</h3><p>勾選訂單後，從右側勾選要顯示的司機再指派，或拖曳訂單至司機卡片。</p></div><label>派送日期<input aria-label="派送日期" type="date" value={date} disabled={busy || !!pending} onInput={e => { if (e.currentTarget.value) {
+        setDate(e.currentTarget.value);
+        setFleet({});
+        setSelected([]);
+    } }}/></label><button className="btn btn--secondary" disabled={loading || busy || !!pending} onClick={() => void load()}>重新整理</button></div>
+    {error && <p role="alert" className="feedback feedback--err">{error}</p>}
+    {notice && <p role="status" className="feedback">{notice}</p>}
+    <div className="dispatch-columns">
+      <section data-order-pool="true" className={`dispatch-pool${poolHover ? " is-return-target" : ""}`} aria-label="待分配訂單池" onDragOver={e=>{if(returnDrag.current && !busy){e.preventDefault();setPoolHover(true);}}} onDragLeave={()=>setPoolHover(false)} onDrop={e=>{e.preventDefault();if(returnDrag.current && !busy)setReturnTask(returnDrag.current);returnDrag.current=null;setPoolHover(false);}}>
+        <header className="dispatch-section-head"><div><span className="design-eyebrow">ORDERS POOL</span><h3>待分配訂單池 <span>{visible.length}</span></h3></div><span>已選 {selected.length} 筆</span></header>
+        <div className="dispatch-filters"><input aria-label="搜尋訂單池" type="search" placeholder="搜尋單號、客戶或地址" value={query} onChange={e => { setQuery(e.target.value); setSelected([]); }}/><select aria-label="訂單日期範圍" value={filter} onChange={e => { setFilter(e.target.value); setSelected([]); }}><option value="all">全部待派</option><option value="today">當日訂單</option><option value="future">未來預約</option><option value="overdue">逾期待處理</option></select></div>
+        <label className="dispatch-select-all"><input type="checkbox" aria-label="全選顯示訂單" disabled={loading || busy} checked={visible.length > 0 && visible.every(o => selected.includes(String(o.id)))} onChange={e => setSelected(e.target.checked ? visible.map(o => String(o.id)) : [])}/>全選目前顯示訂單 <span>拖曳已勾選訂單可整批移動</span></label>
+        {orders.length === 500 && <p className="dispatch-hint">目前載入前 500 筆待派訂單；完成指派後重新整理以載入後續訂單。</p>}
+        <div className="dispatch-pool-list" aria-busy={loading}>
+          {loading ? <p className="dispatch-empty">載入訂單與司機任務中…</p> : !visible.length ? <p className="dispatch-empty">目前沒有符合條件的待派訂單</p> : visible.map(o => {
+            const id = String(o.id);
+            const day = orderDay(o);
+            return <article key={id} className={`dispatch-order${selected.includes(id) ? ' is-selected' : ''}`} draggable={!busy} title="拖曳至司機卡片指派" onDragStart={e => { if ((e.target as HTMLElement).closest('button, input, a')) {
+                e.preventDefault();
+                return;
+            } const ids = selected.includes(id) ? selected : [id]; dragIds.current = ids; e.dataTransfer.setData('application/x-watererp-orders', JSON.stringify(ids)); e.dataTransfer.effectAllowed = 'move'; }} onDragEnd={() => { dragIds.current = []; setHover(''); }}>
+            <div className="dispatch-order__main">
+            <div className="dispatch-order-top"><label><input type="checkbox" aria-label={`選取 ${o.orderNo}`} disabled={busy} checked={selected.includes(id)} onChange={e => setSelected(s => e.target.checked ? [...s, id] : s.filter(x => x !== id))}/><span className="dispatch-order-title"><h4>{o.customer?.name || '未提供客戶'} <small>{o.customer?.customerCode}</small></h4><p className="dispatch-address">{o.deliveryAddress?.addressLine || '未提供地址'}</p></span></label></div>
+            <p className="dispatch-goods">{goods(o)}</p>
+            <dl className="dispatch-order-facts">
+              <div><dt>單號</dt><dd title={o.orderNo}>{o.orderNo}</dd></div>
+              <div><dt>日期</dt><dd>{day || '未指定'}</dd></div>
+              <div><dt>時段</dt><dd>{windowLabel(o) === '時段未指定' ? '未指定' : windowLabel(o)}</dd></div>
+              <div><dt>桶數</dt><dd>{barrels(o)} 桶</dd></div>
+            </dl>
+            {o.remark && <p className="dispatch-hint">備註：{o.remark}</p>}
+            </div>
+            <footer>
+              <span className={day && day < date ? 'dispatch-tag is-warning' : 'dispatch-tag'}>{day && day < date ? '逾期' : day > date ? '預約' : orderStatusLabel(o.status)}</span>
+              <button type="button" className="btn btn--ghost btn--sm" draggable={false} onClick={() => setDetail(o)}>詳情</button>
+            </footer>
+          </article>;
+        })}
         </div>
-        <div className="order-assign-status__toolbar-right">
-          <input
-            type="search"
-            className="order-assign-status__search"
-            value={qDraft}
-            onChange={(e) => setQDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") setQ(qDraft);
-            }}
-            placeholder="單號／客戶／電話"
-            aria-label="關鍵字"
-          />
-          <button type="button" className="btn btn--secondary btn--sm" onClick={() => setQ(qDraft)} disabled={loading}>
-            搜尋
-          </button>
-          <button type="button" className="btn btn--secondary btn--sm" onClick={() => void load()} disabled={loading}>
-            重新整理
-          </button>
-        </div>
-      </div>
-
-      {scope === "unassigned" ? (
-        <div className="toolbar toolbar--filters order-assign-status__batch-bar">
-          <div className="field field--sm">
-            <span>批次司機</span>
-            <select value={batchDriverId} onChange={(e) => setBatchDriverId(e.target.value)}>
-              <option value="">選擇司機</option>
-              {activeDrivers.map((d) => {
-                const code = driverEmployeeCode(d);
-                const name = d.user?.name ?? "（未命名）";
-                return (
-                  <option key={String(d.id)} value={String(d.id)}>
-                    {code ? `${code} ${name}` : name}
-                  </option>
-                );
-              })}
-            </select>
+      </section>
+      <section className="dispatch-fleet" aria-label="司機動態與車隊狀態">
+        <header className="dispatch-section-head"><div><span className="design-eyebrow">DRIVERS & FLEET</span><h3>司機與當日任務 <span>{enabled.length}</span></h3></div><span>{date}</span></header>
+        <p className="dispatch-hint">勾選要顯示的司機，可同時選多位。即時上線狀態未提供。額度以當日已派單量與桶數估算，並非車輛即時剩餘載重。</p>
+        <div className="dispatch-driver-picker">
+          <div className="dispatch-driver-picker__head">
+            <span>選擇司機（已選 {selectedDriverIds.length} / {enabled.length}）</span>
+            <span className="dispatch-driver-picker__actions">
+              <button type="button" className="btn btn--ghost btn--sm" disabled={busy || !!pending || !enabled.length} onClick={() => setSelectedDriverIds(enabled.map(d => String(d.id)))}>全選</button>
+              <button type="button" className="btn btn--ghost btn--sm" disabled={busy || !!pending || !selectedDriverIds.length} onClick={() => setSelectedDriverIds([])}>清除</button>
+            </span>
           </div>
-          <div className="field field--sm">
-            <span>車輛（選填）</span>
-            <select value={batchVehicleId} onChange={(e) => setBatchVehicleId(e.target.value)}>
-              <option value="">不指定</option>
-              {activeVehicles.map((v) => (
-                <option key={String(v.id)} value={String(v.id)}>
-                  {v.plateNo}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="field field--sm">
-            <span>配送日</span>
-            <input type="date" value={batchDate} onChange={(e) => setBatchDate(e.target.value)} />
-          </div>
-          <div className="field field--sm order-assign-status__batch-action">
-            <span aria-hidden="true">&nbsp;</span>
-            <button
-              type="button"
-              className="btn btn--primary btn--sm order-assign-status__batch-submit"
-              disabled={batchBusy || selectedIds.size === 0}
-              onClick={() => void runBatchAssign()}
-            >
-              {batchBusy ? "分派中…" : `批次分派（${selectedIds.size}）`}
-            </button>
+          <div className="dispatch-driver-picker__list" role="group" aria-label="選擇司機">
+            {enabled.map(d => {
+              const id = String(d.id);
+              const checked = selectedDriverIds.includes(id);
+              return <label key={id} className={checked ? "is-on" : undefined}>
+                <input type="checkbox" aria-label={`顯示司機 ${d.user?.name || driverEmployeeCode(d)}`} disabled={busy || !!pending} checked={checked} onChange={() => setSelectedDriverIds(s => checked ? s.filter(x => x !== id) : [...s, id])}/>
+                <span>{d.user?.name || "未命名司機"}</span>
+                <small>{driverEmployeeCode(d)}</small>
+              </label>;
+            })}
           </div>
         </div>
-      ) : null}
-
-      {message ? (
-        <p className={message.includes("失敗") || message.includes("錯誤") ? "feedback feedback--err" : "feedback"}>
-          {message}
-        </p>
-      ) : null}
-
-      <div className="table-wrap order-assign-status__table-wrap">
-        <table className="data-table data-table--compact order-assign-status__table">
-          <thead>
-            <tr>
-              {scope === "unassigned" ? (
-                <th>
-                  <input
-                    type="checkbox"
-                    checked={rows.length > 0 && selectedIds.size === rows.length}
-                    onChange={toggleAll}
-                    aria-label="全選"
-                  />
-                </th>
-              ) : null}
-              <th>訂單</th>
-              <th>客戶／地址</th>
-              <th>品項</th>
-              <th>配送日</th>
-              <th className="num">金額</th>
-              {scope === "assigned" ? <th>配送任務</th> : null}
-              <th className="order-assign-status__col-actions">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr>
-                <td colSpan={colCount} className="text-muted">
-                  載入中…
-                </td>
-              </tr>
-            ) : rows.length === 0 ? (
-              <tr>
-                <td colSpan={colCount} className="text-muted">
-                  {scope === "unassigned" ? "目前沒有未分派訂單。" : "目前沒有進行中的已分派訂單。"}
-                </td>
-              </tr>
-            ) : (
-              rows.map((o) => {
-                const id = String(o.id);
-                const orderNo = String(o.orderNo ?? "");
-                const active = o.activeAssignments?.[0];
-                const customerId = String(o.customer?.id ?? (o as { customerId?: unknown }).customerId ?? "");
-                const phone = String(o.customer?.mobile || o.customer?.phone || "");
-                return (
-                  <tr key={id}>
-                    {scope === "unassigned" ? (
-                      <td>
-                        <input
-                          type="checkbox"
-                          checked={selectedIds.has(id)}
-                          onChange={() => toggleSelected(id)}
-                          aria-label={`選取 ${orderNo}`}
-                        />
-                      </td>
-                    ) : null}
-                    <td className="order-assign-status__cell-order">
-                      <code className="order-assign-status__order-no" title={orderNo}>
-                        {orderNo}
-                      </code>
-                      <div className="order-assign-status__order-meta">
-                        <span className={orderStatusBadgeClass(String(o.status ?? ""))}>
-                          {orderStatusLabel(String(o.status ?? ""))}
-                        </span>
-                        {String(o.source ?? "") === "liff" ? <span className="badge">LINE</span> : null}
-                      </div>
-                    </td>
-                    <td className="order-assign-status__cell-customer">
-                      <div className="order-assign-status__cust-name">
-                        {o.customer?.customerCode ? (
-                          <span className="mono-text order-assign-status__cust-code">{o.customer.customerCode}</span>
-                        ) : null}
-                        <strong>{o.customer?.name ?? "—"}</strong>
-                      </div>
-                      {phone ? <div className="text-muted order-assign-status__sub">{phone}</div> : null}
-                      <div className="text-muted order-assign-status__sub" title={o.deliveryAddress?.addressLine ?? ""}>
-                        {o.deliveryAddress?.addressLine ?? "—"}
-                      </div>
-                    </td>
-                    <td className="order-assign-status__cell-goods" title={goodsSummary(o, 200)}>
-                      {goodsSummary(o)}
-                    </td>
-                    <td className="order-assign-status__cell-date">{fmtLocalYmd(o.scheduledDeliveryDate)}</td>
-                    <td className="num order-assign-status__cell-amt">{moneyText(o.orderBillableAmount ?? o.totalAmount)}</td>
-                    {scope === "assigned" ? (
-                      <td className="order-assign-status__cell-task">
-                        {active ? (
-                          <>
-                            <span className={deliveryAssignmentStatusBadgeClass(String(active.status ?? ""))}>
-                              {deliveryAssignmentStatusLabel(active.status)}
-                            </span>
-                            <div className="text-muted order-assign-status__sub">{describeActiveAssignment(o)}</div>
-                          </>
-                        ) : (
-                          "—"
-                        )}
-                      </td>
-                    ) : null}
-                    <td className="order-assign-status__col-actions">
-                      <div className="order-assign-status__actions">
-                        <button type="button" className="btn btn--secondary btn--sm" onClick={() => setDetailOrder(o)}>
-                          詳情
-                        </button>
-                        <button
-                          type="button"
-                          className={`btn btn--sm ${scope === "unassigned" ? "btn--primary" : "btn--secondary"}`}
-                          disabled={!customerId}
-                          onClick={() => onGoAssign(customerId, id)}
-                        >
-                          {scope === "unassigned" ? "去分派" : "查看"}
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
-      <p className="order-assign-status__footnote text-muted">
-        {scope === "unassigned"
-          ? "可勾選多筆後批次分派（信用鎖定等失敗單會略過）；或按「去分派」切到分配分頁。"
-          : "僅列出尚有進行中配送任務的訂單（已分派／配送中／待核銷）。"}
-      </p>
-      {detailOrder ? (
-        <OrderDetailModal order={detailOrder} onClose={() => setDetailOrder(null)} />
-      ) : null}
+        <div className="dispatch-driver-grid">{!enabled.length ? <p className="dispatch-empty">目前沒有啟用中的司機</p> : !selectedDriverIds.length ? <p className="dispatch-empty">請勾選要顯示的司機</p> : enabled.filter(d => selectedDriverIds.includes(String(d.id))).map(d => {
+            const id = String(d.id), state = fleet[id], tasks = state?.tasks ?? [], qty = tasks.reduce((n, t) => n + barrels(t.salesOrder), 0), max = d.maxBarrelQty ?? 0;
+            const vId = vehicleIds[id] ?? String(d.vehicle?.id ?? ''), vehicle = vehicles.find(v => String(v.id) === vId);
+            const remaining = typeof d.maxOrderCount === 'number' ? Math.max(0, d.maxOrderCount - tasks.length) : null;
+            return <article key={id} data-driver-id={id} className={`dispatch-driver${hover === id ? ' is-drop-target' : ''}`} onDragOver={e => { if (dragIds.current.length && !loading && !busy && state && !state.error) {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                setHover(id);
+            } }} onDragLeave={() => setHover('')} onDrop={e => { e.preventDefault(); setHover(''); prepare(id, dragIds.current); dragIds.current = []; }} aria-label={`司機 ${d.user?.name || driverEmployeeCode(d)}`}>
+            <header><div className="dispatch-avatar">{d.user?.name?.slice(0, 1) || '駕'}</div><div><h4>{d.user?.name || '未命名司機'}</h4><small>{driverEmployeeCode(d)}</small></div><span className="dispatch-tag">{state?.error ? '資料異常' : tasks.some(t => t.status === 'delivering') ? '配送中' : '啟用中'}</span></header>
+            <label className="dispatch-vehicle">指派車輛<select aria-label={`${d.user?.name}指派車輛`} value={vId} disabled={busy} onChange={e => setVehicleIds(s => ({ ...s, [id]: e.target.value }))}><option value="">不指定車輛</option>{vehicles.map(v => <option key={String(v.id)} value={String(v.id)}>{v.plateNo}</option>)}</select></label><p className="dispatch-hint">{vehicle?.description || '車型未設定'}</p>
+            {state?.error ? <p role="alert">{state.error}</p> : !state ? <p>載入排程中…</p> : <><div className="dispatch-capacity"><div><strong>{tasks.length}</strong><span>當日任務{remaining !== null ? ` · 剩餘 ${remaining} 單` : ''}</span></div><div><strong>{max > 0 ? Math.max(0, max - qty) : '—'}</strong><span>剩餘桶數額度{max > 0 ? ` / ${max}` : ' · 未設定上限'}</span></div></div>{max > 0 && <progress max={max} value={Math.min(qty, max)} aria-label={`${d.user?.name}已分配桶數 ${qty} / ${max}`}/>}{max > 0 && qty > max && <p className="dispatch-hint">已超出桶數額度 {qty - max} 桶</p>}
+            <h5>任務時間軸 <small>依期望時段排序，非預估到達時間</small></h5><ol className="dispatch-timeline">{[...tasks].sort((a, b) => (time(a.salesOrder.deliveryWindowStart) || '99:99').localeCompare(time(b.salesOrder.deliveryWindowStart) || '99:99')).map(t => <li key={t.id} draggable={t.status === "assigned" && !busy} onDragStart={e=>{returnDrag.current=t;e.dataTransfer.setData("application/x-watererp-assignment",t.id);e.dataTransfer.effectAllowed="move";}} onDragEnd={()=>{returnDrag.current=null;setPoolHover(false);}}><time>{t.estimatedDeliverySlot || windowLabel(t.salesOrder)}</time><button onClick={() => setDetail(t.salesOrder)}>{t.salesOrder.customer?.name || t.salesOrder.orderNo}</button><small>{t.salesOrder.orderNo} · {deliveryAssignmentStatusLabel(t.status)}</small><small>{t.salesOrder.deliveryAddress?.addressLine}</small>{t.status === "assigned" ? <div className="dispatch-return-actions"><button type="button" disabled={busy} onClick={()=>setReturnTask(t)}>拉回訂單池</button><button type="button" className="dispatch-return-handle" aria-label={`拖回訂單池 ${t.salesOrder.orderNo}`} disabled={busy} onPointerDown={e=>{e.preventDefault();e.currentTarget.setPointerCapture(e.pointerId);returnDrag.current=t;}} onPointerMove={e=>{if(e.currentTarget.hasPointerCapture(e.pointerId))setPoolHover(!!document.elementFromPoint(e.clientX,e.clientY)?.closest("[data-order-pool]"));}} onPointerUp={e=>{if(!e.currentTarget.hasPointerCapture(e.pointerId))return;e.currentTarget.releasePointerCapture(e.pointerId);if(document.elementFromPoint(e.clientX,e.clientY)?.closest("[data-order-pool]"))setReturnTask(t);returnDrag.current=null;setPoolHover(false);}} onPointerCancel={()=>{returnDrag.current=null;setPoolHover(false);}}>⠿ 拖回</button></div> : <small>已開始處理，不可拉回</small>}</li>)}</ol>{!tasks.length && <p className="dispatch-empty">當日尚無配送任務</p>}</>}
+            <button className="btn btn--primary dispatch-assign" disabled={loading || busy || !state || !!state.error || !selected.length} onClick={() => prepare(id, selected)}>將所選 {selected.length} 筆指派給此司機</button><p className="dispatch-drop-note">或將左側訂單拖放至此</p>
+          </article>;
+        })}</div>
+      </section>
     </div>
-  );
+    {pending && <div className="modal-backdrop"><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="dispatch-confirm-title" style={{ maxWidth: 540 }}><h3 id="dispatch-confirm-title">確認指派 {pending.ids.length} 筆訂單</h3><p>司機：{target?.user?.name} · {pending.date}</p><p>車輛：{vehicles.find(v => String(v.id) === pending.vehicleId)?.plateNo || '不指定'}</p><ul>{pending.ids.map(id => <li key={id}>{orders.find(o => String(o.id) === id)?.orderNo}</li>)}</ul>{overCapacity && <p role="alert" className="feedback feedback--err">本次指派將超出司機設定的每日單量或桶數上限，請核對承載能力或改派其他司機。</p>}<p>請核對司機可用時間與載運條件；無法指派的訂單會保留在訂單池並顯示原因。</p><div className="dispatch-confirm-actions"><button className="btn btn--secondary" disabled={busy} onClick={() => setPending(null)}>取消</button><button className="btn btn--primary" disabled={busy} onClick={() => void assign()}>{busy ? '指派中…' : '確認指派'}</button></div></section></div>}
+    {returnTask && <div className="modal-backdrop"><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="return-pool-title" style={{maxWidth:520}}><h3 id="return-pool-title">拉回待分配訂單池</h3><p>確認取消 {returnTask.salesOrder.orderNo} 的目前司機指派？</p><p>訂單會恢復為待分配，司機任務與當日額度會更新。保留原指派紀錄，不刪除訂單或帳務。</p><div className="dispatch-confirm-actions"><button className="btn btn--secondary" disabled={busy} onClick={()=>setReturnTask(null)}>取消</button><button className="btn btn--primary" disabled={busy} onClick={()=>void returnToPool()}>{busy?"處理中…":"確認拉回"}</button></div></section></div>}
+    {detail && <OrderDetailModal order={detail} onClose={() => setDetail(null)}/>}
+  </div>;
 }

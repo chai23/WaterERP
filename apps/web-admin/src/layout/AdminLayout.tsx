@@ -43,7 +43,7 @@ const navGroups: { id: string; title: string; items: { to: string; label: string
     items: [
       { to: "/data/customers", label: "客戶資料" },
       { to: "/data/legacy-orders", label: "舊系統歷史訂單" },
-      { to: "/data/legacy-cutover", label: "切換日開帳" },
+      { to: "/data/legacy-cutover", label: "上線交接" },
       { to: "/data/drivers", label: "司機資料" },
       { to: "/data/products", label: "商品資料" },
       { to: "/data/vehicles", label: "車輛資料" },
@@ -459,27 +459,6 @@ export default function AdminLayout() {
 
         <main className="admin-main" id="admin-content" tabIndex={-1} ref={mainRef} inert={isMobile && navOpen ? true : undefined}>
           {error ? <div className="alert alert--error">{error}</div> : null}
-          <div className="admin-page-heading">
-            <div>
-              <div className="admin-page-heading__crumb">
-                <span>超好企業</span>
-                <span aria-hidden="true">/</span>
-                <span>{currentPage.groupTitle}</span>
-              </div>
-              <h2>{currentPage.label}</h2>
-            </div>
-            <div className="admin-page-heading__date" aria-label="今天日期">
-              <span>今天</span>
-              <strong>
-                {new Intl.DateTimeFormat("zh-TW", {
-                  year: "numeric",
-                  month: "2-digit",
-                  day: "2-digit",
-                  weekday: "short",
-                }).format(new Date())}
-              </strong>
-            </div>
-          </div>
           <Suspense fallback={<div className="card" role="status">載入頁面中…</div>}>
             <Outlet />
           </Suspense>

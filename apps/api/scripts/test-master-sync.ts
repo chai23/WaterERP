@@ -1,0 +1,54 @@
+import 'dotenv/config';
+import assert from 'node:assert/strict';
+import { PrismaClient } from '@prisma/client';
+import { spawn, spawnSync } from 'node:child_process';
+import bcrypt from 'bcryptjs';
+import path from 'node:path';
+import { syncLegacyMasters } from '../src/modules/legacy-history/master-sync.js';
+const name = `watererp_master_sync_test_${Date.now()}`;
+const url = new URL(process.env.DATABASE_URL!);
+assert(['localhost','127.0.0.1'].includes(url.hostname));
+const admin = new PrismaClient(); url.pathname = `/${name}`;
+const db = new PrismaClient({ datasources: { db: { url: url.toString() } } });
+try {
+ await admin.$executeRawUnsafe(`CREATE DATABASE \`${name}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
+ const p = spawnSync(process.execPath,[path.resolve('../../node_modules/prisma/build/index.js'),'db','execute','--schema','prisma/schema.prisma','--file','../../database/schema.sql'],{env:{...process.env,DATABASE_URL:url.toString()},encoding:'utf8',windowsHide:true});
+ assert.equal(p.status,0,p.stderr);
+ await db.$executeRawUnsafe(`CREATE TABLE customer (customer_id varchar(20), customer_id_mark varchar(20), customer_name varchar(600), customer_address varchar(500), contact_person varchar(100), customer_phone varchar(32), customer_telephone varchar(32), customer_bill_form varchar(30), customer_invoice varchar(30), customer_bill_address varchar(500), customer_collect_money varchar(30), customer_bucket varchar(20), customer_remain varchar(20), area_id varchar(20), area_id_2 varchar(20), company varchar(100), customer_remark text)`);
+ await db.$executeRawUnsafe(`INSERT INTO customer (customer_id,customer_id_mark,customer_name,customer_address,customer_bucket,customer_remain) VALUES ('1','1','測試客戶','原始地址','99','99')`);
+ assert.equal((await syncLegacyMasters(db,db)).customersCreated,1);
+ const c = await db.customer.findFirstOrThrow({include:{addresses:true}}); const a=c.addresses[0]!;
+ const order = await db.salesOrder.create({data:{orderNo:'SYNC-PRESERVE',customerId:c.id,deliveryAddressId:a.id}});
+ const ledger = await db.customerLedgerEntry.create({data:{customerId:c.id,entryType:'test',amount:123,salesOrderId:order.id}});
+ assert.equal(c.prepaidBarrelBalance,0); assert.equal(a.barrelsOnSite,0);
+ await db.customer.update({where:{id:c.id},data:{prepaidBarrelBalance:12,billingType:'monthly'}});
+ await db.deliveryAddress.update({where:{id:a.id},data:{barrelsOnSite:7,patrolWeekday:3,latitude:25,longitude:121}});
+ await db.$executeRawUnsafe(`UPDATE customer SET customer_name='最新名稱',customer_address='最新地址',customer_phone='12345'`);
+ const second=await syncLegacyMasters(db,db); assert.equal(second.customersUpdated,1); assert.equal(second.addressesCreated,0);
+ const updated=await db.customer.findUniqueOrThrow({where:{id:c.id},include:{addresses:true}});
+ assert.equal(updated.name,'最新名稱'); assert.equal(updated.prepaidBarrelBalance,12); assert.equal(updated.billingType,'monthly');
+ assert.equal(updated.addresses[0].id,a.id); assert.equal(updated.addresses[0].barrelsOnSite,7); assert.equal(updated.addresses[0].patrolWeekday,3); assert.equal(updated.addresses[0].latitude,null);
+ await Promise.all([syncLegacyMasters(db,db),syncLegacyMasters(db,db)]);
+ assert.equal(await db.customer.count(),1); assert.equal(await db.deliveryAddress.count(),1);
+ assert.deepEqual(await db.salesOrder.findUnique({where:{id:order.id}}),order);
+ assert.deepEqual(await db.customerLedgerEntry.findUnique({where:{id:ledger.id}}),ledger);
+ await db.customer.create({data:{customerCode:'000002',name:'新系統專屬'}});
+ await db.$executeRawUnsafe(`INSERT INTO customer(customer_id,customer_id_mark,customer_name,customer_address) VALUES ('2','2','不應覆寫','另一地址')`);
+ assert.equal((await syncLegacyMasters(db,db)).skipped,1);
+ assert.equal((await db.customer.findUniqueOrThrow({where:{customerCode:'000002'}})).name,'新系統專屬');
+ await db.$executeRawUnsafe(`UPDATE customer SET customer_name='回復測試' WHERE customer_id='1'`);
+ await db.$executeRawUnsafe(`INSERT INTO customer(customer_id,customer_id_mark,customer_name,customer_address) VALUES ('3','3',REPEAT('長',300),'第三地址')`);
+ await assert.rejects(syncLegacyMasters(db,db));
+ assert.equal((await db.customer.findUniqueOrThrow({where:{id:c.id}})).name,'最新名稱'); assert.equal(await db.customer.count(),2);
+ console.log('PASS: create, repeat/concurrent sync, stable IDs, preserve balances/patrol, reset coordinates, protect local customers, atomic rollback. Database: '+name);
+ if (process.argv.includes('--ui')) {
+   await db.$executeRawUnsafe(`DELETE FROM customer WHERE customer_id='3'`);
+   await db.user.create({data:{employeeCode:'SYNCTEST',name:'同步測試',role:'admin',passwordHash:await bcrypt.hash('SyncTest2026!',4)}});
+   const env={...process.env,DATABASE_URL:url.toString(),LEGACY_DATABASE_URL:url.toString(),PORT:'3111',HOST:'127.0.0.1',JWT_SECRET:'isolated-sync-test-secret-2026',VITE_API_PROXY_TARGET:'http://127.0.0.1:3111'};
+   const api=spawn(process.execPath,['--import','tsx','src/index.ts'],{env,windowsHide:true,stdio:'inherit'});
+   const web=spawn(process.execPath,[path.resolve('../../node_modules/vite/bin/vite.js'),'--host','127.0.0.1','--port','5179','--strictPort'],{cwd:path.resolve('../web-admin'),env,windowsHide:true,stdio:'inherit'});
+   console.log('UI http://127.0.0.1:5179/data/customers | SYNCTEST / SyncTest2026!');
+   process.on('SIGINT',()=>{api.kill();web.kill();process.exit();});
+   await new Promise(()=>{});
+ }
+} finally { await db.$disconnect(); await admin.$disconnect(); }
