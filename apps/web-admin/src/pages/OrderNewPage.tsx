@@ -251,6 +251,25 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
   const [lineProductCodes, setLineProductCodes] = useState<Record<string, string>>({});
   const [promotionPreview, setPromotionPreview] = useState<string[]>([]);
   const lineFieldRefs = useRef<Record<string, HTMLElement | null>>({});
+  const remarkRef = useRef<HTMLTextAreaElement | null>(null);
+  const resizeRemark = useCallback(() => {
+    const input = remarkRef.current;
+    if (!input) return;
+    input.style.height = "auto";
+    input.style.height = `${Math.max(56, input.scrollHeight + 2)}px`;
+  }, []);
+  useEffect(() => { resizeRemark(); }, [form.remark, resizeRemark]);
+  useEffect(() => {
+    const input = remarkRef.current;
+    if (!input) return;
+    let width = input.getBoundingClientRect().width;
+    const observer = new ResizeObserver(() => {
+      const next = input.getBoundingClientRect().width;
+      if (next !== width) { width = next; resizeRemark(); }
+    });
+    observer.observe(input);
+    return () => observer.disconnect();
+  }, [resizeRemark]);
   const pendingLineFocus = useRef<{ rowId: string; field: OrderLineField } | null>(null);
 
   useEffect(() => {
@@ -279,25 +298,6 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
     pendingLineFocus.current = null;
     focusLineField(pending.rowId, pending.field);
   }, [form.lines, focusLineField]);
-
-  const alternateCandidates = useMemo(() => {
-    const q = customerKeyword.trim();
-    if (!q) return [];
-    return customers
-      .map((c) => ({ c, score: scoreCustomerMatch(c, customerKeyword) }))
-      .filter((x) => x.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 18);
-  }, [customers, customerKeyword]);
-
-  const pickerOptions = useMemo(() => {
-    const base = alternateCandidates;
-    if (!form.customerId) return base;
-    if (base.some(({ c }) => String(c.id) === form.customerId)) return base;
-    const sel = customers.find((c) => String(c.id) === form.customerId);
-    if (!sel) return base;
-    return [{ c: sel, score: 0 }, ...base];
-  }, [alternateCandidates, customers, form.customerId]);
 
   useEffect(() => {
     const q = customerKeyword.trim();
@@ -866,35 +866,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
                   />
                   {matchHint ? <p className={orderNewMatchHintClass(matchHint)}>{matchHint}</p> : null}
 
-                  {customerKeyword.trim() && pickerOptions.length > 1 ? (
-                    <div className="field order-new__field--nested">
-                      <label htmlFor="order-new-customer-picker">改選相符客戶</label>
-                      <select
-                        id="order-new-customer-picker"
-                        className="order-new__select-block"
-                        value={form.customerId}
-                        onChange={(e) => {
-                          const id = e.target.value;
-                          const row = pickerOptions.find(({ c }) => String(c.id) === id);
-                          const addrId = row ? defaultDeliveryAddressId(row.c) : "";
-                          setForm((prev) => ({
-                            ...prev,
-                            customerId: id,
-                            deliveryAddressId: addrId,
-                          }));
-                        }}
-                        aria-label="改選其他相符客戶"
-                      >
-                        {pickerOptions.map(({ c }) => (
-                          <option key={String(c.id)} value={String(c.id)}>
-                            {`${c.customerCode ?? "------"} · ${c.name}${c.phone ? ` · ${c.phone}` : ""}`}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  ) : null}
 
-                  <p className="order-new__meta-line">相符約 {alternateCandidates.length} 筆（改選最多 18 筆）</p>
                 </div>
               </div>
 
@@ -1320,7 +1292,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
               </div>
             ))}
           </div>
-          <div className="order-lines__toolbar">
+          <div className="order-lines__toolbar order-new__checkout-summary">
             <button type="button" className="btn btn--secondary btn--sm" onClick={addLine} disabled={form.lines.length >= 30}>
               ＋ 新增商品列
             </button>
@@ -1345,6 +1317,17 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
                 </>
               ) : null}
             </div>
+            <div className="order-new__invoice-summary" aria-label="發票試算" aria-live="polite">
+              <strong>發票 · {form.cashInvoiceMode === "none" ? "不開" : form.cashInvoiceMode === "tax_exclusive" ? `稅外加 ${DEFAULT_VAT_RATE * 100}%` : `含稅 ${DEFAULT_VAT_RATE * 100}%`}</strong>
+              {cashInvoicePreview ? (
+                <>
+                  <span>未稅 <b>$ {cashInvoicePreview.untaxedAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })}</b></span>
+                  <span>稅額 <b>$ {cashInvoicePreview.taxAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })}</b></span>
+                  <span className="order-new__invoice-summary-total">含稅合計 <b>$ {cashInvoicePreview.totalWithTax.toLocaleString(undefined, { maximumFractionDigits: 2 })}</b></span>
+                </>
+              ) : form.cashInvoiceMode !== "none" ? <span className="text-muted">加入現金商品後自動試算</span> : null}
+            </div>
+
           </div>
           {promotionPreview.length > 0 ? (
             <div className="order-new__promotion-preview">
@@ -1357,92 +1340,23 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
             </div>
           ) : null}
 
-          {selectedCustomer && estimatedByBilling.cash > 0 ? (
-            <p className="order-new__cash-policy">
-              <strong>現金列：</strong>建議收款＝本單現金 AR＋可催收舊欠 − 預收錢包；核銷時<strong>本單優先</strong>沖 AR，溢收進預收錢包。
-            </p>
-          ) : null}
-
           <div className="order-new__lines-extras">
-            <div className="order-new__invoice-detail">
-              <div className="order-new__invoice-detail-head">
-                <div className="order-new__invoice-detail-titles">
-                  <h3 className="order-new__invoice-detail-title">發票試算</h3>
-                  <p className="order-new__invoice-detail-lead">
-                    現金／儲值區發票請在步驟一「現金區發票」選擇。稅外加時現金應收為含稅；月結批次發票於 AR 作業台處理。
-                  </p>
-                </div>
-                <span className="order-new__invoice-rate-pill">稅率 {DEFAULT_VAT_RATE * 100}%</span>
-              </div>
-
-              {form.cashInvoiceMode !== "none" && estimatedByBilling.cash <= 0 ? (
-                <p className="order-new__invoice-empty">目前無現金列小計，加入現金商品後即可預覽。</p>
-              ) : null}
-
-              {cashInvoicePreview ? (
-                <div className="order-new__tax-preview">
-                  <div className="order-new__tax-preview-head">
-                    <span className="order-new__tax-preview-title">現金列發票</span>
-                    <span className="order-new__tax-mode-pill">
-                      {cashInvoicePreview.mode === "tax_exclusive" ? "稅外加" : "含稅"}
-                    </span>
-                  </div>
-                  <div className="order-new__tax-rows">
-                    <div className="order-new__tax-row">
-                      <span className="order-new__tax-row__label">未稅合計</span>
-                      <span className="order-new__tax-row__value num">
-                        ${" "}
-                        {cashInvoicePreview.untaxedAmount.toLocaleString(undefined, {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2,
-                        })}
-                      </span>
-                    </div>
-                    <div className="order-new__tax-row">
-                      <span className="order-new__tax-row__label">營業稅</span>
-                      <span className="order-new__tax-row__value num">
-                        ${" "}
-                        {cashInvoicePreview.taxAmount.toLocaleString(undefined, {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2,
-                        })}
-                      </span>
-                    </div>
-                    <div className="order-new__tax-row order-new__tax-row--total">
-                      <span className="order-new__tax-row__label">含稅總額</span>
-                      <span className="order-new__tax-row__value num">
-                        ${" "}
-                        {cashInvoicePreview.totalWithTax.toLocaleString(undefined, {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2,
-                        })}
-                      </span>
-                    </div>
-                  </div>
-                  <p className="order-new__tax-preview-note">
-                    {cashInvoicePreview.mode === "tax_exclusive"
-                      ? "稅外加：現金列合計視為未稅，系統另計稅額；司機收款以含稅為準。"
-                      : "含稅：現金列合計為含稅總額，系統反拆未稅與稅額（憑證參考）。"}
-                  </p>
-                </div>
-              ) : null}
-            </div>
-
             <div className="order-new__lines-extras-remark">
               <div className="field order-new__field--remark">
                 <label htmlFor="order-new-remark">商品／訂單備註（紙上，選填）</label>
                 <textarea
                   id="order-new-remark"
+                  ref={remarkRef}
                   className="order-new__input-remark"
                   rows={2}
-                  placeholder="例如：代收貨款、指定時段、請放管理室…；亦可點選下方標語快速加入"
+                  placeholder="備註（選填）：指定時段、放管理室…"
                   value={form.remark}
                   onChange={(e) => setForm({ ...form, remark: e.target.value })}
                 />
-                <RemarkSloganPicker value={form.remark} onChange={(remark) => setForm({ ...form, remark })} />
               </div>
               <div className="order-new__submit-area order-new__submit-area--inline">
                 <div className="form-actions">
+                  <RemarkSloganPicker className="order-new__slogans-inline" value={form.remark} onChange={(remark) => setForm({ ...form, remark })} />
                   <button type="submit" className="btn btn--primary" disabled={saving}>
                     {saving ? "建立中..." : "建立訂單"}
                   </button>

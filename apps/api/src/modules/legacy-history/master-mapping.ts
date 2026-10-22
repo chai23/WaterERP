@@ -80,6 +80,48 @@ export function normalizeTaxId(raw: string): string | null {
   return digits.length === 8 ? digits : null;
 }
 
+export function companyLabel(raw: string | undefined | null): string | null {
+  const c = trimToNull(raw);
+  if (!c || c === "尚未分配") return null;
+  return c.slice(0, 200);
+}
+
+/** 主地址優先；主地址未分區時才用其他地址的分區。99 是舊系統的尚未分配。 */
+export function resolveLegacyZoneKey(rows: Array<{ areaId: string; areaId2: string }>): string | null {
+  for (const row of rows) {
+    for (const raw of [row.areaId, row.areaId2]) {
+      const key = String(raw ?? "").trim();
+      if (!key || key === "99") continue;
+      return key;
+    }
+  }
+  return null;
+}
+
+export function resolveCompanyLabel(rows: Array<{ company: string }>): string | null {
+  for (const row of rows) {
+    const label = companyLabel(row.company);
+    if (label) return label;
+  }
+  return null;
+}
+
+export type LegacyArea = { areaId: string; areaName: string };
+
+export async function loadLegacyAreas(legacy: PrismaClient): Promise<LegacyArea[]> {
+  const raw = await legacy.$queryRawUnsafe<Record<string, unknown>[]>(
+    `SELECT area_id, area_name FROM area ORDER BY area_id`,
+  );
+  const areas: LegacyArea[] = [];
+  for (const r of raw) {
+    const areaId = String(r.area_id ?? "").trim();
+    if (!areaId || areaId === "99") continue;
+    const areaName = (trimToNull(String(r.area_name ?? "")) ?? areaId).slice(0, 50);
+    areas.push({ areaId, areaName });
+  }
+  return areas;
+}
+
 export function cleanAddressLine(raw: string): string {
   let addr = raw.trim();
   addr = addr.replace(/^[\{（(]\d{1,2}[\}）)]\s*/u, "");

@@ -34,7 +34,7 @@ export default function OrderCreatePage() {
   );
 
   return (
-    <section className="card order-new-page order-new-page--pro order-create-page">
+    <section className={`card order-new-page order-new-page--pro order-create-page${pageTab === "new" ? " order-create-compact" : ""}`}>
       <header className="order-new__hero">
         <div className="order-new__hero-top">
           <div className="order-new__hero-titles">

@@ -490,3 +490,111 @@
 .dispatch-return-actions {display:flex;gap:12px;align-items:center;margin-top:6px;}
 .dispatch-return-actions button {color:var(--brand);font-size:12px;text-decoration:underline;}
 .dispatch-return-handle {touch-action:none;user-select:none;cursor:grab !important;}
+
+/* Compact order workstation: keep primary entry and reference side by side. */
+:root[data-theme] .order-create-compact .order-new__hero { padding:0 0 12px; display:grid; grid-template-columns:1fr auto; align-items:center; gap:4px 16px; }
+.order-create-compact .order-new__hero-top { grid-column:1; }
+:root[data-theme] .order-create-compact .order-new__hero-lead { margin:0; font-size:13px; line-height:1.5; grid-column:1; }
+.order-create-compact .order-assign-tabs { grid-column:2; grid-row:1 / 3; margin:0; }
+:root[data-theme] .order-create-compact .order-new__form--layout { display:grid; grid-template-columns:minmax(0, 3fr) minmax(0, 2fr); gap:12px; align-items:start; }
+.order-create-compact .order-new__workspace { grid-column:1 / -1; grid-template-columns:minmax(280px, .65fr) minmax(0, 1.35fr); gap:12px; align-items:start; }
+.order-create-compact .order-new__zone--history { grid-column:2; max-height:440px; }
+:root[data-theme] .order-create-compact .order-new__zone-head { padding:9px 14px; min-height:0; gap:8px; }
+:root[data-theme] .order-create-compact .order-new__zone-body { padding:12px 14px; }
+.order-create-compact .order-new__zone-index { width:24px; height:24px; font-size:12px; }
+.order-create-compact .order-new__tool-section-label { display:none; }
+.order-create-compact .order-new__surface-rule { margin:9px 0; }
+.order-create-compact .field { margin-bottom:0; gap:4px; }
+.order-create-compact .order-new__meta-line { margin:4px 0 0; }
+:root[data-theme] .order-create-compact .order-new__empty-state { padding:20px 12px; margin:0; }
+.order-create-compact .order-new__cust-billing-grid { gap:12px; margin-top:8px; }
+.order-create-compact .order-new__cust-head { padding:0 0 8px; }
+.order-create-compact .order-new__cust-billing-merge { padding:10px; }
+.order-create-compact .order-new__billing-cards { gap:6px; }
+:root[data-theme] .order-create-compact .order-new__billing-card { padding:8px; }
+.order-create-compact .order-new__billing-note { margin:6px 0 0; }
+.order-create-compact .order-new__addr-cards { max-height:140px; overflow:auto; }
+.order-create-compact .order-new__addr-card { padding:8px 10px; }
+.order-create-compact .order-new__lines-extras { display:flex; flex-direction:column; gap:8px; margin-top:8px; }
+.order-create-compact .order-new__lines-extras > * { width:100%; min-width:0; }
+:root[data-theme] .order-create-compact .order-new__invoice-detail { padding:8px 12px; margin:0; }
+.order-create-compact .order-new__invoice-detail summary { cursor:pointer; color:var(--brand); font-weight:600; }
+.order-create-compact .order-new__invoice-detail-head { margin:8px 0; }
+.order-create-compact .order-new__lines-extras-remark { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; align-items:end; }
+.order-create-compact .order-new__input-remark { min-height:48px; }
+:root[data-theme] .order-create-compact .order-new__submit-area { padding:0; margin:0; border:0; }
+.order-create-compact .order-lines__toolbar { margin-top:6px; padding:6px 8px; }
+.order-create-compact .order-new__history-table { max-height:330px; overflow:auto; }
+.order-create-compact :is(.order-new__history-head, .order-new__history-row) { grid-template-columns:90px 60px minmax(100px,1fr) 50px 110px; gap:6px; padding-left:8px; padding-right:8px; }
+.order-create-compact .order-new__history-row__goods { white-space:normal; overflow-wrap:anywhere; overflow:visible; }
+.order-create-compact .order-new__history-row__no { white-space:normal; overflow-wrap:anywhere; }
+@media (max-width:1200px) {
+  :root[data-theme] .order-create-compact .order-new__form--layout { grid-template-columns:minmax(0,1fr); }
+  .order-create-compact .order-new__zone--history { grid-column:1; }
+}
+@media (max-width:760px) {
+  :root[data-theme] .order-create-compact .order-new__hero { display:block; }
+  .order-create-compact .order-assign-tabs { margin-top:10px; }
+  .order-create-compact .order-new__workspace { grid-template-columns:minmax(0,1fr); }
+  .order-create-compact .order-new__lines-extras-remark { grid-template-columns:minmax(0,1fr); }
+}
+@media (min-width:1400px) {
+  .order-create-compact .order-new__zone--tools .order-new__zone-body { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:12px; }
+  .order-create-compact .order-new__zone--tools .order-new__surface-rule { display:none; }
+  .order-create-compact .order-new__zone--tools .order-new__inline-row { display:grid; grid-template-columns:1fr; gap:6px; }
+}
+:root[data-theme] .order-create-compact .order-new__tool-section { margin:0; padding:0; }
+:root[data-theme] .order-create-compact .order-new__surface-rule { margin:8px 0; }
+:root[data-theme] .order-create-compact :is(input,select) { min-height:36px; padding-top:6px; padding-bottom:6px; }
+:root[data-theme] .order-create-compact .order-new__invoice-detail { padding:6px 10px; }
+:root[data-theme] .order-create-compact .order-lines__row { padding:6px 10px; }
+:root[data-theme] .order-create-compact .order-new__input-remark { height:48px; min-height:48px; }
+.order-create-compact .order-new__submit-area .form-actions { margin:0; }
+@media (min-width:1100px) {
+  .order-create-compact .order-new__cust-billing-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); align-items:start; }
+  .order-create-compact .order-new__cust-head { display:flex; flex-direction:row; justify-content:space-between; align-items:center; text-align:left; }
+  .order-create-compact .order-new__cust-head-main { justify-content:flex-start; }
+  .order-create-compact .order-new__cust-head-meta { margin:0; }
+  .order-create-compact .order-new__panel-label { margin:0 0 6px; }
+}
+.order-create-compact .order-new__lines-extras-remark { align-items:start; }
+:root[data-theme] .order-create-compact .order-new__submit-area--inline { margin-top:24px; }
+.order-create-page .order-new__invoice-summary { display:flex; flex-wrap:wrap; align-items:center; gap:8px 20px; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--bg-app); font-size:13px; line-height:1.5; }
+.order-create-page .order-new__invoice-summary > strong { color:var(--brand); }
+.order-create-page .order-new__invoice-summary-total { margin-left:auto; color:var(--brand); }
+.order-create-page .order-new__invoice-summary span { white-space:nowrap; }
+:root[data-theme] .order-create-page .order-new__checkout-summary { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--bg-app); }
+:root[data-theme] .order-create-page .order-new__checkout-summary .order-new__totals-bar { margin-left:auto; padding:0; border:0; background:transparent; }
+:root[data-theme] .order-create-page .order-new__checkout-summary .order-new__invoice-summary { flex:1 0 100%; width:auto; margin:0; padding:8px 0 0; border:0; border-top:1px solid var(--border); border-radius:0; background:transparent; }
+/* Center the short remark field and align slogans with the submit action. */
+.order-create-compact .order-new__lines-extras-remark { display:flex; flex-direction:column; align-items:center; gap:10px; }
+.order-create-compact .order-new__field--remark { width:100%; max-width:560px; }
+:root[data-theme] .order-create-compact .order-new__submit-area--inline { width:100%; margin:0; padding:0; }
+.order-create-compact .order-new__submit-area .form-actions { display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:12px; }
+.order-create-compact .order-new__slogans-inline { display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:8px; margin:0; }
+.order-create-compact .order-new__slogans-inline .remark-slogan-picker__label { margin:0; }
+.order-create-compact .order-new__slogans-inline .remark-slogan-picker__chips { margin:0; align-items:center; justify-content:center; }
+.order-create-compact .order-new__slogans-inline .remark-slogan-picker__hint { display:none; }
+.order-create-compact .order-new__submit-area .feedback { flex-basis:100%; text-align:center; }
+/* Single centered row: remark, slogan picker, submit. */
+.order-create-compact .order-new__lines-extras-remark { flex-direction:row; flex-wrap:nowrap; justify-content:center; align-items:center; gap:14px; }
+.order-create-compact .order-new__field--remark { flex:0 1 300px; width:300px; min-width:140px; max-width:300px; }
+.order-create-compact .order-new__field--remark > label { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+:root[data-theme] .order-create-compact .order-new__input-remark { height:38px; min-height:38px; }
+:root[data-theme] .order-create-compact .order-new__submit-area--inline { width:auto; flex:0 0 auto; }
+.order-create-compact .order-new__submit-area .form-actions { flex-wrap:nowrap; }
+.order-create-compact .order-new__slogans-inline { flex-wrap:nowrap; }
+.order-create-compact .order-new__slogans-inline .remark-slogan-picker__label { white-space:nowrap; }
+.order-create-compact .order-new__slogans-inline .remark-slogan-picker__chips { flex-wrap:nowrap; max-width:180px; overflow-x:auto; }
+.order-create-compact .order-new__lines-extras-remark { overflow-x:auto; padding:2px; }
+.order-create-compact .order-new__lines-extras-remark { justify-content:safe center; }
+/* Left half for notes; remaining space for wrapping slogans and right action. */
+.order-create-compact .order-new__lines-extras-remark { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); align-items:center; justify-content:stretch; overflow:visible; gap:12px; padding:2px; }
+.order-create-compact .order-new__field--remark { width:100%; min-width:0; max-width:none; }
+:root[data-theme] .order-create-compact .order-new__input-remark { min-height:56px; height:auto; max-height:none; overflow:hidden; resize:none; box-sizing:border-box; line-height:1.5; }
+:root[data-theme] .order-create-compact .order-new__submit-area--inline { width:100%; min-width:0; }
+.order-create-compact .order-new__submit-area .form-actions { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:10px; }
+.order-create-compact .order-new__slogans-inline { min-width:0; flex-wrap:wrap; justify-content:flex-start; }
+.order-create-compact .order-new__slogans-inline .remark-slogan-picker__chips { max-width:none; flex-wrap:wrap; justify-content:flex-start; overflow:visible; }
+.order-create-compact .order-new__submit-area .form-actions > button { justify-self:end; white-space:nowrap; }
+.order-create-compact .order-new__submit-area .feedback { grid-column:1 / -1; }
