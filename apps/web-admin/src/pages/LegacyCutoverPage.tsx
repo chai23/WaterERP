@@ -14,7 +14,7 @@ const labels: Record<string, string> = { cash: "一般未收款", monthly_billed
 export default function LegacyCutoverPage() {
   const [state, setState] = useState<State | null>(null);
   const [draft, setDraft] = useState<Snapshot | null>(null);
-  const [startDate, setStartDate] = useState(todayLocalYmd());
+  const [startDate, setStartDate] = useState(todayLocalYmd);
   const [step, setStep] = useState(1);
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -32,7 +32,7 @@ export default function LegacyCutoverPage() {
   const dialogRef = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (confirmation) dialogRef.current?.showModal(); }, [confirmation]);
   const applied = state?.status === "applied";
-  const accept = (s: State) => { setState(s); setDraft(s.snapshot); setDirty(false); if (s.snapshot) setStartDate(s.snapshot.startDate); };
+  const accept = (s: State) => { setState(s); setDraft(s.snapshot); setDirty(false); };
   const request = async (path = "", method = "GET", body?: unknown): Promise<State> => {
     const res = await fetch(`/api/legacy-cutover/handover${path}`, { method, ...(body ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}) });
     const text = await res.text();
