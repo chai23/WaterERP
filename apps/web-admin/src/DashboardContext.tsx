@@ -129,6 +129,7 @@ export type OrderFormLine = {
   linePurpose: LinePurpose;
   /** 補送（破桶補水）；預設單價 $0，仍計未收回空桶 */
   isReplenishment: boolean;
+  isManualGift: boolean;
 };
 
 export function newOrderFormLine(defaultBilling: LineBillingType = "cash"): OrderFormLine {
@@ -143,6 +144,7 @@ export function newOrderFormLine(defaultBilling: LineBillingType = "cash"): Orde
     billingType: defaultBilling,
     linePurpose: "delivery",
     isReplenishment: false,
+    isManualGift: false,
   };
 }
 
@@ -689,6 +691,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
             billingType: l.billingType,
             linePurpose: l.linePurpose,
             isReplenishment: Boolean(l.isReplenishment),
+            isManualGift: Boolean(l.isManualGift),
           })),
         }),
       });

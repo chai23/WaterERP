@@ -4381,6 +4381,7 @@ app.get("/api/customers/:customerId/last-product-prices", async (req, res) => {
       orderedAt: string;
     }> = [];
     for (const r of rows) {
+        if (r.isPromotionGift || r.isReplenishment) continue;
       const key = r.productId.toString();
       if (seen.has(key)) continue;
       seen.add(key);
@@ -9293,13 +9294,15 @@ async function createConfirmedSalesOrder(
           linePurpose?: unknown;
           invoiceMode?: unknown;
           isReplenishment?: unknown;
+          isManualGift?: unknown;
         };
         const pid = toBigInt(r.productId);
         const q = Number(r.qty);
         if (!pid || !Number.isInteger(q) || q < 0) {
           return { status: 400, payload: { ok: false, message: "明細錯誤：每列需有效 productId 與 qty（非負整數，0 表示數量待定）" } };
         }
-        const isReplenishment = orderSource === "liff" ? false : Boolean(r.isReplenishment);
+        const isManualGift = orderSource === "admin" && r.isManualGift === true;
+        const isReplenishment = orderSource === "liff" || isManualGift ? false : Boolean(r.isReplenishment);
         let unitPrice: Prisma.Decimal | null = null;
         if (orderSource !== "liff" && r.unitPrice !== undefined && r.unitPrice !== null && r.unitPrice !== "") {
           const up = Number(r.unitPrice);
@@ -9310,7 +9313,8 @@ async function createConfirmedSalesOrder(
         } else if (isReplenishment) {
           unitPrice = new Prisma.Decimal(0);
         }
-        const linePurpose = isReplenishment ? "delivery" : normalizeLinePurpose(r.linePurpose);
+        if (isManualGift) unitPrice = new Prisma.Decimal(0);
+        const linePurpose = (isManualGift || isReplenishment) ? "delivery" : normalizeLinePurpose(r.linePurpose);
         if (isReplenishment && normalizeLinePurpose(r.linePurpose) === "prepaid_barrel_topup") {
           return { status: 400, payload: { ok: false, message: "補送不可同時為預付桶儲值" } };
         }
@@ -9318,7 +9322,10 @@ async function createConfirmedSalesOrder(
           productId: pid,
           qty: q,
           unitPrice,
-          billingType: isReplenishment ? "cash" : normalizeLineBillingType(r.billingType, "cash"),
+          isPromotionGift: isManualGift,
+          promotionRuleKey: isManualGift ? "manual_gift" : null,
+          promotionNote: isManualGift ? "手動贈送" : null,
+          billingType: (isManualGift || isReplenishment) ? "cash" : normalizeLineBillingType(r.billingType, "cash"),
           linePurpose,
           invoiceMode: normalizeLineInvoiceMode(r.invoiceMode),
           isReplenishment,
@@ -9402,7 +9409,7 @@ async function createConfirmedSalesOrder(
     });
 
     const promotionApplied = await applyPromotions(prisma, linesInResolved);
-    const linesAfterPromotions = promotionApplied.lines as LineIn[];
+    const linesAfterPromotions = [...promotionApplied.lines, ...linesIn.filter((l) => l.isPromotionGift && l.promotionRuleKey === "manual_gift")] as LineIn[];
 
     for (const l of linesAfterPromotions) {
       if (l.linePurpose === "prepaid_barrel_topup") {
@@ -9440,6 +9447,8 @@ async function createConfirmedSalesOrder(
       const history = await prisma.salesOrderLine.findMany({
         where: {
           productId: { in: uniqueIds },
+          isPromotionGift: false,
+          isReplenishment: false,
           salesOrder: { customerId, status: { not: "cancelled" } },
         },
         orderBy: { id: "desc" },

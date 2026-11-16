@@ -458,7 +458,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
       ...f,
       cashInvoiceMode: inv,
       lines: f.lines.map((row) => {
-        if (row.linePurpose === "prepaid_barrel_topup" || row.isReplenishment) {
+        if (row.linePurpose === "prepaid_barrel_topup" || row.isReplenishment || row.isManualGift) {
           return { ...row, billingType: "cash" };
         }
         return { ...row, billingType: bt };
@@ -473,7 +473,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
     setForm((f) => {
       let changed = false;
       const nextLines = f.lines.map((ln) => {
-        if (!ln.productId || ln.isReplenishment) return ln;
+        if (!ln.productId || ln.isReplenishment || ln.isManualGift) return ln;
         const p = activeProducts.find((x) => String(x.id) === ln.productId);
         if (!p) return ln;
         const price = defaultUnitPriceForProduct(p, lastPriceMap);
@@ -494,7 +494,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
       form.lines.filter((l) => l.linePurpose === "prepaid_barrel_topup" && l.productId).map((l) => l.productId),
     );
     return form.lines.map((l) => {
-      if (!l.productId || l.qty <= 0) return 0;
+      if (!l.productId || l.qty <= 0 || l.isManualGift) return 0;
       const p = activeProducts.find((x) => String(x.id) === l.productId);
       if (!p) return 0;
       const up = l.unitPrice.trim() === "" ? Number(p.salePrice) : Number(l.unitPrice);
@@ -540,14 +540,14 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
   const promotionPreviewSig = useMemo(
     () =>
       form.lines
-        .filter((l) => l.productId && l.qty > 0)
+        .filter((l) => l.productId && l.qty > 0 && !l.isManualGift)
         .map((l) => `${l.productId}:${l.qty}:${l.linePurpose}:${l.billingType}:${l.isReplenishment ? 1 : 0}`)
         .join("|"),
     [form.lines],
   );
 
   useEffect(() => {
-    const filled = form.lines.filter((l) => l.productId && l.qty > 0);
+    const filled = form.lines.filter((l) => l.productId && l.qty > 0 && !l.isManualGift);
     if (filled.length === 0) {
       setPromotionPreview([]);
       return;
@@ -629,7 +629,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
           return { ...ln, productId: "", unitPrice: ln.unitPrice };
         }
         const pid = String(hit.id);
-        const price = ln.isReplenishment ? "0" : defaultUnitPriceForProduct(hit, lastPriceMap);
+        const price = (ln.isReplenishment || ln.isManualGift) ? "0" : defaultUnitPriceForProduct(hit, lastPriceMap);
         if (ln.productId !== pid) {
           changed = true;
           return { ...ln, productId: pid, unitPrice: price };
@@ -734,6 +734,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
       billingType: LineBillingType;
       linePurpose: LinePurpose;
       isReplenishment: boolean;
+      isManualGift: boolean;
     }>,
   ) => {
     setForm((f) => ({
@@ -760,7 +761,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
           validProduct = true;
           const pid = String(hit.id);
           const catalogPrice = defaultUnitPriceForProduct(hit, lastPriceMap);
-          const price = ln.isReplenishment ? "0" : catalogPrice;
+          const price = (ln.isReplenishment || ln.isManualGift) ? "0" : catalogPrice;
           const productChanged = ln.productId !== pid;
           return {
             ...ln,
@@ -1220,7 +1221,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
                       value={row.billingType}
                       onChange={(e) => updateLine(row.id, { billingType: e.target.value as LineBillingType })}
                       onKeyDown={(e) => handleLineFieldEnter(e, row.id, "billing")}
-                      disabled={row.linePurpose === "prepaid_barrel_topup" || row.isReplenishment}
+                      disabled={row.linePurpose === "prepaid_barrel_topup" || row.isReplenishment || row.isManualGift}
                       aria-label={`第 ${idx + 1} 列結帳方式`}
                     >
                       <option value="cash">現金</option>
@@ -1234,6 +1235,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
                       min={0}
                       step="0.01"
                       ref={setLineFieldRef(row.id, "price")}
+                      disabled={row.isManualGift}
                       value={row.unitPrice}
                       onChange={(e) => updateLine(row.id, { unitPrice: e.target.value })}
                       onKeyDown={(e) => handleLineFieldEnter(e, row.id, "price")}
@@ -1278,6 +1280,21 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
                 </div>
                 {selectedCustomer ? (
                   <div className="order-line-flags">
+                    <label className={`order-line-flag${row.isManualGift ? " order-line-flag--on" : ""}`} title="免費贈送，仍計實際配送與空桶；不觸發活動贈品">
+                      <input type="checkbox" checked={row.isManualGift} aria-label={`第 ${idx + 1} 列贈送`}
+                        onChange={(e) => {
+                          const on = e.target.checked;
+                          const p = activeProducts.find((x) => String(x.id) === row.productId);
+                          updateLine(row.id, {
+                            isManualGift: on,
+                            isReplenishment: false,
+                            linePurpose: "delivery",
+                            billingType: on ? "cash" : parseLineBilling(selectedCustomer.billingType),
+                            unitPrice: on ? "0" : p ? defaultUnitPriceForProduct(p, lastPriceMap) : "",
+                          });
+                        }} />
+                      贈送
+                    </label>
                     <label
                       className={`order-line-flag${row.linePurpose === "prepaid_barrel_topup" ? " order-line-flag--on" : ""}`}
                       title="現金應收沖清後入帳桶數"
@@ -1285,7 +1302,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
                       <input
                         type="checkbox"
                         checked={row.linePurpose === "prepaid_barrel_topup"}
-                        disabled={row.isReplenishment}
+                        disabled={row.isReplenishment || row.isManualGift}
                         onChange={(e) => {
                           const topup = e.target.checked;
                           updateLine(row.id, {
@@ -1304,7 +1321,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
                       <input
                         type="checkbox"
                         checked={row.isReplenishment}
-                        disabled={row.linePurpose === "prepaid_barrel_topup"}
+                        disabled={row.linePurpose === "prepaid_barrel_topup" || row.isManualGift}
                         onChange={(e) => {
                           const on = e.target.checked;
                           if (on) {
