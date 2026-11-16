@@ -1,0 +1,27 @@
+.no-order-review { width: min(1240px, calc(100vw - 32px)); max-width: none; max-height: 90vh; margin: auto; padding: 0; border: 1px solid var(--border, #d5dfeb); border-radius: 14px; background: var(--surface, #fff); color: var(--text, #24364a); box-shadow: 0 24px 80px #172f4650; }
+.no-order-review[open] { display: flex; flex-direction: column; }
+.no-order-review::backdrop { background: #172f4680; }
+.no-order-review__header, .no-order-review__controls, .no-order-review__footer { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 16px 20px; }
+.no-order-review__header { justify-content: space-between; border-bottom: 1px solid var(--border, #d5dfeb); }
+.no-order-review h2, .no-order-review h3 { margin: 0 0 8px; }
+.no-order-review p { margin: 6px 0; line-height: 1.6; font-size: 13px; }
+.no-order-review__controls label { display: grid; gap: 6px; font-size: 13px; }
+.no-order-review__controls input, .no-order-review__controls select { padding: 8px; border: 1px solid var(--border, #d5dfeb); border-radius: 6px; background: var(--surface, #fff); color: inherit; }
+.no-order-review__content { display: grid; grid-template-columns: minmax(0, 1.8fr) minmax(260px, 1fr); overflow: auto; min-height: 0; flex: 1; border-block: 1px solid var(--border, #d5dfeb); }
+.no-order-review__list { min-width: 0; padding: 16px; }
+.no-order-review__table { overflow: auto; max-height: 48vh; }
+.no-order-review table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.no-order-review th, .no-order-review td { padding: 10px 8px; text-align: left; border-bottom: 1px solid var(--border, #d5dfeb); }
+.no-order-review th { position: sticky; top: 0; background: var(--surface, #fff); white-space: nowrap; }
+.no-order-review td { vertical-align: top; }
+.no-order-review .is-selected { background: var(--surface-hover, #edf2f8); }
+.no-order-review input[type="checkbox"] { width: 17px; height: 17px; }
+.no-order-review__pagination { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; font-size: 13px; }
+.no-order-review__detail { padding: 20px; border-left: 1px solid var(--border, #d5dfeb); overflow-wrap: anywhere; }
+.no-order-review__detail dl { font-size: 13px; line-height: 1.6; }
+.no-order-review__detail dt { font-weight: 600; margin-top: 12px; }
+.no-order-review__detail dd { margin: 4px 0 0; }
+.no-order-review__note { white-space: pre-wrap; }
+.no-order-review__address { padding: 10px 0; border-bottom: 1px solid var(--border, #d5dfeb); font-size: 13px; }
+.no-order-review__footer > div { flex: 1; min-width: 240px; }
+@media (max-width: 900px) { .no-order-review__content { grid-template-columns: 1fr; } .no-order-review__detail { border-left: 0; border-top: 1px solid var(--border, #d5dfeb); } }

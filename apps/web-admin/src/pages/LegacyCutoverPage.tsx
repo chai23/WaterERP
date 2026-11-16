@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { moneyText, todayLocalYmd } from "../adminUtils";
 import { rebaseHandover } from "../handoverSync";
 import { handoverChanges, mergeHandoverSave } from "../handoverAutosave";
+import { NoOrderReviewDialog, type NoOrderReviewCustomer } from "../components/NoOrderReviewDialog";
 
 type Order = { id: string; day: string; outstanding: number; received: number; completed: boolean; billing: string;
   disposition: string; finalAmount: number; dueDate: string; invoiceMode: string; note: string; arNo?: string };
@@ -11,7 +12,7 @@ type Row = { version: string; noLegacyOrders?: boolean; startDate?: string; cuto
   addresses: { id: string; label: string; barrels: number; original: number }[]; orders: Order[]; handedOver?: boolean };
 type Snapshot = { startDate: string; cutoffDate: string; capturedAt: string; sourceFrozen: boolean; totalsConfirmed: boolean; rows: Row[]; blockers: string[] };
 type State = { revision: number; status: string; snapshot: Snapshot | null; appliedAt: string | null; errors: string[] };
-type NoOrderPreview = { checkedAt: string; rows: { key: string; code: string; name: string; version: string; reason: string }[] };
+type NoOrderPreview = { checkedAt: string; rows: NoOrderReviewCustomer[] };
 const labels: Record<string, string> = { cash: "一般未收款", monthly_billed: "月結已出帳未收", monthly_pending: "月結尚未出帳", exclude: "排除／待辦移交" };
 
 export default function LegacyCutoverPage() {
@@ -35,6 +36,7 @@ export default function LegacyCutoverPage() {
   const [onlyCollectBarrels, setOnlyCollectBarrels] = useState(false);
   const [onlyNoOrders, setOnlyNoOrders] = useState(false);
   const [noOrderPreview, setNoOrderPreview] = useState<NoOrderPreview | null>(null);
+  const [noOrderReviewOpen, setNoOrderReviewOpen] = useState(false);
   const [batchProgress, setBatchProgress] = useState<{ done: number; total: number; success: number; errors: string[] } | null>(null);
   const stopBatch = useRef(false);
   const [singleCode, setSingleCode] = useState("");
@@ -64,7 +66,7 @@ export default function LegacyCutoverPage() {
   };
   useEffect(() => { let live = true; setBusy(true); request().then(s => { if (live) { accept(s); setStep(s.snapshot ? 2 : 1); } }).catch(e => { if (live) setError(e.message); }).finally(() => { if (live) setBusy(false); }); return () => { live = false; }; }, []);
   useEffect(() => {
-    if (!state || busy || confirmation) return;
+    if (!state || busy || confirmation || noOrderReviewOpen) return;
     let live = true, pending = false;
     const controller = new AbortController();
     const sync = async () => {
@@ -96,7 +98,7 @@ export default function LegacyCutoverPage() {
     window.addEventListener("focus", sync);
     document.addEventListener("visibilitychange", sync);
     return () => { live = false; controller.abort(); window.clearInterval(timer); window.removeEventListener("focus", sync); document.removeEventListener("visibilitychange", sync); };
-  }, [state, draft, dirty, busy, confirmation, syncTick, remoteUpdate]);
+  }, [state, draft, dirty, busy, confirmation, syncTick, remoteUpdate, noOrderReviewOpen]);
   useEffect(() => {
     const warn = (e: BeforeUnloadEvent) => { if (dirty || (manualBusy && batchProgress && batchProgress.done < batchProgress.total)) { e.preventDefault(); e.returnValue = ""; } };
     window.addEventListener("beforeunload", warn); return () => window.removeEventListener("beforeunload", warn);
@@ -171,17 +173,19 @@ export default function LegacyCutoverPage() {
   });
   const noOrderKeys = useMemo(() => new Set(noOrderPreview?.rows.map(r => r.key)), [noOrderPreview]);
   const rows = useMemo(() => draft?.rows.filter(r => (!onlyCompleted || r.handedOver) && (!onlyReviewed || (r.included && r.reviewed && !r.handedOver)) && (!onlyExceptions || (r.included && !r.reviewed && !r.handedOver && r.warnings.length > 0)) && (!onlyOpen || !r.handedOver) && (!onlyInactiveNote || r.note.includes("久未叫水")) && (!onlyCollectBarrels || r.note.includes("收空桶")) && (!onlyNoOrders || noOrderKeys.has(r.key)) && `${r.code} ${r.name}`.includes(search.trim())) ?? [], [draft, search, onlyCompleted, onlyReviewed, onlyExceptions, onlyOpen, onlyInactiveNote, onlyCollectBarrels, onlyNoOrders, noOrderKeys]);
-  const noOrderCandidates = rows.filter(r => !r.handedOver && noOrderPreview?.rows.some(p => p.key === r.key && !p.reason));
   const scanNoOrders = () => run(async () => {
     if (current.current.dirty) await save();
     const preview = await request<NoOrderPreview>("/no-order-candidates");
+    if (preview.rows.some(r => !r.details)) throw new Error("請更新後端程式後再開啟客戶檢查視窗。");
     setNoOrderPreview(preview); setOnlyNoOrders(true); setOnlyInactiveNote(false); setOnlyCollectBarrels(false); setSearch("");
     setOnlyOpen(false); setOnlyReviewed(false); setOnlyCompleted(false); setOnlyExceptions(false);
     setBatchProgress(null);
+    setNoOrderReviewOpen(true);
   });
-  const autoNoOrders = () => {
-    const candidates = noOrderCandidates.map(r => ({ code: r.code, name: r.name, version: r.version }));
-    if (!candidates.length || !window.confirm(`將處理目前篩選結果中的 ${candidates.length} 位未交接客戶（包含其他頁）：重新查核無任何舊訂單後，承接舊系統金額、預付桶及各地址空桶，完成交接，標記「舊系統無訂單資料」；空桶非 0 會另加「收空桶」，並將客戶標記流失（原因：其他；說明：系統轉換標記流失）。已完成交接及新系統已有交易者不會重設。確定執行？`)) return;
+  const autoNoOrders = (selected: NoOrderReviewCustomer[]) => {
+    const candidates = selected.filter(r => !r.reason && !r.details.handedOver).map(r => ({ code: r.code, name: r.name, version: r.version }));
+    if (!candidates.length || !window.confirm(`將只處理你已勾選的 ${candidates.length} 位客戶（包含其他頁）：重新查核無任何舊訂單後，承接舊系統金額、預付桶及各地址空桶，完成交接，標記「舊系統無訂單資料」；空桶非 0 會另加「收空桶」，並將客戶標記流失（原因：其他；說明：系統轉換標記流失）。未勾選及已完成交接的客戶不處理。確定執行？`)) return;
+    setNoOrderReviewOpen(false);
     void run(async () => {
       stopBatch.current = false;
       let done = 0, success = 0; const errors: string[] = [];
@@ -196,6 +200,7 @@ export default function LegacyCutoverPage() {
         setBatchProgress({ done, success, total: candidates.length, errors: [...errors] });
       }
       accept(await request());
+      setNoOrderPreview(null); setOnlyNoOrders(false);
       setMessage(`無歷史訂單自動交接：完成 ${success} 位，未完成 ${errors.length} 位${done < candidates.length ? `，尚未處理 ${candidates.length - done} 位` : ""}。`);
     });
   };
@@ -227,6 +232,10 @@ export default function LegacyCutoverPage() {
     const a = document.createElement("a"); a.href = url; a.download = `上線交接-${draft.startDate}.csv`; a.click(); URL.revokeObjectURL(url);
   };
   return <section className="handover-page">
+    {noOrderReviewOpen && noOrderPreview && <NoOrderReviewDialog rows={noOrderPreview.rows} checkedAt={noOrderPreview.checkedAt} onClose={() => setNoOrderReviewOpen(false)} onProcess={autoNoOrders} onInspect={(key, code) => {
+      setNoOrderReviewOpen(false); setSearch(code); setExpanded(key); setStep(2);
+      setOnlyOpen(false); setOnlyReviewed(false); setOnlyCompleted(false); setOnlyExceptions(false); setOnlyInactiveNote(false); setOnlyCollectBarrels(false); setOnlyNoOrders(false);
+    }} />}
     <header className="handover-header"><div><span className="handover-eyebrow">舊系統 → 新系統</span><h2>上線交接</h2><p>一次只完成一位客戶。由舊系統轉入、尚未完成交接的客戶，不能在新系統新增訂單。</p></div><Link className="btn btn--ghost" to="/reports/billing-ar">前往帳務作業台</Link></header>
     <nav className="handover-steps" aria-label="交接步驟">{["設定啟用日", "核對並完成單戶", "查看進度"].map((label, i) => <button key={label} className={step === i + 1 ? "is-active" : ""} disabled={busy || (!draft && i > 0)} onClick={() => setStep(i + 1)}><span>{i + 1}</span>{label}</button>)}</nav>
     {error && <div className="alert alert--error handover-message" role="alert">{error}</div>}
@@ -253,7 +262,7 @@ export default function LegacyCutoverPage() {
       {!!draft.blockers.length && <div className="alert alert--error"><strong>這些來源問題會擋住相關客戶交接</strong><ul>{draft.blockers.map((b, i) => <li key={i}>{b}</li>)}</ul></div>}
       {step === 2 && <div className="card handover-panel">
         <div className="handover-toolbar"><button type="button" className="btn" disabled={busy || applied} onClick={scanNoOrders}>篩選舊系統無歷史訂單</button>{onlyNoOrders && <button type="button" className="btn" disabled={busy} onClick={() => setOnlyNoOrders(false)}>取消無歷史訂單篩選</button>}</div>
-        {onlyNoOrders && noOrderPreview && <div className="handover-note"><p>檢查時間：{new Date(noOrderPreview.checkedAt).toLocaleString("zh-TW")}。查詢所有日期、已收款及分地址的舊訂單；沒有待處理舊單，不代表沒有歷史訂單。</p><p>自動交接會保留舊系統金額、預付桶與各地址空桶，標記「舊系統無訂單資料」；空桶非 0 會加上「收空桶」，客戶狀態改為流失，原因「其他」，說明「系統轉換標記流失」。已交接者保留，新系統已有交易者需人工處理。</p><button type="button" className="btn btn--primary" disabled={busy || dirty || applied || !noOrderCandidates.length} onClick={autoNoOrders}>自動交接篩選結果並標記流失（{noOrderCandidates.length} 位，含其他頁）</button>{noOrderPreview.rows.some(r => r.reason) && <details><summary>無法自動處理／已完成交接的客戶</summary><ul>{noOrderPreview.rows.filter(r => r.reason).map(r => <li key={r.key}>{r.code} {r.name}：{r.reason}</li>)}</ul></details>}</div>}
+        {onlyNoOrders && noOrderPreview && <div className="handover-note"><p>檢查時間：{new Date(noOrderPreview.checkedAt).toLocaleString("zh-TW")}。查詢所有日期、已收款及分地址的舊訂單；沒有待處理舊單，不代表沒有歷史訂單。</p><p>自動交接會保留舊系統金額、預付桶與各地址空桶，標記「舊系統無訂單資料」；空桶非 0 會加上「收空桶」，客戶狀態改為流失，原因「其他」，說明「系統轉換標記流失」。已交接者保留，新系統已有交易者需人工處理。</p><button type="button" className="btn btn--primary" disabled={busy} onClick={() => setNoOrderReviewOpen(true)}>開啟客戶檢查清單（{noOrderPreview.rows.length} 位）</button>{noOrderPreview.rows.some(r => r.reason) && <details><summary>無法自動處理／已完成交接的客戶</summary><ul>{noOrderPreview.rows.filter(r => r.reason).map(r => <li key={r.key}>{r.code} {r.name}：{r.reason}</li>)}</ul></details>}</div>}
         {batchProgress && <div className="handover-note" role="status">已處理 {batchProgress.done} / {batchProgress.total} 位，完成 {batchProgress.success} 位，未完成 {batchProgress.errors.length} 位。{manualBusy && <button type="button" className="btn" onClick={() => { stopBatch.current = true; }}>完成目前這戶後停止</button>}{batchProgress.errors.length > 0 && <details><summary>查看未完成原因</summary><ul>{batchProgress.errors.map((message, index) => <li key={index}>{message}</li>)}</ul></details>}</div>}
         <div className="handover-toolbar"><label className="handover-field">搜尋客戶<input placeholder="客戶代號或名稱" value={search} onChange={e => setSearch(e.target.value)} /></label><label><input type="checkbox" checked={onlyOpen} onChange={e => { setOnlyOpen(e.target.checked); if (e.target.checked) setOnlyCompleted(false); }} /> 只看未完成交接</label><label><input type="checkbox" checked={onlyReviewed} onChange={e => { setOnlyReviewed(e.target.checked); if (e.target.checked) { setOnlyCompleted(false); setOnlyExceptions(false); } }} /> 只看已確認</label><label><input type="checkbox" checked={onlyCompleted} onChange={e => { setOnlyCompleted(e.target.checked); if (e.target.checked) { setOnlyOpen(false); setOnlyReviewed(false); setOnlyExceptions(false); } }} /> 只看已完成交接</label><label><input type="checkbox" checked={onlyExceptions} onChange={e => { setOnlyExceptions(e.target.checked); if (e.target.checked) { setOnlyReviewed(false); setOnlyCompleted(false); } }} /> 只看待處理異常</label><button type="button" className={`btn btn--sm${onlyInactiveNote ? " btn--primary" : ""}`} aria-pressed={onlyInactiveNote} onClick={() => { const enabled = !onlyInactiveNote; setOnlyInactiveNote(enabled); if (enabled) { setOnlyCollectBarrels(false); setOnlyNoOrders(false); setSearch(""); setOnlyOpen(false); setOnlyReviewed(false); setOnlyCompleted(false); setOnlyExceptions(false); } }}>查看久未叫水（{draft.rows.filter(r => r.note.includes("久未叫水")).length}）</button><button type="button" className={`btn btn--sm${onlyCollectBarrels ? " btn--primary" : ""}`} aria-pressed={onlyCollectBarrels} onClick={() => { const enabled = !onlyCollectBarrels; setOnlyCollectBarrels(enabled); if (enabled) { setOnlyInactiveNote(false); setOnlyNoOrders(false); setSearch(""); setOnlyOpen(false); setOnlyReviewed(false); setOnlyCompleted(false); setOnlyExceptions(false); } }}>查看收空桶（{draft.rows.filter(r => r.note.includes("收空桶")).length}）</button><span>已完成交接 {finished} 位 · 已確認待交接 {totals.reviewed} 位 · 待處理異常 {draft.rows.filter(r => r.included && !r.reviewed && !r.handedOver && r.warnings.length > 0).length} 位 · 排除 {totals.excluded} 位</span></div>
         <p>勾選或修改核對內容後，停止輸入約 0.8 秒會自動儲存，不會入帳。展開一位客戶，核對後按「完成此客戶交接」。未完成的舊系統客戶不能新增訂單。{onlyReviewed && <span>「已確認」只顯示已核對、尚未完成交接的客戶；已完成者請使用「只看已完成交接」。</span>}</p>

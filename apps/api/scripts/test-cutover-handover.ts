@@ -294,11 +294,19 @@ try {
       const generated = await api("/legacy-cutover/handover/draft", { customerCode, startDate: "2026-10-01", customerVersion: null });
       assert.equal(generated.status, 200, JSON.stringify(generated));
     }
+    const beforePreview = await readHandover(db);
     const preview = await api("/legacy-cutover/handover/no-order-candidates");
     assert.equal(preview.status, 200, JSON.stringify(preview));
     assert(preview.data.rows.some((r: any) => r.code === "000020" && !r.reason));
     for (const code of ["000021", "000022", "000024"]) assert(!preview.data.rows.some((r: any) => r.code === code), `history must exclude ${code}`);
     const noOrderCandidate = preview.data.rows.find((r: any) => r.code === "000020");
+    assert.equal(noOrderCandidate.details.prepayment, 50);
+    assert.equal(noOrderCandidate.details.prepaidBarrels, 12);
+    assert.equal(noOrderCandidate.details.addresses[0].barrels, 5);
+    assert.equal(noOrderCandidate.details.startDate, "2026-10-01");
+    assert.equal((await readHandover(db)).revision, beforePreview.revision);
+    assert.equal((await db.customer.findUniqueOrThrow({ where: { id: autoCustomer.id } })).handoverCompletedAt, null);
+    assert.equal(await db.customerLedgerEntry.count({ where: { customerId: autoCustomer.id } }), 0);
     const autoBody = { customerCode: "000020", customerVersion: noOrderCandidate.version };
     await db.customerChurnReason.update({ where: { code: "other" }, data: { isActive: false } });
     assert.equal((await api("/legacy-cutover/handover/auto-no-orders", autoBody)).status, 409);

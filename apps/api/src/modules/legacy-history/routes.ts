@@ -144,6 +144,7 @@ export function registerLegacyHistoryRoutes(args: RegisterArgs): void {
       if (!current.snapshot) throw new Error("請先產生交接草稿");
       const rows = current.snapshot.rows.filter(r => !ordered.has(r.code)).map(r => ({
         key: r.key, code: r.code, name: r.name, version: customerVersion(current.snapshot!, r),
+        details: { ...r, startDate: r.startDate ?? current.snapshot!.startDate, cutoffDate: r.cutoffDate ?? current.snapshot!.cutoffDate },
         reason: r.handedOver ? "已完成交接，保留原狀" : !r.customerId ? "尚未對應新系統客戶"
           : r.warnings.some(w => w.startsWith("新系統已有交易")) ? "新系統已有交易，需人工處理"
           : r.warnings.length ? `來源金額或桶數需人工核對：${r.warnings.join("；")}` : "",
