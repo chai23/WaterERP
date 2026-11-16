@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { moneyText, todayLocalYmd } from "../adminUtils";
 import { rebaseHandover } from "../handoverSync";
+import { handoverChanges, mergeHandoverSave } from "../handoverAutosave";
 
 type Order = { id: string; day: string; outstanding: number; received: number; completed: boolean; billing: string;
   disposition: string; finalAmount: number; dueDate: string; invoiceMode: string; note: string; arNo?: string };
@@ -17,7 +18,10 @@ export default function LegacyCutoverPage() {
   const [draft, setDraft] = useState<Snapshot | null>(null);
   const [startDate, setStartDate] = useState(todayLocalYmd);
   const [step, setStep] = useState(1);
-  const [busy, setBusy] = useState(false);
+  const [manualBusy, setBusy] = useState(false);
+  const [autoSaving, setAutoSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const busy = manualBusy || autoSaving;
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -35,10 +39,13 @@ export default function LegacyCutoverPage() {
   const [lastSynced, setLastSynced] = useState<string | null>(null);
   const [remoteUpdate, setRemoteUpdate] = useState<State | null>(null);
   const [syncTick, setSyncTick] = useState(0);
+  const current = useRef({ state, draft, dirty });
+  current.current = { state, draft, dirty };
+  const saveInFlight = useRef<Promise<State> | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (confirmation) dialogRef.current?.showModal(); }, [confirmation]);
   const applied = state?.status === "applied";
-  const accept = (s: State) => { setState(s); setDraft(s.snapshot); setDirty(false); setRemoteUpdate(null); setLastSynced(new Date().toLocaleTimeString("zh-TW")); };
+  const accept = (s: State) => { current.current = { state: s, draft: s.snapshot, dirty: false }; setState(s); setDraft(s.snapshot); setDirty(false); setSaveError(""); setRemoteUpdate(null); setLastSynced(new Date().toLocaleTimeString("zh-TW")); };
   const request = async <T = State,>(path = "", method = "GET", body?: unknown, signal?: AbortSignal): Promise<T> => {
     const res = await fetch(`/api/legacy-cutover/handover${path}`, { method, signal, cache: "no-store", ...(body ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}) });
     const text = await res.text();
@@ -61,12 +68,14 @@ export default function LegacyCutoverPage() {
         if (!live) return;
         if (version.revision !== state.revision) {
           const next = remoteUpdate?.revision === version.revision ? remoteUpdate : await request("", "GET", undefined, controller.signal);
-          if (!live) return;
-          if (!dirty) accept(next);
+          if (!live || saveInFlight.current) return;
+          const local = current.current;
+          if (next.revision < (local.state?.revision ?? 0)) return;
+          if (!local.dirty) accept(next);
           else {
-            const merged = state.snapshot && draft && next.snapshot && next.status !== "applied"
-              ? rebaseHandover(state.snapshot, draft, next.snapshot) : null;
-            if (merged) { setState(next); setDraft(merged); setRemoteUpdate(null); }
+            const merged = local.state?.snapshot && local.draft && next.snapshot && next.status !== "applied"
+              ? rebaseHandover(local.state.snapshot, local.draft, next.snapshot) : null;
+            if (merged) { current.current = { state: next, draft: merged, dirty: true }; setState(next); setDraft(merged); setRemoteUpdate(null); }
             else setRemoteUpdate(next);
           }
         }
@@ -86,36 +95,69 @@ export default function LegacyCutoverPage() {
     window.addEventListener("beforeunload", warn); return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
   const mutate = (change: (d: Snapshot) => void) => {
-    if (!draft || applied || busy) return;
-    const d = structuredClone(draft); change(d); d.totalsConfirmed = false; setDraft(d); setDirty(true); setMessage("");
+    if (!draft || applied || manualBusy) return;
+    const d = structuredClone(current.current.draft!); change(d); d.totalsConfirmed = false;
+    current.current = { ...current.current, draft: d, dirty: true };
+    setDraft(d); setDirty(true); setSaveError(""); setMessage("");
   };
   const editRow = (key: string, change: (r: Row) => void, preserveReview = false) => mutate(d => {
     const r = d.rows.find(r => r.key === key)!; change(r); if (!preserveReview) r.reviewed = false;
   });
   const run = async (action: () => Promise<void>) => { setBusy(true); setError(""); setMessage(""); try { await action(); } catch (e) { setError(e instanceof Error ? e.message : "操作失敗"); } finally { setBusy(false); } };
-  const save = async () => {
+  const saveOnce = (): Promise<State> => {
+    if (saveInFlight.current) return saveInFlight.current;
+    const operation = async () => {
     if (remoteUpdate) throw new Error("其他電腦已修改相同客戶或重新產生草稿，請先處理畫面上方的同步提示。");
-    if (!draft || !state?.snapshot) throw new Error("尚未載入交接草稿");
-    const editable = (r: Row) => ({
-      key: r.key, version: r.version, included: r.included, note: r.note, reviewed: r.reviewed,
-      prepayment: r.prepayment, prepaidBarrels: r.prepaidBarrels,
-      addresses: r.addresses.map(a => ({ id: a.id, barrels: a.barrels })),
-      orders: r.orders.map(o => ({ id: o.id, disposition: o.disposition, finalAmount: o.finalAmount,
-        dueDate: o.dueDate, invoiceMode: o.invoiceMode, note: o.note })),
-    });
-    const previous = new Map(state.snapshot.rows.map(r => [r.key, JSON.stringify(editable(r))]));
-    const rows = draft.rows.filter(r => !r.handedOver).map(editable)
-      .filter(r => JSON.stringify(r) !== previous.get(r.key));
-    const s = await request("/draft", "PUT", { revision: state.revision, partial: true, customerVersions: true,
-      snapshot: { sourceFrozen: draft.sourceFrozen, totalsConfirmed: draft.totalsConfirmed, rows } });
-    accept(s); return s;
+    const { state: base, draft: sent } = current.current;
+    if (!sent || !base?.snapshot) throw new Error("尚未載入交接草稿");
+    const rows = handoverChanges(base.snapshot, sent);
+    if (!rows.length) { accept(base); return base; }
+    setAutoSaving(true); setSaveError("");
+    try {
+      const s = await request("/draft", "PUT", { revision: base.revision, partial: true, customerVersions: true,
+        snapshot: { sourceFrozen: sent.sourceFrozen, totalsConfirmed: sent.totalsConfirmed, rows } });
+      const latest = current.current.draft;
+      if (latest && latest !== sent && s.snapshot) {
+        let merged: Snapshot;
+        try { merged = mergeHandoverSave(sent, latest, s.snapshot, new Set(rows.map(r => r.key))); }
+        catch (e) { setRemoteUpdate(s); throw e; }
+        const pending = handoverChanges(s.snapshot, merged).length > 0;
+        current.current = { state: s, draft: merged, dirty: pending };
+        setState(s); setDraft(merged); setDirty(pending); setRemoteUpdate(null);
+        setLastSynced(new Date().toLocaleTimeString("zh-TW"));
+      } else accept(s);
+      return s;
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "儲存失敗");
+      setSyncTick(t => t + 1);
+      throw e;
+    } finally { setAutoSaving(false); }
+    };
+    const promise = operation().finally(() => { saveInFlight.current = null; });
+    saveInFlight.current = promise;
+    return promise;
   };
-  const generate = () => run(async () => { accept(await request("/draft", "POST", { startDate, revision: state?.revision })); setStep(2); setMessage("全部客戶的交接草稿已保存，尚未寫入任何帳務餘額。請逐戶按「完成此客戶交接」。"); });
+  const save = async () => {
+    let s = await saveOnce();
+    while (current.current.dirty) s = await saveOnce();
+    return s;
+  };
+  useEffect(() => {
+    if (!dirty || busy || applied || confirmation || remoteUpdate || saveError) return;
+    const timer = window.setTimeout(() => { void saveOnce().catch(() => {}); }, 800);
+    return () => window.clearTimeout(timer);
+  }, [draft, state, dirty, busy, applied, confirmation, remoteUpdate, saveError]);
+  const generate = () => run(async () => {
+    const saved = current.current.dirty ? await save() : current.current.state;
+    accept(await request("/draft", "POST", { startDate, revision: saved?.revision }));
+    setStep(2); setMessage("全部客戶的交接草稿已保存，尚未寫入任何帳務餘額。請逐戶按「完成此客戶交接」。");
+  });
   const generateOne = () => run(async () => {
     const customerCode = singleCode.trim();
     if (!/^\d{1,6}$/.test(customerCode)) { setError("客戶編號須為 6 碼以內數字"); return; }
-    accept(await request("/draft", "POST", { startDate, revision: state?.revision, customerCode,
-      customerVersion: state?.snapshot?.rows.find(r => r.code === customerCode.padStart(6, "0"))?.version ?? null }));
+    const saved = current.current.dirty ? await save() : current.current.state;
+    accept(await request("/draft", "POST", { startDate, revision: saved?.revision, customerCode,
+      customerVersion: saved?.snapshot?.rows.find(r => r.code === customerCode.padStart(6, "0"))?.version ?? null }));
     const padded = customerCode.padStart(6, "0");
     setSearch(padded); setExpanded(padded); setStep(2);
     setMessage(`已準備客戶 ${padded} 的交接資料，尚未寫入帳務。核對後按「完成此客戶交接」。`);
@@ -153,6 +195,7 @@ export default function LegacyCutoverPage() {
     <nav className="handover-steps" aria-label="交接步驟">{["設定啟用日", "核對並完成單戶", "查看進度"].map((label, i) => <button key={label} className={step === i + 1 ? "is-active" : ""} disabled={busy || (!draft && i > 0)} onClick={() => setStep(i + 1)}><span>{i + 1}</span>{label}</button>)}</nav>
     {error && <div className="alert alert--error handover-message" role="alert">{error}</div>}
     {message && <div className="alert handover-message" role="status">{message}</div>}
+    {saveError && <div className="alert alert--error" role="alert">自動儲存失敗，修改仍保留在此頁，請勿關閉或重新整理。{saveError} <button type="button" className="btn" disabled={busy || Boolean(remoteUpdate)} onClick={() => void run(async () => { await save(); })}>重試儲存</button></div>}
     <div className="handover-meta" role="status"><span>每 5 秒自動同步交接進度{lastSynced ? ` · 最後檢查 ${lastSynced}` : " · 連線中…"}</span><button type="button" className="btn btn--sm" disabled={busy || Boolean(confirmation)} onClick={() => setSyncTick(t => t + 1)}>立即同步</button></div>
     {syncError && <div className="alert alert--error" role="alert">{syncError} 系統會自動重試。</div>}
     {remoteUpdate && <div className="alert alert--error" role="alert"><p>其他電腦已修改你正在編輯的客戶，或重新產生草稿。你的未儲存內容已保留，目前清單尚未套用新版。伺服器最新已完成 {remoteUpdate.snapshot?.rows.filter(r => r.handedOver).length ?? 0} 位。請先記下要保留的修改，再載入最新資料核對。</p><button type="button" className="btn" disabled={busy} onClick={() => { if (window.confirm("確定捨棄本機未儲存的修改，載入其他電腦更新後的資料？")) { accept(remoteUpdate); setSyncTick(t => t + 1); } }}>捨棄本機修改並載入新版</button></div>}
@@ -170,15 +213,15 @@ export default function LegacyCutoverPage() {
         if (draft) setConfirmation("regenerate"); else void generate();
       }}>{draft ? "重新產生全部客戶草稿" : "產生全部客戶草稿"}</button></div></div>}
     {draft && <>
-      <div className="handover-meta"><span>最近產生：啟用 {draft.startDate} · 承接截至 {draft.cutoffDate}（各戶日期見下方）</span><span>快照 {new Date(draft.capturedAt).toLocaleString("zh-TW")} · 版本 {state?.revision}{dirty ? " · 有未儲存變更" : " · 已保存"}</span></div>
+      <div className="handover-meta"><span>最近產生：啟用 {draft.startDate} · 承接截至 {draft.cutoffDate}（各戶日期見下方）</span><span>快照 {new Date(draft.capturedAt).toLocaleString("zh-TW")} · 版本 {state?.revision}{autoSaving ? " · 儲存中…" : saveError ? " · 儲存失敗，仍有未儲存變更" : dirty ? " · 等待自動儲存…" : " · 已儲存"}</span></div>
       {!!draft.blockers.length && <div className="alert alert--error"><strong>這些來源問題會擋住相關客戶交接</strong><ul>{draft.blockers.map((b, i) => <li key={i}>{b}</li>)}</ul></div>}
       {step === 2 && <div className="card handover-panel">
         <div className="handover-toolbar"><label className="handover-field">搜尋客戶<input placeholder="客戶代號或名稱" value={search} onChange={e => setSearch(e.target.value)} /></label><label><input type="checkbox" checked={onlyOpen} onChange={e => setOnlyOpen(e.target.checked)} /> 只看未完成交接</label><label><input type="checkbox" checked={onlyReviewed} onChange={e => { setOnlyReviewed(e.target.checked); if (e.target.checked) { setOnlyPending(false); setOnlyExceptions(false); } }} /> 只看已確認</label><label><input type="checkbox" checked={onlyPending} onChange={e => { setOnlyPending(e.target.checked); if (e.target.checked) setOnlyReviewed(false); }} /> 只看待確認／排除</label><label><input type="checkbox" checked={onlyExceptions} onChange={e => { setOnlyExceptions(e.target.checked); if (e.target.checked) setOnlyReviewed(false); }} /> 只看待處理異常</label><span>已完成交接 {finished} 位 · 已確認 {totals.reviewed} / {totals.included} 位 · 待處理異常 {draft.rows.filter(r => r.included && !r.reviewed && !r.handedOver && r.warnings.length > 0).length} 位 · 排除 {totals.excluded} 位</span></div>
-        <p>展開一位客戶，核對後按「完成此客戶交接」。未完成的舊系統客戶不能新增訂單。{onlyReviewed && <span>「已確認」是已核對的客戶，包含已完成交接者；搭配「只看未完成交接」可找出仍待交接的客戶。</span>}</p>
+        <p>勾選或修改核對內容後，停止輸入約 0.8 秒會自動儲存，不會入帳。展開一位客戶，核對後按「完成此客戶交接」。未完成的舊系統客戶不能新增訂單。{onlyReviewed && <span>「已確認」是已核對的客戶，包含已完成交接者；搭配「只看未完成交接」可找出仍待交接的客戶。</span>}</p>
         <div className="handover-toolbar handover-pagination"><span>符合 {rows.length} 位 · 第 {currentPage} / {pageCount} 頁（每頁 100 位）</span><button className="btn" disabled={currentPage === 1 || busy} onClick={() => setPage(currentPage - 1)}>上一頁</button><button className="btn" disabled={currentPage === pageCount || busy} onClick={() => setPage(currentPage + 1)}>下一頁</button>{!applied && <button className="btn" disabled={busy || !bulkRows.length} onClick={() => setConfirmation("review")}>批次確認本頁正常客戶（{bulkRows.length}）</button>}</div>
         <div className="handover-customers">{!rows.length && <p>沒有符合條件的客戶。</p>}{pageRows.map(r => <article key={r.key} className={`handover-customer ${!r.included ? "is-excluded" : ""}`}>
           <button className="handover-customer-head" aria-expanded={expanded === r.key} onClick={() => setExpanded(expanded === r.key ? null : r.key)}><span><b>{r.code} · {r.name}</b><small>{r.orders.length} 筆待處理舊單 · 舊預付 {r.sourcePrepaidBarrels} 桶 · 舊空桶 {r.legacyBarrels} 桶</small></span><span className={`handover-status ${r.handedOver || r.reviewed ? "is-done" : ""}`}>{r.handedOver ? "已完成交接" : !r.included ? "已排除" : r.reviewed ? "已確認" : r.warnings.length ? "待處理異常" : "待核對"}</span><span>{expanded === r.key ? "收合 −" : "展開 ＋"}</span></button>
-          {expanded === r.key && <fieldset disabled={busy || applied || Boolean(r.handedOver)} className="handover-customer-body">
+          {expanded === r.key && <fieldset disabled={manualBusy || applied || Boolean(r.handedOver)} className="handover-customer-body">
             <p>此客戶啟用日：{r.startDate ?? draft.startDate} · 承接截至 {r.cutoffDate ?? draft.cutoffDate}（含當天）</p><label><input type="checkbox" checked={r.included} onChange={e => editRow(r.key, r => { r.included = e.target.checked; })} /> 納入本次交接</label>
             {!!r.warnings.length && <ul className="handover-warnings">{r.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>}
             {r.included && <><div className="handover-balance-fields"><label className="handover-field">短溢收總和<input type="number" step="0.01" value={r.prepayment ?? ""} onChange={e => editRow(r.key, r => { r.prepayment = e.target.value === "" ? null : Number(e.target.value); })} /></label><label className="handover-field">預付桶數<input type="number" step="1" value={r.prepaidBarrels} onChange={e => editRow(r.key, r => { r.prepaidBarrels = Number(e.target.value); })} /></label></div>
@@ -193,10 +236,10 @@ export default function LegacyCutoverPage() {
             </div>{o.disposition === "monthly_pending" && <p className="handover-note">開立月結時才產生應收，請選擇與後續月結相同的稅額口徑。已有部分收款者，請先在舊系統結帳，以已出帳餘額承接。</p>}</div>)}</>}
             <label className="handover-field">客戶核對說明／排除後處理方式<textarea maxLength={400} value={r.note} onChange={e => editRow(r.key, r => { r.note = e.target.value; })} placeholder="有異常、調整桶數或排除客戶時必填" /></label>
             {r.included && <label className="handover-review"><input type="checkbox" checked={r.reviewed} onChange={e => editRow(r.key, r => { r.reviewed = e.target.checked; }, true)} /> 已逐項核對此客戶的欠款、月結、短溢收與桶數</label>}
-            {r.handedOver ? <p className="handover-note">此客戶已完成交接，可以在新系統新增訂單。</p> : !applied && <div className="handover-footer"><button type="button" className="btn btn--primary" onClick={() => { setPendingCode(r.code); setConfirmation("customer"); }}>完成此客戶交接</button></div>}
+            {r.handedOver ? <p className="handover-note">此客戶已完成交接，可以在新系統新增訂單。</p> : !applied && <div className="handover-footer"><button type="button" className="btn btn--primary" disabled={busy} onClick={() => { setPendingCode(r.code); setConfirmation("customer"); }}>完成此客戶交接</button></div>}
           </fieldset>}
         </article>)}</div>
-        <div className="handover-footer"><button className="btn" title={dirty ? "保存目前核對內容，稍後可繼續；不會完成交接或入帳" : "目前沒有未儲存的修改"} disabled={busy || applied || !dirty} onClick={() => void run(async () => { await save(); setMessage("草稿已保存，尚未入帳。完成單一客戶後才會寫入該客戶的餘額。"); })}>儲存核對內容（不入帳）</button><button className="btn" disabled={busy} onClick={() => void run(async () => { if (dirty) await save(); setStep(3); })}>查看進度</button></div>
+        <div className="handover-footer"><span role="status">{autoSaving ? "儲存中…" : saveError ? "儲存失敗，請重試" : dirty ? "等待自動儲存…" : "核對內容已儲存"} · 完成交接後才會入帳</span><button className="btn" disabled={busy} onClick={() => void run(async () => { if (dirty) await save(); setStep(3); })}>查看進度</button></div>
       </div>}
       {step === 3 && <div className="card handover-panel"><h3>單戶交接進度</h3><div className="handover-totals">{[["已完成交接", `${finished} 位`], ["尚未完成", `${draft.rows.filter(r => !r.handedOver).length} 位`], ["短溢收淨額", moneyText(totals.prepayment)], ["預付桶", `${totals.prepaid} 桶`], ["各地址空桶", `${totals.barrels} 桶`]].map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div>
         <p>已完成的客戶可以新增訂單。尚未完成交接的舊系統客戶，開新訂單時會被拒絕。請回到客戶清單，一次完成一位。</p>
