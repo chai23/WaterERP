@@ -587,7 +587,7 @@ export async function applyCustomerHandover(legacy: PrismaClient, target: Prisma
   if (matches.length > 1) throw new Error(`客戶編號 ${wanted} 在草稿中有多筆，請先核對主檔`);
   const row = matches[0]!;
   if (row.handedOver) {
-    if (autoNoOrders && !row.noLegacyOrders) throw new Error("此客戶已完成交接，不會重新歸零或改為流失");
+    if (autoNoOrders && !row.noLegacyOrders) throw new Error("此客戶已完成交接，不會重新入帳或改為流失");
     return stored;
   }
   if (expectedVersion !== undefined) assertCustomerVersion(s, row.key, expectedVersion);
@@ -598,7 +598,7 @@ export async function applyCustomerHandover(legacy: PrismaClient, target: Prisma
   const fresh = await buildHandover(legacy, target, rowStartDate, wanted);
   const freshRow = fresh.rows.find(r => r.key === row.key);
   if (!freshRow) throw new Error(`舊系統已沒有客戶 ${wanted}，請重新產生此客戶的交接草稿`);
-  if (autoNoOrders && (await legacyCustomersWithOrders(legacy)).has(wanted)) throw new Error(`客戶 ${wanted} 存在舊系統歷史訂單，不能自動歸零交接`);
+  if (autoNoOrders && (await legacyCustomersWithOrders(legacy)).has(wanted)) throw new Error(`客戶 ${wanted} 存在舊系統歷史訂單，不能使用無訂單自動交接`);
   if (freshRow.handedOver) {
     row.handedOver = true;
     row.handedOverAt = freshRow.handedOverAt;
@@ -614,11 +614,16 @@ export async function applyCustomerHandover(legacy: PrismaClient, target: Prisma
   }
   if (sourceSignature(freshRow) !== sourceSignature(row)) throw new Error("此客戶的舊資料自建立草稿後已變動，請重新產生此客戶的交接草稿");
   if (autoNoOrders) {
-    if (freshRow.warnings.some(w => w.startsWith("新系統已有交易"))) throw new Error("此客戶新系統已有交易或餘額，不能自動歸零");
-    row.included = true; row.reviewed = true; row.prepayment = 0; row.prepaidBarrels = 0;
-    for (const a of row.addresses) a.barrels = 0;
-    const marker = "舊系統完全無資料";
-    row.note = row.note.includes(marker) ? row.note : [row.note.trim(), marker].filter(Boolean).join("；");
+    if (freshRow.warnings.some(w => w.startsWith("新系統已有交易"))) throw new Error("此客戶新系統已有交易或餘額，不能自動覆寫交接");
+    if (freshRow.warnings.length || freshRow.addresses.reduce((sum, a) => sum + a.barrels, 0) !== freshRow.legacyBarrels) {
+      throw new Error(`此客戶來源金額或桶數需要人工核對，未自動交接：${freshRow.warnings.join("；") || "空桶無法完整對應配送地址"}`);
+    }
+    row.included = true; row.reviewed = true;
+    row.prepayment = freshRow.prepayment; row.sourceOverShort = freshRow.sourceOverShort;
+    row.prepaidBarrels = freshRow.prepaidBarrels;
+    row.addresses = freshRow.addresses;
+    const markers = ["舊系統無訂單資料", ...(row.addresses.some(a => a.barrels !== 0) ? ["收空桶"] : [])];
+    for (const marker of markers) if (!row.note.includes(marker)) row.note = [row.note.trim(), marker].filter(Boolean).join("；");
     if (row.note.length > 400) throw new Error("核對說明超過 400 字，請先縮短內容");
   }
   const errors = customerHandoverErrors(row);
@@ -642,8 +647,9 @@ export async function applyCustomerHandover(legacy: PrismaClient, target: Prisma
       ? customerTargetHash(targetNow, currentRow.customerId!) === currentRow.targetHash
       : hashTarget(targetNow) === current.snapshot.targetHash;
     if (!targetMatches) throw new Error("此客戶的新系統主檔或交易已變動，請重新產生此客戶的交接草稿；不會覆蓋目前餘額");
-    if (autoNoOrders && (await legacyCustomersWithOrders(legacy)).has(wanted)) throw new Error("處理期間舊系統新增了訂單，本戶未歸零或交接");
+    if (autoNoOrders && (await legacyCustomersWithOrders(legacy)).has(wanted)) throw new Error("處理期間舊系統新增了訂單，本戶未交接或變更餘額");
     Object.assign(currentRow, { included: row.included, note: row.note, reviewed: row.reviewed, prepayment: row.prepayment, prepaidBarrels: row.prepaidBarrels, addresses: row.addresses, orders: row.orders });
+    if (autoNoOrders) currentRow.sourceOverShort = row.sourceOverShort;
     if (currentRow.included) await postIncludedBalances(tx, currentRow, rowStartDate, userId);
     else await markHandoverComplete(tx, currentRow);
     if (autoNoOrders) {

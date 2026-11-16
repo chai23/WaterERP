@@ -145,7 +145,8 @@ export function registerLegacyHistoryRoutes(args: RegisterArgs): void {
       const rows = current.snapshot.rows.filter(r => !ordered.has(r.code)).map(r => ({
         key: r.key, code: r.code, name: r.name, version: customerVersion(current.snapshot!, r),
         reason: r.handedOver ? "已完成交接，保留原狀" : !r.customerId ? "尚未對應新系統客戶"
-          : r.warnings.some(w => w.startsWith("新系統已有交易")) ? "新系統已有交易，需人工處理" : "",
+          : r.warnings.some(w => w.startsWith("新系統已有交易")) ? "新系統已有交易，需人工處理"
+          : r.warnings.length ? `來源金額或桶數需人工核對：${r.warnings.join("；")}` : "",
       }));
       res.json({ ok: true, data: { checkedAt: new Date().toISOString(), rows } });
     } catch (e) { handoverError(res, e); }
@@ -159,7 +160,7 @@ export function registerLegacyHistoryRoutes(args: RegisterArgs): void {
       const customerCode = typeof req.body?.customerCode === "string" ? req.body.customerCode : "";
       const result = await applyCustomerHandover(legacy, prisma, 0, auth.id, customerCode, req.body.customerVersion, true);
       const row = result.snapshot?.rows.find(r => r.code === customerCode);
-      if (!row?.noLegacyOrders) throw new Error("此客戶已完成交接，未重新歸零或改為流失");
+      if (!row?.noLegacyOrders) throw new Error("此客戶已完成交接，未重新入帳或改為流失");
       res.json({ ok: true, data: { customerCode, completed: true } });
     } catch (e) { handoverError(res, e); }
   });

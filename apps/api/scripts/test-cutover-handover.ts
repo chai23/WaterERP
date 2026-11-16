@@ -285,10 +285,10 @@ try {
     await applyCustomerHandover(legacy, db, 0, 1n, "000014", customerVersion(refreshedSaved.snapshot!, refreshedRow));
     assert.ok((await db.customer.findUniqueOrThrow({ where: { id: guarded.id } })).handoverCompletedAt);
     ok("same-customer target mutation blocks posting; unrelated customer mutation does not");
-    await legacy.$executeRawUnsafe("INSERT INTO customer VALUES ('20','20','無單歸零','5','12','無單地址'),('21','21','已付歷史','0','0',''),('22','22','未來歷史','0','0',''),('23','23','新增歷史','0','0',''),('24','24','分址歷史','0','0',''),('000099-1','24','別名地址','0','0','')");
+    await legacy.$executeRawUnsafe("INSERT INTO customer VALUES ('20','20','無單承接','5','12','無單地址'),('21','21','已付歷史','0','0',''),('22','22','未來歷史','0','0',''),('23','23','新增歷史','0','0',''),('24','24','分址歷史','0','0',''),('000099-1','24','別名地址','0','0','')");
     await legacy.$executeRawUnsafe("INSERT INTO money_over_short VALUES ('20','50')");
     await legacy.$executeRawUnsafe("INSERT INTO `order` VALUES ('OLDPAID','21','2020-01-01','True','True','現金','100'),('FUTURE','22','2099-01-01','True','True','現金','100'),('ALIAS','99-1','2020-01-01','True','True','現金','100')");
-    const autoCustomer = await db.customer.create({ data: { customerCode: "000020", name: "無單歸零", prepaidBarrelBalance: 12, addresses: { create: { addressLine: "無單地址", barrelsOnSite: 5, isDefault: true } } } });
+    const autoCustomer = await db.customer.create({ data: { customerCode: "000020", name: "無單承接", prepaidBarrelBalance: 12, addresses: { create: { addressLine: "無單地址", barrelsOnSite: 5, isDefault: true } } } });
     for (const code of ["000021", "000022", "000023", "000024"]) await db.customer.create({ data: { customerCode: code, name: code } });
     for (const customerCode of ["000020", "000021", "000022", "000023", "000024"]) {
       const generated = await api("/legacy-cutover/handover/draft", { customerCode, startDate: "2026-10-01", customerVersion: null });
@@ -309,16 +309,17 @@ try {
     const completedAuto = await api("/legacy-cutover/handover/auto-no-orders", autoBody);
     assert.equal(completedAuto.status, 200, JSON.stringify(completedAuto));
     const autoFinal = await db.customer.findUniqueOrThrow({ where: { id: autoCustomer.id }, include: { churnReason: true, addresses: true } });
-    assert.ok(autoFinal.handoverCompletedAt); assert.equal(autoFinal.prepaidBarrelBalance, 0);
+    assert.ok(autoFinal.handoverCompletedAt); assert.equal(autoFinal.prepaidBarrelBalance, 12);
     assert.equal(autoFinal.lifecycleStatus, "churned"); assert.equal(autoFinal.churnReason!.code, "other");
-    assert.equal(autoFinal.churnReasonNote, "系統轉換標記流失"); assert(autoFinal.addresses.every(a => a.barrelsOnSite === 0));
+    assert.equal(autoFinal.churnReasonNote, "系統轉換標記流失"); assert(autoFinal.addresses.every(a => a.barrelsOnSite === 5));
     const autoSnapshot = (await readHandover(db)).snapshot!;
     const autoRow = autoSnapshot.rows.find(r => r.code === "000020")!;
-    assert.equal(autoRow.prepayment, 0); assert.equal(autoRow.sourceOverShort, 50);
+    assert.equal(autoRow.prepayment, 50); assert.equal(autoRow.sourceOverShort, 50);
     assert.equal(autoRow.sourcePrepaidBarrels, 12); assert.equal(autoRow.legacyBarrels, 5);
-    assert.equal(autoRow.noLegacyOrders, true); assert(autoRow.note.includes("舊系統完全無資料"));
+    assert.equal(autoRow.noLegacyOrders, true); assert(autoRow.note.includes("舊系統無訂單資料")); assert(autoRow.note.includes("收空桶"));
     assert.equal(await db.arDocument.count({ where: { customerId: autoCustomer.id } }), 0);
-    assert.equal(await db.prepaymentTxn.count({ where: { customerId: autoCustomer.id } }), 0);
+    assert.equal(await db.prepaymentTxn.count({ where: { customerId: autoCustomer.id } }), 1);
+    assert.equal(String((await db.customerPrepaymentWallet.findUniqueOrThrow({ where: { customerId: autoCustomer.id } })).balanceAmount), "50");
     const autoLedgerCount = await db.customerLedgerEntry.count({ where: { customerId: autoCustomer.id } });
     assert.equal((await api("/legacy-cutover/handover/auto-no-orders", autoBody)).status, 200);
     assert.equal(await db.customerLedgerEntry.count({ where: { customerId: autoCustomer.id } }), autoLedgerCount);
@@ -329,7 +330,43 @@ try {
     const alreadyDone = autoSnapshot.rows.find(r => r.code === "000014")!;
     assert.equal((await api("/legacy-cutover/handover/auto-no-orders", { customerCode: "000014", customerVersion: customerVersion(autoSnapshot, alreadyDone) })).status, 409);
     assert.equal((await db.customer.findUniqueOrThrow({ where: { id: guarded.id } })).lifecycleStatus, "active");
-    ok("no-history filter includes all dates and branch aliases; zero-and-churn is atomic, idempotent, and preserves completed customers");
+    ok("no-history filter includes all dates and branch aliases; balance-preserving handover and churn are atomic, idempotent, and preserve completed customers");
+    await legacy.$executeRawUnsafe("INSERT INTO customer VALUES ('25','25','無單欠款多地址','3','8','地址甲'),('25-1','25','無單欠款分址','-3','0','地址乙'),('26','26','無單零額零桶','0','0','地址丙')");
+    await legacy.$executeRawUnsafe("INSERT INTO money_over_short VALUES ('25','-80')");
+    const debtCustomer = await db.customer.create({ data: { customerCode: "000025", name: "無單欠款多地址", addresses: { create: [{ addressLine: "地址甲", isDefault: true }, { addressLine: "地址乙" }] } } });
+    const zeroCustomer = await db.customer.create({ data: { customerCode: "000026", name: "無單零額零桶", addresses: { create: { addressLine: "地址丙", isDefault: true } } } });
+    for (const c of ["000025", "000026"]) {
+      const draftResponse = await api("/legacy-cutover/handover/draft", { customerCode: c, startDate: "2026-10-01", customerVersion: null });
+      assert.equal(draftResponse.status, 200, JSON.stringify(draftResponse));
+      const row = draftResponse.data.snapshot.rows.find((r: any) => r.code === c);
+      const editResponse = await api("/legacy-cutover/handover/draft", { customerVersions: true, snapshot: { rows: [{ ...row, note: "久未叫水；人工核對" }] } }, "PUT");
+      assert.equal(editResponse.status, 200, JSON.stringify(editResponse));
+      const version = editResponse.data.snapshot.rows.find((r: any) => r.code === c).version;
+      const result = await api("/legacy-cutover/handover/auto-no-orders", { customerCode: c, customerVersion: version });
+      assert.equal(result.status, 200, JSON.stringify(result));
+    }
+    assert.equal(String((await db.arOpenItem.aggregate({ where: { customerId: debtCustomer.id }, _sum: { outstandingAmount: true } }))._sum.outstandingAmount), "80");
+    assert.equal((await db.customer.findUniqueOrThrow({ where: { id: debtCustomer.id } })).prepaidBarrelBalance, 8);
+    assert.deepEqual((await db.deliveryAddress.findMany({ where: { customerId: debtCustomer.id }, orderBy: { id: "asc" } })).map(a => a.barrelsOnSite), [3, -3]);
+    const finalNotes = (await readHandover(db)).snapshot!.rows;
+    const debtNote = finalNotes.find(r => r.code === "000025")!.note;
+    assert(debtNote.includes("久未叫水；人工核對")); assert(debtNote.includes("收空桶"));
+    assert(!finalNotes.find(r => r.code === "000026")!.note.includes("收空桶"));
+    assert.equal(await db.arDocument.count({ where: { customerId: zeroCustomer.id } }), 0);
+    ok("no-order auto handover preserves debt, prepayment, prepaid barrels and every address; nonzero addresses are tagged even when totals cancel");
+    await legacy.$executeRawUnsafe("INSERT INTO customer VALUES ('27','27','無法對應空桶','5','0','未知地址'),('28','28','分址預付待核對','0','5','地址甲'),('28-1','28','分址預付待核對','0','2','地址乙')");
+    for (const code of ["000027", "000028"]) {
+      const customer = await db.customer.create({ data: { customerCode: code, name: code, addresses: { create: [{ addressLine: "地址甲", isDefault: true }, { addressLine: "地址乙" }] } } });
+      const generated = await api("/legacy-cutover/handover/draft", { customerCode: code, startDate: "2026-10-01", customerVersion: null });
+      assert.equal(generated.status, 200, JSON.stringify(generated));
+      const row = generated.data.snapshot.rows.find((r: any) => r.code === code);
+      const result = await api("/legacy-cutover/handover/auto-no-orders", { customerCode: code, customerVersion: row.version });
+      assert.equal(result.status, 409, JSON.stringify(result)); assert.match(result.message, /人工核對/);
+      const unchanged = await db.customer.findUniqueOrThrow({ where: { id: customer.id } });
+      assert.equal(unchanged.handoverCompletedAt, null); assert.equal(unchanged.lifecycleStatus, "active");
+      assert.equal(await db.customerLedgerEntry.count({ where: { customerId: customer.id } }), 0);
+    }
+    ok("ambiguous address barrels and branch prepaid balances cannot be silently omitted by automation");
     console.log(`All ${checks} integration checks passed. Isolated databases retained: ${targetName}, ${legacyName}`);
   }
 } finally {
