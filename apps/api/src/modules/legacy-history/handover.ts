@@ -10,6 +10,7 @@ export type HandoverOrder = {
   arDocumentId?: string; arNo?: string;
 };
 export type HandoverRow = {
+  draftId?: string; targetHash?: string;
   key: string; code: string; name: string; customerId: string | null; included: boolean;
   warnings: string[]; reviewed: boolean; note: string; prepayment: number | null; sourceOverShort?: number;
   prepaidBarrels: number; sourcePrepaidBarrels: number;
@@ -23,6 +24,20 @@ export type HandoverSnapshot = {
 };
 type Stored = { revision: number; status: string; snapshot: HandoverSnapshot | null; appliedAt: string | null };
 const hash = (v: unknown) => createHash("sha256").update(JSON.stringify(v, (_, x) => typeof x === "bigint" ? x.toString() : x)).digest("hex");
+export function customerVersion(s: HandoverSnapshot, r: HandoverRow) {
+  // MySQL JSON can reorder object keys; versions must depend on values, not key order.
+  const value = { ...r, startDate: r.startDate ?? s.startDate, cutoffDate: r.cutoffDate ?? s.cutoffDate };
+  return hash(JSON.stringify(value, (_, v) => v && typeof v === "object" && !Array.isArray(v)
+    ? Object.fromEntries(Object.keys(v).sort().map(k => [k, v[k]])) : v));
+}
+
+export function assertCustomerVersion(s: HandoverSnapshot, key: string, expected: unknown) {
+  const row = s.rows.find(r => r.key === key);
+  if (!row || typeof expected !== "string" || customerVersion(s, row) !== expected) {
+    throw new Error(`客戶 ${key} 的交接資料已被其他人更新，請同步後重新核對`);
+  }
+  return row;
+}
 // Keep the stored target hash stable when the completion timestamp is added.
 function hashTarget(state: { customers: Array<{ handoverCompletedAt?: Date | null }> }) {
   const completed = state.customers.map(c => c.handoverCompletedAt);
@@ -94,6 +109,12 @@ async function targetState(db: DB) {
   const maps = await db.$queryRawUnsafe<any[]>("SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='legacy_id_map'");
   const old = maps.length ? await db.$queryRawUnsafe<any[]>("SELECT legacy_key, new_id FROM legacy_id_map WHERE entity_type='opening_ar' ORDER BY legacy_key") : [];
   return { customers, old, addressLinks: await legacyAddressIds(db) };
+}
+
+function customerTargetHash(state: Awaited<ReturnType<typeof targetState>>, customerId: string) {
+  const customers = state.customers.filter(c => c.id.toString() === customerId);
+  const addresses = new Set(customers.flatMap(c => c.addresses.map(a => a.id.toString())));
+  return hashTarget({ customers, old: state.old, addressLinks: state.addressLinks.filter(([, id]) => addresses.has(id)) } as typeof state);
 }
 
 async function sourceState(legacy: PrismaClient, startDate: string, customerCode?: string) {
@@ -212,7 +233,8 @@ export async function buildHandover(legacy: PrismaClient, target: PrismaClient, 
     const warnings: string[] = [];
     if (!targetCustomer) warnings.push("尚未對應新系統客戶；請先轉換主檔，或排除並記錄原因。");
     const alreadyDone = Boolean(targetCustomer?.handoverCompletedAt);
-    const row: HandoverRow = { key, code: customerCode ?? id, name: targetCustomer?.name ?? String(c.customer_name ?? id),
+    const row: HandoverRow = { draftId: randomUUID(), targetHash: targetCustomer ? customerTargetHash(state, targetCustomer.id.toString()) : undefined,
+      key, code: customerCode ?? id, name: targetCustomer?.name ?? String(c.customer_name ?? id),
       customerId: targetCustomer?.id.toString() ?? null, included: true, warnings, reviewed: alreadyDone, note: "", prepayment: alreadyDone ? 0 : null,
       prepaidBarrels: prepaid, sourcePrepaidBarrels: prepaid, legacyBarrels: bucket, addresses, orders: [],
       handedOver: alreadyDone, handedOverAt: targetCustomer?.handoverCompletedAt?.toISOString() };
@@ -407,6 +429,10 @@ export function keepHandedOver(previous: HandoverSnapshot | null, snapshot: Hand
 
 export async function buildCustomerDraft(legacy: PrismaClient, target: PrismaClient, startDate: string, customerCode: string, existing: HandoverSnapshot | null): Promise<HandoverSnapshot> {
   const one = await buildHandover(legacy, target, startDate, customerCode);
+  return mergeCustomerDraft(existing, one);
+}
+
+function mergeCustomerDraft(existing: HandoverSnapshot | null, one: HandoverSnapshot): HandoverSnapshot {
   if (!existing) return one;
   const next = structuredClone(existing);
   for (const row of next.rows) {
@@ -430,6 +456,34 @@ export async function buildCustomerDraft(legacy: PrismaClient, target: PrismaCli
   next.capturedAt = one.capturedAt;
   next.totalsConfirmed = false;
   return next;
+}
+
+export async function saveCustomerDraft(target: PrismaClient, one: HandoverSnapshot, expected: unknown, userId: bigint) {
+  return target.$transaction(async tx => {
+    const current = await readHandover(tx, true);
+    if (current.status === "applied") throw new Error("交接已啟用，不能重新產生");
+    for (const row of one.rows) {
+      const existing = current.snapshot?.rows.find(r => r.key === row.key);
+      if (existing) assertCustomerVersion(current.snapshot!, row.key, expected);
+      else if (expected !== null) throw new Error("客戶草稿已變更，請同步後重新核對");
+    }
+    const snapshot = mergeCustomerDraft(current.snapshot, one);
+    await tx.$executeRaw`UPDATE cutover_handover SET revision=revision+1, snapshot=${JSON.stringify(snapshot)}, created_by=${userId}, updated_at=UTC_TIMESTAMP(3) WHERE id=1`;
+    return readHandover(tx);
+  }, { timeout: 120000, maxWait: 10000 });
+}
+
+export async function saveCustomerEdits(target: PrismaClient, input: any, userId: bigint) {
+  return target.$transaction(async tx => {
+    const current = await readHandover(tx, true);
+    if (current.status === "applied" || !current.snapshot) throw new Error("草稿已變更，請重新載入");
+    if (!Array.isArray(input?.rows)) throw new Error("客戶編輯格式錯誤");
+    for (const edit of input.rows) assertCustomerVersion(current.snapshot, edit?.key, edit?.version);
+    // Per-customer saves do not replace another user's shared confirmation flags.
+    const snapshot = mergeDraft(current.snapshot, { ...input, sourceFrozen: current.snapshot.sourceFrozen, totalsConfirmed: false }, true);
+    await tx.$executeRaw`UPDATE cutover_handover SET revision=revision+1, snapshot=${JSON.stringify(snapshot)}, created_by=${userId}, updated_at=UTC_TIMESTAMP(3) WHERE id=1`;
+    return readHandover(tx);
+  }, { timeout: 120000, maxWait: 10000 });
 }
 
 export async function saveHandover(target: PrismaClient, revision: number, snapshot: HandoverSnapshot, userId: bigint) {
@@ -520,18 +574,20 @@ async function markHandoverComplete(tx: DB, r: HandoverRow) {
   r.handedOverAt = new Date().toISOString();
 }
 
-export async function applyCustomerHandover(legacy: PrismaClient, target: PrismaClient, revision: number, userId: bigint, customerCode: string) {
+export async function applyCustomerHandover(legacy: PrismaClient, target: PrismaClient, revision: number, userId: bigint, customerCode: string, expectedVersion?: unknown) {
   const wanted = code(customerCode);
   if (!wanted) throw new Error("請輸入 6 碼以內的客戶編號");
   const stored = await readHandover(target);
   if (stored.status === "applied") return stored;
-  if (stored.revision !== revision || !stored.snapshot) throw new Error("草稿版本已變更，請重新載入");
+  if (!stored.snapshot || (expectedVersion === undefined && stored.revision !== revision)) throw new Error("草稿版本已變更，請重新載入");
   const s = structuredClone(stored.snapshot);
   const matches = s.rows.filter(r => r.code === wanted);
   if (!matches.length) throw new Error(`草稿沒有客戶 ${wanted}，請先產生此客戶的交接草稿`);
   if (matches.length > 1) throw new Error(`客戶編號 ${wanted} 在草稿中有多筆，請先核對主檔`);
   const row = matches[0]!;
   if (row.handedOver) return stored;
+  if (expectedVersion !== undefined) assertCustomerVersion(s, row.key, expectedVersion);
+  const checkedVersion = customerVersion(s, row);
   if (!row.customerId) throw new Error(`${row.code} ${row.name}：尚未對應新系統客戶，不能完成交接`);
   const rowStartDate = row.startDate ?? s.startDate;
   if ((row.cutoffDate ?? s.cutoffDate) !== rowStartDate) throw new Error("此客戶草稿尚未包含啟用日當天，請重新產生此客戶的交接草稿");
@@ -543,7 +599,8 @@ export async function applyCustomerHandover(legacy: PrismaClient, target: Prisma
     row.handedOverAt = freshRow.handedOverAt;
     return target.$transaction(async tx => {
       const current = await readHandover(tx, true);
-      if (current.revision !== revision || !current.snapshot) throw new Error("草稿已被更新，請重新載入");
+      if (!current.snapshot) throw new Error("草稿已被更新，請重新載入");
+      assertCustomerVersion(current.snapshot, row.key, checkedVersion);
       const currentRow = current.snapshot.rows.find(r => r.key === row.key);
       if (currentRow) { currentRow.handedOver = true; currentRow.handedOverAt = row.handedOverAt; }
       await tx.$executeRaw`UPDATE cutover_handover SET revision=revision+1, status='draft', snapshot=${JSON.stringify(current.snapshot)}, updated_at=UTC_TIMESTAMP(3) WHERE id=1`;
@@ -554,19 +611,24 @@ export async function applyCustomerHandover(legacy: PrismaClient, target: Prisma
   const errors = customerHandoverErrors(row);
   if (errors.length) throw new Error(errors.slice(0, 12).join("\n"));
   if (fresh.blockers.length) throw new Error(fresh.blockers.slice(0, 8).join("\n"));
-  if (fresh.targetHash !== s.targetHash) throw new Error("新系統主檔或交易已變動，請重新產生此客戶的交接草稿；不會覆蓋目前餘額");
   return target.$transaction(async tx => {
     const current = await readHandover(tx, true);
     if (current.status === "applied") return current;
-    if (current.revision !== revision || !current.snapshot) throw new Error("草稿已被更新，請重新載入");
+    if (!current.snapshot) throw new Error("草稿已被更新，請重新載入");
     const currentRow = current.snapshot.rows.find(r => r.key === row.key);
-    if (!currentRow || currentRow.handedOver) return current;
+    if (!currentRow) throw new Error("此客戶草稿已被移除，請同步後重新核對");
+    if (currentRow.handedOver) return current;
+    assertCustomerVersion(current.snapshot, row.key, checkedVersion);
     await tx.$queryRaw`SELECT id FROM customers WHERE id=${BigInt(currentRow.customerId!)} FOR UPDATE`;
     if (currentRow.addresses.length) {
       const ids = currentRow.addresses.map(a => BigInt(a.id));
       await tx.$queryRaw`SELECT id FROM delivery_addresses WHERE id IN (${Prisma.join(ids)}) ORDER BY id FOR UPDATE`;
     }
-    if (hashTarget(await targetState(tx)) !== current.snapshot.targetHash) throw new Error("新系統主檔或交易已變動，請重新產生此客戶的交接草稿；不會覆蓋目前餘額");
+    const targetNow = await targetState(tx);
+    const targetMatches = currentRow.targetHash
+      ? customerTargetHash(targetNow, currentRow.customerId!) === currentRow.targetHash
+      : hashTarget(targetNow) === current.snapshot.targetHash;
+    if (!targetMatches) throw new Error("此客戶的新系統主檔或交易已變動，請重新產生此客戶的交接草稿；不會覆蓋目前餘額");
     Object.assign(currentRow, { included: row.included, note: row.note, reviewed: row.reviewed, prepayment: row.prepayment, prepaidBarrels: row.prepaidBarrels, addresses: row.addresses, orders: row.orders });
     if (currentRow.included) await postIncludedBalances(tx, currentRow, rowStartDate, userId);
     else await markHandoverComplete(tx, currentRow);

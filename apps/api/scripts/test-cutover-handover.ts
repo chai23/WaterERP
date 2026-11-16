@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
-import { applyCustomerHandover, applyHandover, buildCustomerDraft, buildHandover, handoverOrderBlock, mergeDraft, readHandover, saveHandover, validationErrors, validDay, type HandoverSnapshot } from "../src/modules/legacy-history/handover.js";
+import { customerVersion, saveCustomerEdits, saveCustomerDraft, applyCustomerHandover, applyHandover, buildCustomerDraft, buildHandover, handoverOrderBlock, mergeDraft, readHandover, saveHandover, validationErrors, validDay, type HandoverSnapshot } from "../src/modules/legacy-history/handover.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const ui = process.argv.includes("--ui");
@@ -63,6 +63,7 @@ try {
   sqlFile("database/schema.sql");
   sqlFile("database/migrations/002_line_bind_challenges.sql");
   sqlFile("database/migrations/004_cutover_handover.sql");
+  sqlFile("database/migrations/006_role_permissions.sql");
   await db.user.create({ data: { id: 1n, employeeCode: "CUTOVERTEST", name: "交接測試管理員", role: "admin", passwordHash: await bcrypt.hash("CutoverTest2026!", 4) } });
   for (const [i, name] of ["一般與月結客戶", "未結月結客戶", "只有預收與桶數客戶"].entries()) {
     await db.customer.create({ data: { id: BigInt(i + 1), customerCode: String(i + 1).padStart(6, "0"), name, prepaidBarrelBalance: i === 2 ? 20 : 0,
@@ -237,6 +238,53 @@ try {
     assert.equal(String((await db.customerPrepaymentWallet.findUniqueOrThrow({ where: { customerId: credit.id } })).balanceAmount), "45");
     assert.equal(await db.arOpenItem.count({ where: { customerId: credit.id } }), 0);
     ok("legacy over/short sum posts a receivable or a prepayment wallet");
+    await legacy.$executeRawUnsafe("INSERT INTO customer VALUES ('12','12','並行甲','0','0',''),('13','13','並行乙','0','0','')");
+    const parallelCustomers = await Promise.all(["000012", "000013"].map(customerCode => db.customer.create({ data: { customerCode, name: customerCode, addresses: { create: { addressLine: customerCode, isDefault: true } } } })));
+    const generated = await Promise.all(["000012", "000013"].map(customerCode => api("/legacy-cutover/handover/draft", { startDate: "2026-10-01", customerCode, customerVersion: null, revision: 0 })));
+    for (const response of generated) assert.equal(response.status, 200, JSON.stringify(response));
+    const responseState = await api("/legacy-cutover/handover");
+    assert.equal(typeof responseState.data.rows, "undefined");
+    assert.equal(typeof responseState.data.snapshot.rows.find((r: any) => r.code === "000012").version, "string");
+    const base = await readHandover(db);
+    const stableRow = base.snapshot!.rows.find(r => r.code === "000012")!;
+    const reordered = Object.fromEntries(Object.entries(stableRow).reverse()) as typeof stableRow;
+    assert.equal(customerVersion(base.snapshot!, stableRow), customerVersion(base.snapshot!, reordered));
+    const dated = { ...stableRow, startDate: stableRow.startDate ?? base.snapshot!.startDate, cutoffDate: stableRow.cutoffDate ?? base.snapshot!.cutoffDate };
+    assert.equal(customerVersion(base.snapshot!, stableRow), customerVersion(base.snapshot!, dated));
+    const editFor = (c: string) => {
+      const row = base.snapshot!.rows.find(r => r.code === c)!;
+      return { ...row, version: customerVersion(base.snapshot!, row), prepayment: 0, reviewed: true, note: "parallel test" };
+    };
+    const edits = [editFor("000012"), editFor("000013")];
+    const savedEdits = await Promise.all(edits.map(row => api("/legacy-cutover/handover/draft", { customerVersions: true, revision: base.revision, snapshot: { rows: [row] } }, "PUT")));
+    for (const response of savedEdits) assert.equal(response.status, 200, JSON.stringify(response));
+    await assert.rejects(saveCustomerEdits(db, { rows: [edits[0]] }, 1n), /已被其他人更新/);
+    const ready = await readHandover(db);
+    const tokens = ["000012", "000013"].map(c => customerVersion(ready.snapshot!, ready.snapshot!.rows.find(r => r.code === c)!));
+    const results = await Promise.all(["000012", "000013"].map((customerCode, i) => api("/legacy-cutover/handover/apply-customer", { revision: ready.revision, customerCode, customerVersion: tokens[i] })));
+    for (const response of results) assert.equal(response.status, 200, JSON.stringify(response));
+    assert.equal(results.length, 2);
+    for (const customer of parallelCustomers) assert.ok((await db.customer.findUniqueOrThrow({ where: { id: customer.id } })).handoverCompletedAt);
+    const ledgerCount = await db.customerLedgerEntry.count();
+    await Promise.all([1, 2].map(() => applyCustomerHandover(legacy, db, ready.revision, 1n, "000012", tokens[0])));
+    assert.equal(await db.customerLedgerEntry.count(), ledgerCount);
+    ok("independent customer generation, concurrent stale-global-version saves and activation; same-customer stale writes rejected and repeated activation idempotent");
+    await legacy.$executeRawUnsafe("INSERT INTO customer VALUES ('14','14','隔離檢查','0','0','')");
+    const guarded = await db.customer.create({ data: { customerCode: "000014", name: "隔離檢查", addresses: { create: { addressLine: "guard", isDefault: true } } } });
+    const guardedDraft = checked(await buildHandover(legacy, db, "2026-10-01", "000014"));
+    const guardedSaved = await saveCustomerDraft(db, guardedDraft, null, 1n);
+    const guardedRow = guardedSaved.snapshot!.rows.find(r => r.code === "000014")!;
+    const guardedToken = customerVersion(guardedSaved.snapshot!, guardedRow);
+    await db.customer.update({ where: { id: guarded.id }, data: { phone: "changed" } });
+    await assert.rejects(applyCustomerHandover(legacy, db, guardedSaved.revision, 1n, "000014", guardedToken), /主檔或交易已變動/);
+    assert.equal((await db.customer.findUniqueOrThrow({ where: { id: guarded.id } })).handoverCompletedAt, null);
+    const guardedRefreshed = checked(await buildHandover(legacy, db, "2026-10-01", "000014"));
+    const refreshedSaved = await saveCustomerDraft(db, guardedRefreshed, guardedToken, 1n);
+    const refreshedRow = refreshedSaved.snapshot!.rows.find(r => r.code === "000014")!;
+    await db.customer.update({ where: { id: parallelCustomers[0]!.id }, data: { phone: "unrelated change" } });
+    await applyCustomerHandover(legacy, db, 0, 1n, "000014", customerVersion(refreshedSaved.snapshot!, refreshedRow));
+    assert.ok((await db.customer.findUniqueOrThrow({ where: { id: guarded.id } })).handoverCompletedAt);
+    ok("same-customer target mutation blocks posting; unrelated customer mutation does not");
     console.log(`All ${checks} integration checks passed. Isolated databases retained: ${targetName}, ${legacyName}`);
   }
 } finally {

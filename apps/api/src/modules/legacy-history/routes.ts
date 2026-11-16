@@ -3,7 +3,7 @@ import { syncLegacyMasters } from "./master-sync.js";
 import type { PrismaClient } from "@prisma/client";
 import { describeDbUrl, getLegacyPrisma, resolveLegacyDatabaseUrl } from "./client.js";
 import { getLegacyOrderDetail, listLegacyOrdersForCustomer } from "./queries.js";
-import { applyCustomerHandover, buildCustomerDraft, buildHandover, keepHandedOver, mergeDraft, readHandover, saveHandover, totals, validationErrors } from "./handover.js";
+import { applyCustomerHandover, buildCustomerDraft, buildHandover, keepHandedOver, mergeDraft, readHandover, saveHandover, saveCustomerDraft, saveCustomerEdits, customerVersion, totals, validationErrors } from "./handover.js";
 
 type AuthUser = {
   id: bigint;
@@ -60,6 +60,7 @@ export function registerLegacyHistoryRoutes(args: RegisterArgs): void {
     res.status(410).json({ ok: false, message: "舊版開帳及覆寫同步已停用，請改用上線交接草稿。" });
   });
   const handoverResponse = (s: Awaited<ReturnType<typeof readHandover>>) => ({ ...s,
+    snapshot: s.snapshot ? { ...s.snapshot, rows: s.snapshot.rows.map(r => ({ ...r, startDate: r.startDate ?? s.snapshot!.startDate, cutoffDate: r.cutoffDate ?? s.snapshot!.cutoffDate, version: customerVersion(s.snapshot!, r) })) } : null,
     totals: s.snapshot ? totals(s.snapshot) : null, errors: s.snapshot ? validationErrors(s.snapshot) : [],
   });
   const handoverError = (res: Response, e: unknown) => {
@@ -92,8 +93,13 @@ export function registerLegacyHistoryRoutes(args: RegisterArgs): void {
     try {
       const current = await readHandover(prisma);
       if (current.status === "applied") throw new Error("交接已全部啟用，不能重新產生");
-      if (current.revision !== req.body?.revision) throw new Error("草稿版本不同，請重新載入");
       const customerCode = typeof req.body?.customerCode === "string" ? req.body.customerCode.trim() : "";
+      if (customerCode && Object.prototype.hasOwnProperty.call(req.body, "customerVersion")) {
+        const one = await buildHandover(legacy, prisma, req.body?.startDate, customerCode);
+        res.json({ ok: true, data: handoverResponse(await saveCustomerDraft(prisma, one, req.body.customerVersion, auth.id)) });
+        return;
+      }
+      if (current.revision !== req.body?.revision) throw new Error("草稿版本不同，請重新載入");
       const snapshot = customerCode
         ? await buildCustomerDraft(legacy, prisma, req.body?.startDate, customerCode, current.snapshot)
         : keepHandedOver(current.snapshot, await buildHandover(legacy, prisma, req.body?.startDate));
@@ -103,6 +109,10 @@ export function registerLegacyHistoryRoutes(args: RegisterArgs): void {
   app.put("/api/legacy-cutover/handover/draft", async (req, res) => {
     const auth = requireRole(req, res, ["admin", "accounting"]); if (!auth) return;
     try {
+      if (req.body?.customerVersions === true) {
+        res.json({ ok: true, data: handoverResponse(await saveCustomerEdits(prisma, req.body?.snapshot, auth.id)) });
+        return;
+      }
       const current = await readHandover(prisma);
       if (!current.snapshot || current.revision !== req.body?.revision) throw new Error("草稿版本不同，請重新載入");
       const snapshot = mergeDraft(current.snapshot, req.body?.snapshot, req.body?.partial === true);
@@ -115,7 +125,7 @@ export function registerLegacyHistoryRoutes(args: RegisterArgs): void {
     if (!legacy) { res.status(503).json({ ok: false, message: "未設定舊庫連線" }); return; }
     try {
       const customerCode = typeof req.body?.customerCode === "string" ? req.body.customerCode : "";
-      res.json({ ok: true, data: handoverResponse(await applyCustomerHandover(legacy, prisma, req.body?.revision, auth.id, customerCode)) });
+      res.json({ ok: true, data: handoverResponse(await applyCustomerHandover(legacy, prisma, req.body?.revision, auth.id, customerCode, req.body?.customerVersion)) });
     } catch (e) { handoverError(res, e); }
   });
   app.post("/api/legacy-cutover/handover/apply", async (req, res) => {

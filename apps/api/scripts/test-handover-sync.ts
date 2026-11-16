@@ -28,3 +28,9 @@ const added = rebaseHandover(base, local, { ...remote, rows: [...remote.rows, { 
 assert.equal(added.rows.length, 3);
 assert.equal(added.rows[0]!.prepayment, 100);
 console.log("Multi-computer handover merge regression checks passed");
+const versionedBase = { ...base, rows: base.rows.map(r => ({ ...r, version: r.key })) };
+const versionedLocal = structuredClone(versionedBase);
+versionedLocal.rows[0]!.prepayment = 100;
+const regeneratedOther = { ...versionedBase, capturedAt: "new capture", rows: [versionedBase.rows[0]!, { ...versionedBase.rows[1]!, version: "B2" }] };
+assert.equal(rebaseHandover(versionedBase, versionedLocal, regeneratedOther)!.rows[0]!.prepayment, 100);
+assert.equal(rebaseHandover(versionedBase, versionedLocal, { ...regeneratedOther, rows: [{ ...versionedBase.rows[0]!, version: "A2" }] }), null);
