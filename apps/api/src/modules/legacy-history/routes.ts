@@ -72,8 +72,18 @@ export function registerLegacyHistoryRoutes(args: RegisterArgs): void {
   };
   app.get("/api/legacy-cutover/handover", async (req, res) => {
     if (!requireRole(req, res, ["admin", "accounting"])) return;
+    res.setHeader("Cache-Control", "no-store");
     try { res.json({ ok: true, data: handoverResponse(await readHandover(prisma)) }); }
     catch (e) { handoverError(res, e); }
+  });
+  app.get("/api/legacy-cutover/handover/revision", async (req, res) => {
+    if (!requireRole(req, res, ["admin", "accounting"])) return;
+    res.setHeader("Cache-Control", "no-store");
+    try {
+      const rows = await prisma.$queryRaw<{ revision: number }[]>`SELECT revision FROM cutover_handover WHERE id=1`;
+      if (!rows[0]) throw new Error("請先執行資料庫結構升級（004_cutover_handover）");
+      res.json({ ok: true, data: rows[0] });
+    } catch (e) { handoverError(res, e); }
   });
   app.post("/api/legacy-cutover/handover/draft", async (req, res) => {
     const auth = requireRole(req, res, ["admin", "accounting"]); if (!auth) return;
