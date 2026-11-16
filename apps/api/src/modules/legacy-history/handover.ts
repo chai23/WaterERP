@@ -15,7 +15,7 @@ export type HandoverRow = {
   prepaidBarrels: number; sourcePrepaidBarrels: number;
   addresses: { id: string; label: string; barrels: number; original: number }[];
   legacyBarrels: number; orders: HandoverOrder[];
-  handedOver?: boolean; handedOverAt?: string;
+  handedOver?: boolean; handedOverAt?: string; startDate?: string; cutoffDate?: string;
 };
 export type HandoverSnapshot = {
   startDate: string; cutoffDate: string; capturedAt: string; sourceHash: string; targetHash: string;
@@ -112,7 +112,7 @@ async function sourceState(legacy: PrismaClient, startDate: string, customerCode
       ...(customerCode ? [...ids, ...ids] : []),
     );
     const orders = await tx.$queryRawUnsafe<any[]>(
-      `SELECT order_id, customer_id, order_day, order_OK, collect_OK, collect_money, subtotal FROM \`order\` WHERE (order_day < ? OR order_day IS NULL)${orderWhere} ORDER BY order_id, customer_id, subtotal`,
+      `SELECT order_id, customer_id, order_day, order_OK, collect_OK, collect_money, subtotal FROM \`order\` WHERE (order_day < DATE_ADD(?, INTERVAL 1 DAY) OR order_day IS NULL)${orderWhere} ORDER BY order_id, customer_id, subtotal`,
       startDate, ...(customerCode ? ids : []),
     );
     const receipts = customerCode
@@ -157,7 +157,7 @@ export async function buildHandover(legacy: PrismaClient, target: PrismaClient, 
   const wanted = customerCode ? code(customerCode) ?? undefined : undefined;
   if (customerCode && !wanted) throw new Error("客戶編號須為 6 碼以內數字");
   if (!validDay(startDate)) throw new Error("請輸入有效的啟用日期");
-  const cutoffDate = new Date(Date.parse(`${startDate}T00:00:00Z`) - 86400000).toISOString().slice(0, 10);
+  const cutoffDate = startDate;
   const source = await sourceState(legacy, startDate, wanted);
   const overShort = await overShortTotals(legacy, wanted);
   const state = await targetState(target);
@@ -225,7 +225,7 @@ export async function buildHandover(legacy: PrismaClient, target: PrismaClient, 
     const acc = receipts.get(id) ?? { before: 0, after: false, unknown: false };
     const d = day(r.remittance_day);
     if (!validDay(d)) acc.unknown = true;
-    else if (d >= startDate) acc.after = true;
+    else if (d > cutoffDate) acc.after = true;
     else acc.before = round(acc.before + num(r.money));
     receipts.set(id, acc);
   }
@@ -296,7 +296,7 @@ export async function buildHandover(legacy: PrismaClient, target: PrismaClient, 
     if (!rows.size) throw new Error(`舊系統沒有客戶編號 ${wanted}`);
   }
   return { startDate, cutoffDate, capturedAt: new Date().toISOString(), sourceHash: hash(source), targetHash: hashTarget(state),
-    sourceFrozen: false, totalsConfirmed: false, rows: [...rows.values()].sort((a, b) => a.code.localeCompare(b.code)), blockers: [...new Set(blockers)] };
+    sourceFrozen: false, totalsConfirmed: false, rows: [...rows.values()].map(r => ({ ...r, startDate, cutoffDate })).sort((a, b) => a.code.localeCompare(b.code)), blockers: [...new Set(blockers)] };
 }
 
 export function totals(snapshot: HandoverSnapshot) {
@@ -393,7 +393,7 @@ function sourceSignature(r: HandoverRow) {
 }
 
 export function keepHandedOver(previous: HandoverSnapshot | null, snapshot: HandoverSnapshot): HandoverSnapshot {
-  const kept = previous?.rows.filter(r => r.handedOver) ?? [];
+  const kept = previous?.rows.filter(r => r.handedOver).map(r => ({ ...r, startDate: r.startDate ?? previous.startDate, cutoffDate: r.cutoffDate ?? previous.cutoffDate })) ?? [];
   if (!kept.length) return snapshot;
   const keys = new Set(kept.map(r => r.key));
   const orderIds = new Set(kept.flatMap(r => r.orders.map(o => o.id)));
@@ -405,8 +405,13 @@ export function keepHandedOver(previous: HandoverSnapshot | null, snapshot: Hand
 export async function buildCustomerDraft(legacy: PrismaClient, target: PrismaClient, startDate: string, customerCode: string, existing: HandoverSnapshot | null): Promise<HandoverSnapshot> {
   const one = await buildHandover(legacy, target, startDate, customerCode);
   if (!existing) return one;
-  if (existing.startDate !== one.startDate) throw new Error(`目前草稿的啟用日是 ${existing.startDate}。單戶更新請沿用同一天；若要改啟用日，請重新產生全部草稿。`);
   const next = structuredClone(existing);
+  for (const row of next.rows) {
+    row.startDate ??= existing.startDate;
+    row.cutoffDate ??= existing.cutoffDate;
+  }
+  next.startDate = one.startDate;
+  next.cutoffDate = one.cutoffDate;
   for (const row of one.rows) {
     const current = next.rows.find(r => r.key === row.key);
     if (current?.handedOver || row.handedOver) throw new Error(`客戶 ${row.code} 已完成交接，不能重新產生`);
@@ -439,6 +444,7 @@ export async function applyHandover(legacy: PrismaClient, target: PrismaClient, 
   if (stored.status === "applied") return stored;
   if (stored.revision !== revision || !stored.snapshot) throw new Error("草稿版本已變更，請重新載入");
   const s = stored.snapshot;
+  if (s.rows.some(r => !r.handedOver && ((r.startDate ?? s.startDate) !== s.startDate || (r.cutoffDate ?? s.cutoffDate) !== s.startDate))) throw new Error("草稿日期範圍不一致，請逐戶交接或重新產生全部草稿");
   const errors = validationErrors(s);
   if (errors.length) throw new Error(errors.slice(0, 12).join("\n"));
   if (hash(await sourceState(legacy, s.startDate)) !== s.sourceHash) throw new Error("舊資料自建立草稿後已變動，請重新產生及核對草稿");
@@ -524,7 +530,9 @@ export async function applyCustomerHandover(legacy: PrismaClient, target: Prisma
   const row = matches[0]!;
   if (row.handedOver) return stored;
   if (!row.customerId) throw new Error(`${row.code} ${row.name}：尚未對應新系統客戶，不能完成交接`);
-  const fresh = await buildHandover(legacy, target, s.startDate, wanted);
+  const rowStartDate = row.startDate ?? s.startDate;
+  if ((row.cutoffDate ?? s.cutoffDate) !== rowStartDate) throw new Error("此客戶草稿尚未包含啟用日當天，請重新產生此客戶的交接草稿");
+  const fresh = await buildHandover(legacy, target, rowStartDate, wanted);
   const freshRow = fresh.rows.find(r => r.key === row.key);
   if (!freshRow) throw new Error(`舊系統已沒有客戶 ${wanted}，請重新產生此客戶的交接草稿`);
   if (freshRow.handedOver) {
@@ -557,7 +565,7 @@ export async function applyCustomerHandover(legacy: PrismaClient, target: Prisma
     }
     if (hashTarget(await targetState(tx)) !== current.snapshot.targetHash) throw new Error("新系統主檔或交易已變動，請重新產生此客戶的交接草稿；不會覆蓋目前餘額");
     Object.assign(currentRow, { included: row.included, note: row.note, reviewed: row.reviewed, prepayment: row.prepayment, prepaidBarrels: row.prepaidBarrels, addresses: row.addresses, orders: row.orders });
-    if (currentRow.included) await postIncludedBalances(tx, currentRow, current.snapshot.startDate, userId);
+    if (currentRow.included) await postIncludedBalances(tx, currentRow, rowStartDate, userId);
     else await markHandoverComplete(tx, currentRow);
     current.snapshot.targetHash = hashTarget(await targetState(tx));
     await tx.$executeRaw`UPDATE cutover_handover SET revision=revision+1, status='draft', snapshot=${JSON.stringify(current.snapshot)}, updated_at=UTC_TIMESTAMP(3) WHERE id=1`;

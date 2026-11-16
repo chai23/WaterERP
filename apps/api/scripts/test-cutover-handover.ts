@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
-import { applyCustomerHandover, applyHandover, buildHandover, handoverOrderBlock, mergeDraft, readHandover, saveHandover, validationErrors, validDay, type HandoverSnapshot } from "../src/modules/legacy-history/handover.js";
+import { applyCustomerHandover, applyHandover, buildCustomerDraft, buildHandover, handoverOrderBlock, mergeDraft, readHandover, saveHandover, validationErrors, validDay, type HandoverSnapshot } from "../src/modules/legacy-history/handover.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const ui = process.argv.includes("--ui");
@@ -75,7 +75,7 @@ try {
     await legacy.$executeRawUnsafe("INSERT INTO customer VALUES ('4','4','無異常批次核對客戶','0','0','')");
   }
   await legacy.$executeRawUnsafe("CREATE TABLE `order`(order_id VARCHAR(128), customer_id VARCHAR(20), order_day DATETIME, order_OK VARCHAR(10), collect_OK VARCHAR(10), collect_money VARCHAR(20), subtotal VARCHAR(30))");
-  await legacy.$executeRawUnsafe("INSERT INTO `order` VALUES ('CASH','1','2026-09-20','True','False','現金','1000'),('BILLED','1','2026-09-25','True','False','月結','1000'),('PENDING','2','2026-09-30 23:59:59','True','False','月結','300'),('PENDING-TAX','2','2026-09-26','True','False','月結','210'),('DELIVERY','1','2026-09-29','False','False','現金','200'),('PAID','1','2026-09-25','True','True','現金','500'),('AFTER','1','2026-10-01','True','False','現金','700')");
+  await legacy.$executeRawUnsafe("INSERT INTO `order` VALUES ('CASH','1','2026-09-20','True','False','現金','1000'),('BILLED','1','2026-09-25','True','False','月結','1000'),('PENDING','2','2026-09-30 23:59:59','True','False','月結','300'),('PENDING-TAX','2','2026-09-26','True','False','月結','210'),('DELIVERY','1','2026-09-29','False','False','現金','200'),('PAID','1','2026-09-25','True','True','現金','500'),('AFTER','1','2026-10-02','True','False','現金','700')");
   await legacy.$executeRawUnsafe("CREATE TABLE remittance_list(order_id VARCHAR(128), remittance_day DATETIME, money VARCHAR(30))");
   await legacy.$executeRawUnsafe("INSERT INTO remittance_list VALUES ('CASH','2026-09-30 23:59:59','200'),('PAID','2026-09-26','500')");
   await legacy.$executeRawUnsafe("CREATE TABLE money_over_short(customer_id VARCHAR(20), money VARCHAR(30))");
@@ -107,6 +107,22 @@ try {
     await new Promise<void>(resolve => { process.once("SIGINT", resolve); process.once("SIGTERM", resolve); });
   } else {
     assert.equal(validDay("2026-02-30"), false); assert.equal(validDay("2026-02-28"), true); ok("calendar dates validated");
+    await legacy.$executeRawUnsafe("INSERT INTO `order` VALUES ('SAME-DAY','2','2026-10-01 23:59:59','True','False','月結','205')");
+    await legacy.$executeRawUnsafe("INSERT INTO remittance_list VALUES ('SAME-DAY','2026-10-01 23:59:59','5')");
+    const boundary = await buildHandover(legacy, db, "2026-10-01");
+    assert.equal(boundary.cutoffDate, "2026-10-01");
+    assert.equal(boundary.rows[1]!.orders.find(o => o.id === "SAME-DAY")!.outstanding, 200);
+    assert(!boundary.rows.flatMap(r => r.orders).some(o => o.id === "AFTER"));
+    const older = checked(await buildHandover(legacy, db, "2026-09-30"));
+    const refreshed = await buildCustomerDraft(legacy, db, "2026-10-01", "000002", older);
+    assert.equal(refreshed.rows[1]!.startDate, "2026-10-01");
+    assert.equal(refreshed.rows[1]!.reviewed, false);
+    assert(refreshed.rows[1]!.orders.some(o => o.id === "SAME-DAY"));
+    assert.deepEqual(refreshed.rows[0], older.rows[0]);
+    assert.equal(refreshed.rows[0]!.startDate, "2026-09-30");
+    await legacy.$executeRawUnsafe("DELETE FROM remittance_list WHERE order_id='SAME-DAY'");
+    await legacy.$executeRawUnsafe("DELETE FROM `order` WHERE order_id='SAME-DAY'");
+    ok("single-customer date changes preserve other drafts; cutoff includes last-second orders and receipts");
     let snapshot = await buildHandover(legacy, db, "2026-10-01");
     assert.equal(snapshot.rows.length, 3); assert.equal(snapshot.rows[2]!.orders.length, 0); assert.equal(snapshot.rows[2]!.addresses.length, 2);
     assert.deepEqual(snapshot.rows[2]!.addresses.map(a => a.barrels), [2, 3]); assert.equal(snapshot.rows[2]!.legacyBarrels, 5);
