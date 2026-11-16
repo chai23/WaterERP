@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { cleanAddressLine } from "./master-mapping.js";
+import { legacyCustomersWithOrders } from "./order-presence.js";
 
 type DB = PrismaClient | Prisma.TransactionClient;
 export type HandoverOrder = {
@@ -10,7 +11,7 @@ export type HandoverOrder = {
   arDocumentId?: string; arNo?: string;
 };
 export type HandoverRow = {
-  draftId?: string; targetHash?: string;
+  draftId?: string; targetHash?: string; noLegacyOrders?: boolean;
   key: string; code: string; name: string; customerId: string | null; included: boolean;
   warnings: string[]; reviewed: boolean; note: string; prepayment: number | null; sourceOverShort?: number;
   prepaidBarrels: number; sourcePrepaidBarrels: number;
@@ -574,7 +575,7 @@ async function markHandoverComplete(tx: DB, r: HandoverRow) {
   r.handedOverAt = new Date().toISOString();
 }
 
-export async function applyCustomerHandover(legacy: PrismaClient, target: PrismaClient, revision: number, userId: bigint, customerCode: string, expectedVersion?: unknown) {
+export async function applyCustomerHandover(legacy: PrismaClient, target: PrismaClient, revision: number, userId: bigint, customerCode: string, expectedVersion?: unknown, autoNoOrders = false) {
   const wanted = code(customerCode);
   if (!wanted) throw new Error("請輸入 6 碼以內的客戶編號");
   const stored = await readHandover(target);
@@ -585,7 +586,10 @@ export async function applyCustomerHandover(legacy: PrismaClient, target: Prisma
   if (!matches.length) throw new Error(`草稿沒有客戶 ${wanted}，請先產生此客戶的交接草稿`);
   if (matches.length > 1) throw new Error(`客戶編號 ${wanted} 在草稿中有多筆，請先核對主檔`);
   const row = matches[0]!;
-  if (row.handedOver) return stored;
+  if (row.handedOver) {
+    if (autoNoOrders && !row.noLegacyOrders) throw new Error("此客戶已完成交接，不會重新歸零或改為流失");
+    return stored;
+  }
   if (expectedVersion !== undefined) assertCustomerVersion(s, row.key, expectedVersion);
   const checkedVersion = customerVersion(s, row);
   if (!row.customerId) throw new Error(`${row.code} ${row.name}：尚未對應新系統客戶，不能完成交接`);
@@ -594,6 +598,7 @@ export async function applyCustomerHandover(legacy: PrismaClient, target: Prisma
   const fresh = await buildHandover(legacy, target, rowStartDate, wanted);
   const freshRow = fresh.rows.find(r => r.key === row.key);
   if (!freshRow) throw new Error(`舊系統已沒有客戶 ${wanted}，請重新產生此客戶的交接草稿`);
+  if (autoNoOrders && (await legacyCustomersWithOrders(legacy)).has(wanted)) throw new Error(`客戶 ${wanted} 存在舊系統歷史訂單，不能自動歸零交接`);
   if (freshRow.handedOver) {
     row.handedOver = true;
     row.handedOverAt = freshRow.handedOverAt;
@@ -608,6 +613,14 @@ export async function applyCustomerHandover(legacy: PrismaClient, target: Prisma
     });
   }
   if (sourceSignature(freshRow) !== sourceSignature(row)) throw new Error("此客戶的舊資料自建立草稿後已變動，請重新產生此客戶的交接草稿");
+  if (autoNoOrders) {
+    if (freshRow.warnings.some(w => w.startsWith("新系統已有交易"))) throw new Error("此客戶新系統已有交易或餘額，不能自動歸零");
+    row.included = true; row.reviewed = true; row.prepayment = 0; row.prepaidBarrels = 0;
+    for (const a of row.addresses) a.barrels = 0;
+    const marker = "舊系統完全無資料";
+    row.note = row.note.includes(marker) ? row.note : [row.note.trim(), marker].filter(Boolean).join("；");
+    if (row.note.length > 400) throw new Error("核對說明超過 400 字，請先縮短內容");
+  }
   const errors = customerHandoverErrors(row);
   if (errors.length) throw new Error(errors.slice(0, 12).join("\n"));
   if (fresh.blockers.length) throw new Error(fresh.blockers.slice(0, 8).join("\n"));
@@ -629,9 +642,21 @@ export async function applyCustomerHandover(legacy: PrismaClient, target: Prisma
       ? customerTargetHash(targetNow, currentRow.customerId!) === currentRow.targetHash
       : hashTarget(targetNow) === current.snapshot.targetHash;
     if (!targetMatches) throw new Error("此客戶的新系統主檔或交易已變動，請重新產生此客戶的交接草稿；不會覆蓋目前餘額");
+    if (autoNoOrders && (await legacyCustomersWithOrders(legacy)).has(wanted)) throw new Error("處理期間舊系統新增了訂單，本戶未歸零或交接");
     Object.assign(currentRow, { included: row.included, note: row.note, reviewed: row.reviewed, prepayment: row.prepayment, prepaidBarrels: row.prepaidBarrels, addresses: row.addresses, orders: row.orders });
     if (currentRow.included) await postIncludedBalances(tx, currentRow, rowStartDate, userId);
     else await markHandoverComplete(tx, currentRow);
+    if (autoNoOrders) {
+      const reason = await tx.customerChurnReason.findUnique({ where: { code: "other" } });
+      if (!reason?.isActive) throw new Error("請先啟用流失原因「其他」，本戶交接已回復");
+      const effectiveAt = new Date(`${new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date())}T00:00:00Z`);
+      await tx.customer.update({ where: { id: BigInt(currentRow.customerId!) }, data: {
+        lifecycleStatus: "churned", churnedAt: effectiveAt, churnReasonId: reason.id, churnReasonNote: "系統轉換標記流失",
+      } });
+      await tx.customerLifecycleEvent.create({ data: { customerId: BigInt(currentRow.customerId!), eventType: "churned",
+        effectiveAt, churnReasonId: reason.id, note: "系統轉換標記流失", recordedByUserId: userId } });
+      currentRow.noLegacyOrders = true;
+    }
     current.snapshot.targetHash = hashTarget(await targetState(tx));
     await tx.$executeRaw`UPDATE cutover_handover SET revision=revision+1, status='draft', snapshot=${JSON.stringify(current.snapshot)}, updated_at=UTC_TIMESTAMP(3) WHERE id=1`;
     return readHandover(tx);

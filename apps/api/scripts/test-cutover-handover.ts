@@ -285,6 +285,51 @@ try {
     await applyCustomerHandover(legacy, db, 0, 1n, "000014", customerVersion(refreshedSaved.snapshot!, refreshedRow));
     assert.ok((await db.customer.findUniqueOrThrow({ where: { id: guarded.id } })).handoverCompletedAt);
     ok("same-customer target mutation blocks posting; unrelated customer mutation does not");
+    await legacy.$executeRawUnsafe("INSERT INTO customer VALUES ('20','20','無單歸零','5','12','無單地址'),('21','21','已付歷史','0','0',''),('22','22','未來歷史','0','0',''),('23','23','新增歷史','0','0',''),('24','24','分址歷史','0','0',''),('000099-1','24','別名地址','0','0','')");
+    await legacy.$executeRawUnsafe("INSERT INTO money_over_short VALUES ('20','50')");
+    await legacy.$executeRawUnsafe("INSERT INTO `order` VALUES ('OLDPAID','21','2020-01-01','True','True','現金','100'),('FUTURE','22','2099-01-01','True','True','現金','100'),('ALIAS','99-1','2020-01-01','True','True','現金','100')");
+    const autoCustomer = await db.customer.create({ data: { customerCode: "000020", name: "無單歸零", prepaidBarrelBalance: 12, addresses: { create: { addressLine: "無單地址", barrelsOnSite: 5, isDefault: true } } } });
+    for (const code of ["000021", "000022", "000023", "000024"]) await db.customer.create({ data: { customerCode: code, name: code } });
+    for (const customerCode of ["000020", "000021", "000022", "000023", "000024"]) {
+      const generated = await api("/legacy-cutover/handover/draft", { customerCode, startDate: "2026-10-01", customerVersion: null });
+      assert.equal(generated.status, 200, JSON.stringify(generated));
+    }
+    const preview = await api("/legacy-cutover/handover/no-order-candidates");
+    assert.equal(preview.status, 200, JSON.stringify(preview));
+    assert(preview.data.rows.some((r: any) => r.code === "000020" && !r.reason));
+    for (const code of ["000021", "000022", "000024"]) assert(!preview.data.rows.some((r: any) => r.code === code), `history must exclude ${code}`);
+    const noOrderCandidate = preview.data.rows.find((r: any) => r.code === "000020");
+    const autoBody = { customerCode: "000020", customerVersion: noOrderCandidate.version };
+    await db.customerChurnReason.update({ where: { code: "other" }, data: { isActive: false } });
+    assert.equal((await api("/legacy-cutover/handover/auto-no-orders", autoBody)).status, 409);
+    const rolledBack = await db.customer.findUniqueOrThrow({ where: { id: autoCustomer.id } });
+    assert.equal(rolledBack.handoverCompletedAt, null); assert.equal(rolledBack.prepaidBarrelBalance, 12);
+    assert.equal(await db.customerLedgerEntry.count({ where: { customerId: autoCustomer.id } }), 0);
+    await db.customerChurnReason.update({ where: { code: "other" }, data: { isActive: true } });
+    const completedAuto = await api("/legacy-cutover/handover/auto-no-orders", autoBody);
+    assert.equal(completedAuto.status, 200, JSON.stringify(completedAuto));
+    const autoFinal = await db.customer.findUniqueOrThrow({ where: { id: autoCustomer.id }, include: { churnReason: true, addresses: true } });
+    assert.ok(autoFinal.handoverCompletedAt); assert.equal(autoFinal.prepaidBarrelBalance, 0);
+    assert.equal(autoFinal.lifecycleStatus, "churned"); assert.equal(autoFinal.churnReason!.code, "other");
+    assert.equal(autoFinal.churnReasonNote, "系統轉換標記流失"); assert(autoFinal.addresses.every(a => a.barrelsOnSite === 0));
+    const autoSnapshot = (await readHandover(db)).snapshot!;
+    const autoRow = autoSnapshot.rows.find(r => r.code === "000020")!;
+    assert.equal(autoRow.prepayment, 0); assert.equal(autoRow.sourceOverShort, 50);
+    assert.equal(autoRow.sourcePrepaidBarrels, 12); assert.equal(autoRow.legacyBarrels, 5);
+    assert.equal(autoRow.noLegacyOrders, true); assert(autoRow.note.includes("舊系統完全無資料"));
+    assert.equal(await db.arDocument.count({ where: { customerId: autoCustomer.id } }), 0);
+    assert.equal(await db.prepaymentTxn.count({ where: { customerId: autoCustomer.id } }), 0);
+    const autoLedgerCount = await db.customerLedgerEntry.count({ where: { customerId: autoCustomer.id } });
+    assert.equal((await api("/legacy-cutover/handover/auto-no-orders", autoBody)).status, 200);
+    assert.equal(await db.customerLedgerEntry.count({ where: { customerId: autoCustomer.id } }), autoLedgerCount);
+    assert.equal(await db.customerLifecycleEvent.count({ where: { customerId: autoCustomer.id, eventType: "churned" } }), 1);
+    const late = preview.data.rows.find((r: any) => r.code === "000023");
+    await legacy.$executeRawUnsafe("INSERT INTO `order` VALUES ('LATE','23','2099-01-01','True','True','現金','100')");
+    assert.equal((await api("/legacy-cutover/handover/auto-no-orders", { customerCode: "000023", customerVersion: late.version })).status, 409);
+    const alreadyDone = autoSnapshot.rows.find(r => r.code === "000014")!;
+    assert.equal((await api("/legacy-cutover/handover/auto-no-orders", { customerCode: "000014", customerVersion: customerVersion(autoSnapshot, alreadyDone) })).status, 409);
+    assert.equal((await db.customer.findUniqueOrThrow({ where: { id: guarded.id } })).lifecycleStatus, "active");
+    ok("no-history filter includes all dates and branch aliases; zero-and-churn is atomic, idempotent, and preserves completed customers");
     console.log(`All ${checks} integration checks passed. Isolated databases retained: ${targetName}, ${legacyName}`);
   }
 } finally {

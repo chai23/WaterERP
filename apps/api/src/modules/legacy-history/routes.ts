@@ -3,6 +3,7 @@ import { syncLegacyMasters } from "./master-sync.js";
 import type { PrismaClient } from "@prisma/client";
 import { describeDbUrl, getLegacyPrisma, resolveLegacyDatabaseUrl } from "./client.js";
 import { getLegacyOrderDetail, listLegacyOrdersForCustomer } from "./queries.js";
+import { legacyCustomersWithOrders } from "./order-presence.js";
 import { applyCustomerHandover, buildCustomerDraft, buildHandover, keepHandedOver, mergeDraft, readHandover, saveHandover, saveCustomerDraft, saveCustomerEdits, customerVersion, totals, validationErrors } from "./handover.js";
 
 type AuthUser = {
@@ -131,6 +132,36 @@ export function registerLegacyHistoryRoutes(args: RegisterArgs): void {
   app.post("/api/legacy-cutover/handover/apply", async (req, res) => {
     if (!requireRole(req, res, ["admin", "accounting"])) return;
     res.status(409).json({ ok: false, message: "已改為一次只交接一位客戶。請重新整理頁面，展開該客戶後按「完成此客戶交接」。" });
+  });
+  app.get("/api/legacy-cutover/handover/no-order-candidates", async (req, res) => {
+    if (!requireRole(req, res, ["admin", "accounting"])) return;
+    const legacy = getLegacyPrisma();
+    if (!legacy) { res.status(503).json({ ok: false, message: "未設定舊庫連線" }); return; }
+    res.setHeader("Cache-Control", "no-store");
+    try {
+      const ordered = await legacyCustomersWithOrders(legacy);
+      const current = await readHandover(prisma);
+      if (!current.snapshot) throw new Error("請先產生交接草稿");
+      const rows = current.snapshot.rows.filter(r => !ordered.has(r.code)).map(r => ({
+        key: r.key, code: r.code, name: r.name, version: customerVersion(current.snapshot!, r),
+        reason: r.handedOver ? "已完成交接，保留原狀" : !r.customerId ? "尚未對應新系統客戶"
+          : r.warnings.some(w => w.startsWith("新系統已有交易")) ? "新系統已有交易，需人工處理" : "",
+      }));
+      res.json({ ok: true, data: { checkedAt: new Date().toISOString(), rows } });
+    } catch (e) { handoverError(res, e); }
+  });
+  app.post("/api/legacy-cutover/handover/auto-no-orders", async (req, res) => {
+    const auth = requireRole(req, res, ["admin", "accounting"]); if (!auth) return;
+    const legacy = getLegacyPrisma();
+    if (!legacy) { res.status(503).json({ ok: false, message: "未設定舊庫連線" }); return; }
+    try {
+      if (typeof req.body?.customerVersion !== "string" || !/^[a-f0-9]{64}$/.test(req.body.customerVersion)) throw new Error("請先篩選無歷史訂單客戶，再執行自動交接");
+      const customerCode = typeof req.body?.customerCode === "string" ? req.body.customerCode : "";
+      const result = await applyCustomerHandover(legacy, prisma, 0, auth.id, customerCode, req.body.customerVersion, true);
+      const row = result.snapshot?.rows.find(r => r.code === customerCode);
+      if (!row?.noLegacyOrders) throw new Error("此客戶已完成交接，未重新歸零或改為流失");
+      res.json({ ok: true, data: { customerCode, completed: true } });
+    } catch (e) { handoverError(res, e); }
   });
 
   app.get("/api/legacy-history/status", async (req, res) => {
