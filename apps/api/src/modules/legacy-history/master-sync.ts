@@ -17,40 +17,34 @@ import {
 
 type Tx = Prisma.TransactionClient;
 type MapRow = { entity_type: string; legacy_key: string; new_id: bigint; meta_json: unknown };
+type CustomerRow = Prisma.CustomerGetPayload<{ include: { addresses: true } }>;
+type AddressRow = CustomerRow["addresses"][number];
 
-async function referenceCount(tx: Tx, query: Prisma.Sql): Promise<number> {
-  const rows = await tx.$queryRaw<Array<{ n: bigint | number | null }>>(query);
-  return Number(rows[0]?.n ?? 0);
+function sameId(a: bigint | null | undefined, b: bigint | null | undefined): boolean {
+  if (a == null || b == null) return a == null && b == null;
+  return a === b;
 }
 
-function addressIsReferenced(tx: Tx, id: bigint): Promise<number> {
-  return referenceCount(tx, Prisma.sql`
-    SELECT (
-      (SELECT COUNT(*) FROM sales_orders WHERE delivery_address_id = ${id}) +
-      (SELECT COUNT(*) FROM barrel_pickups WHERE delivery_address_id = ${id}) +
-      (SELECT COUNT(*) FROM barrel_movements WHERE delivery_address_id = ${id}) +
-      (SELECT COUNT(*) FROM service_tickets WHERE delivery_address_id = ${id})
-    ) AS n`);
+function metaEqual(stored: unknown, meta: object): boolean {
+  let parsed = stored;
+  if (typeof parsed === "string") {
+    try { parsed = JSON.parse(parsed); } catch { return false; }
+  }
+  const left = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
+  const right = meta as Record<string, unknown>;
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+  for (const key of keys) {
+    if (String(left[key] ?? "") !== String(right[key] ?? "")) return false;
+  }
+  return true;
 }
 
-function customerIsReferenced(tx: Tx, id: bigint): Promise<number> {
-  return referenceCount(tx, Prisma.sql`
-    SELECT (
-      (SELECT COUNT(*) FROM sales_orders WHERE customer_id = ${id}) +
-      (SELECT COUNT(*) FROM payments WHERE customer_id = ${id}) +
-      (SELECT COUNT(*) FROM customer_ledger_entries WHERE customer_id = ${id}) +
-      (SELECT COUNT(*) FROM ar_documents WHERE customer_id = ${id}) +
-      (SELECT COUNT(*) FROM ar_open_items WHERE customer_id = ${id}) +
-      (SELECT COUNT(*) FROM receipt_vouchers WHERE customer_id = ${id}) +
-      (SELECT COUNT(*) FROM prepayment_txns WHERE customer_id = ${id}) +
-      (SELECT COUNT(*) FROM credit_notes WHERE customer_id = ${id}) +
-      (SELECT COUNT(*) FROM billing_statements WHERE customer_id = ${id}) +
-      (SELECT COUNT(*) FROM cutover_monthly_items WHERE customer_id = ${id}) +
-      (SELECT COUNT(*) FROM tax_invoices WHERE customer_id = ${id}) +
-      (SELECT COUNT(*) FROM barrel_pickups WHERE customer_id = ${id}) +
-      (SELECT COUNT(*) FROM barrel_movements WHERE customer_id = ${id}) +
-      (SELECT COUNT(*) FROM service_tickets WHERE customer_id = ${id})
-    ) AS n`);
+async function referencedIds(tx: Tx, column: "delivery_address_id" | "customer_id", tables: string[], ids: bigint[]): Promise<Set<string>> {
+  if (!ids.length) return new Set();
+  const list = Prisma.join(ids);
+  const parts = tables.map((table) => Prisma.sql`SELECT ${Prisma.raw(column)} AS id FROM ${Prisma.raw(table)} WHERE ${Prisma.raw(column)} IN (${list})`);
+  const rows = await tx.$queryRaw<Array<{ id: bigint | null }>>`SELECT DISTINCT id FROM (${Prisma.join(parts, " UNION ")}) AS refs WHERE id IS NOT NULL`;
+  return new Set(rows.map((row) => row.id!.toString()));
 }
 
 /** Master fields only. Never writes opening balances, ledgers, orders or receipts. */
@@ -69,6 +63,20 @@ export async function syncLegacyMasters(legacy: PrismaClient, target: PrismaClie
     await tx.$queryRaw`SELECT id FROM customers ORDER BY id FOR UPDATE`;
     const maps = await tx.$queryRaw<MapRow[]>`SELECT entity_type, legacy_key, new_id, meta_json FROM legacy_id_map WHERE entity_type IN ('customer_code', 'customer_id', 'sync_address', 'area', 'affiliated_company') FOR UPDATE`;
     const map = new Map(maps.map((m) => [`${m.entity_type}:${m.legacy_key}`, m]));
+    const keysByOwner = new Map<string, string[]>();
+    for (const row of maps) {
+      const bucket = `${row.entity_type}:${row.new_id}`;
+      const list = keysByOwner.get(bucket);
+      if (list) list.push(row.legacy_key);
+      else keysByOwner.set(bucket, [row.legacy_key]);
+    }
+    const customers = await tx.customer.findMany({ include: { addresses: true } });
+    const customerByCode = new Map(customers.filter((c) => c.customerCode).map((c) => [c.customerCode!, c]));
+    const customerById = new Map(customers.map((c) => [c.id.toString(), c]));
+    const zones = await tx.addressZone.findMany();
+    const zoneByName = new Map(zones.map((z) => [z.name, z]));
+    const companies = await tx.affiliatedCompany.findMany();
+    const companyByNameRow = new Map(companies.map((c) => [c.name, c]));
     const result = {
       customersCreated: 0,
       customersUpdated: 0,
@@ -80,19 +88,30 @@ export async function syncLegacyMasters(legacy: PrismaClient, target: PrismaClie
       sourceCustomers: groups.length,
       issues: invalid.map((r) => `${r.customerId || "無編號"}：編號格式、姓名或地址不完整`),
     };
-    const put = async (kind: string, key: string, id: bigint, meta: object = {}) => {
-      const json = JSON.stringify(meta);
-      await tx.$executeRaw`INSERT INTO legacy_id_map (entity_type, legacy_key, new_id, meta_json) VALUES (${kind}, ${key}, ${id}, ${json}) ON DUPLICATE KEY UPDATE new_id=VALUES(new_id), meta_json=VALUES(meta_json)`;
+    const pending: Array<{ kind: string; key: string; id: bigint; meta: object }> = [];
+    const put = (kind: string, key: string, id: bigint, meta: object = {}) => {
+      const current = map.get(`${kind}:${key}`);
+      if (current && current.new_id === id && metaEqual(current.meta_json, meta)) return;
+      pending.push({ kind, key, id, meta });
+      map.set(`${kind}:${key}`, { entity_type: kind, legacy_key: key, new_id: id, meta_json: meta });
+    };
+    const flush = async () => {
+      while (pending.length) {
+        const chunk = pending.splice(0, 200);
+        const values = chunk.map((row) => Prisma.sql`(${row.kind}, ${row.key}, ${row.id}, ${JSON.stringify(row.meta)})`);
+        await tx.$executeRaw`INSERT INTO legacy_id_map (entity_type, legacy_key, new_id, meta_json) VALUES ${Prisma.join(values)} ON DUPLICATE KEY UPDATE new_id=VALUES(new_id), meta_json=VALUES(meta_json)`;
+      }
     };
 
     const zoneByLegacy = new Map<string, bigint>();
     for (const area of areas) {
-      const existingZone = await tx.addressZone.findUnique({ where: { name: area.areaName } });
+      const existingZone = zoneByName.get(area.areaName);
       const zone = existingZone
-        ? await tx.addressZone.update({ where: { id: existingZone.id }, data: { isActive: true } })
+        ? existingZone.isActive ? existingZone : await tx.addressZone.update({ where: { id: existingZone.id }, data: { isActive: true } })
         : await tx.addressZone.create({ data: { name: area.areaName, sortOrder: zoneByLegacy.size, isActive: true } });
+      if (!existingZone) zoneByName.set(zone.name, zone);
       zoneByLegacy.set(area.areaId, zone.id);
-      await put("area", area.areaId, zone.id, { name: area.areaName });
+      put("area", area.areaId, zone.id, { name: area.areaName });
     }
     const companyNames = new Set<string>();
     for (const group of groups) {
@@ -103,18 +122,19 @@ export async function syncLegacyMasters(legacy: PrismaClient, target: PrismaClie
     }
     const companyByName = new Map<string, bigint>();
     for (const name of [...companyNames].sort()) {
-      const existingCompany = await tx.affiliatedCompany.findUnique({ where: { name } });
+      const existingCompany = companyByNameRow.get(name);
       const company = existingCompany
-        ? await tx.affiliatedCompany.update({ where: { id: existingCompany.id }, data: { isActive: true } })
+        ? existingCompany.isActive ? existingCompany : await tx.affiliatedCompany.update({ where: { id: existingCompany.id }, data: { isActive: true } })
         : await tx.affiliatedCompany.create({ data: { name, sortOrder: companyByName.size, isActive: true } });
+      if (!existingCompany) companyByNameRow.set(company.name, company);
       companyByName.set(name, company.id);
-      await put("affiliated_company", name, company.id);
+      put("affiliated_company", name, company.id);
     }
 
     const liveCodes = new Set(groups.map((g) => g.customerCode));
     for (const group of groups) {
       const p = group.rows[0]!;
-      const existing = await tx.customer.findUnique({ where: { customerCode: group.customerCode }, include: { addresses: true } });
+      const existing = customerByCode.get(group.customerCode);
       const mapped = map.get(`customer_code:${group.customerCode}`);
       if (mapped && existing && mapped.new_id !== existing.id) throw new Error(`客戶 ${group.customerCode} 的舊新對照衝突，已取消整次同步。`);
       if (existing && !mapped && !group.rows.some((r) => map.get(`customer_id:${r.customerId}`)?.new_id === existing.id)) {
@@ -134,20 +154,32 @@ export async function syncLegacyMasters(legacy: PrismaClient, target: PrismaClie
         addressZoneId: zoneKey ? zoneByLegacy.get(zoneKey) ?? null : null,
         affiliatedCompanyId: companyName ? companyByName.get(companyName) ?? null : null,
       };
-      const customer = existing
-        ? await tx.customer.update({ where: { id: existing.id }, data })
-        : await tx.customer.create({
+      const customerId = existing
+        ? existing.id
+        : (await tx.customer.create({
             data: {
               ...data,
               customerCode: group.customerCode,
               billingType: parseBillingType(p.customerCollectMoney),
               defaultCashInvoiceMode: parseDefaultInvoice(p.customerBillForm),
             },
-          });
-      if (existing) result.customersUpdated++;
-      else result.customersCreated++;
-      await put("customer_code", group.customerCode, customer.id);
-      const addresses = existing?.addresses ?? [];
+          })).id;
+      if (existing) {
+        const unchanged = existing.name === data.name
+          && existing.contactName === data.contactName
+          && existing.phone === data.phone
+          && existing.mobile === data.mobile
+          && existing.taxId === data.taxId
+          && existing.standingRemark === data.standingRemark
+          && sameId(existing.addressZoneId, data.addressZoneId)
+          && sameId(existing.affiliatedCompanyId, data.affiliatedCompanyId);
+        if (!unchanged) {
+          await tx.customer.update({ where: { id: existing.id }, data });
+          result.customersUpdated++;
+        }
+      } else result.customersCreated++;
+      put("customer_code", group.customerCode, customerId);
+      const addresses: AddressRow[] = existing?.addresses ?? [];
       const addressIds = new Map<string, bigint>();
       const usedIds = new Map<bigint, string>();
       const liveSyncKeys: string[] = [];
@@ -156,26 +188,36 @@ export async function syncLegacyMasters(legacy: PrismaClient, target: PrismaClie
         const oldMap = map.get(`customer_id:${a.legacyCustomerId}`);
         const meta = typeof oldMap?.meta_json === "string" ? JSON.parse(oldMap.meta_json) : oldMap?.meta_json;
         const mappedId = map.get(`sync_address:${a.legacyCustomerId}`)?.new_id ?? (meta?.deliveryAddressId ? BigInt(meta.deliveryAddressId) : undefined);
-        if (oldMap && oldMap.new_id !== customer.id) throw new Error(`客戶 ${group.customerCode} 地址對照衝突，已取消整次同步。`);
+        if (oldMap && oldMap.new_id !== customerId) throw new Error(`客戶 ${group.customerCode} 地址對照衝突，已取消整次同步。`);
         const address = addresses.find((x) => x.id === mappedId && (!usedIds.has(x.id) || usedIds.get(x.id) === a.data.addressLine)) ?? addresses.find((x) => x.addressLine === a.data.addressLine && !usedIds.has(x.id));
-        const fields = { label: a.data.label, addressLine: a.data.addressLine, contactName: a.data.contactName ?? null, contactPhone: a.data.contactPhone ?? null, contactMobile: a.data.contactMobile ?? null };
+        const fields = { label: a.data.label ?? null, addressLine: a.data.addressLine, contactName: a.data.contactName ?? null, contactPhone: a.data.contactPhone ?? null, contactMobile: a.data.contactMobile ?? null };
         const changedLocation = address && address.addressLine !== fields.addressLine;
+        const addressUnchanged = address
+          && address.label === fields.label
+          && address.addressLine === fields.addressLine
+          && address.contactName === fields.contactName
+          && address.contactPhone === fields.contactPhone
+          && address.contactMobile === fields.contactMobile;
         const saved = address
-          ? await tx.deliveryAddress.update({ where: { id: address.id }, data: { ...fields, ...(changedLocation ? { latitude: null, longitude: null, geocodedAt: null, geocodedAddress: null, geocodeStatus: "pending", locationAccuracy: null, manualLocationConfirmed: false } : {}) } })
-          : await tx.deliveryAddress.create({ data: { ...fields, customerId: customer.id, isDefault: addresses.length === 0 } });
-        if (address) result.addressesUpdated++;
-        else {
+          ? addressUnchanged
+            ? address
+            : await tx.deliveryAddress.update({ where: { id: address.id }, data: { ...fields, ...(changedLocation ? { latitude: null, longitude: null, geocodedAt: null, geocodedAddress: null, geocodeStatus: "pending", locationAccuracy: null, manualLocationConfirmed: false } : {}) } })
+          : await tx.deliveryAddress.create({ data: { ...fields, customerId, isDefault: addresses.length === 0 } });
+        if (address) {
+          if (!addressUnchanged) result.addressesUpdated++;
+        } else {
           result.addressesCreated++;
           addresses.push(saved);
         }
         addressIds.set(fields.addressLine, saved.id);
         usedIds.set(saved.id, fields.addressLine);
-        await put("sync_address", a.legacyCustomerId, saved.id);
+        put("sync_address", a.legacyCustomerId, saved.id);
       }
       const removedIds: bigint[] = [];
-      for (const address of [...addresses]) {
-        if (usedIds.has(address.id)) continue;
-        if (await addressIsReferenced(tx, address.id)) {
+      const unused = addresses.filter((address) => !usedIds.has(address.id));
+      const referencedAddresses = await referencedIds(tx, "delivery_address_id", ["sales_orders", "barrel_pickups", "barrel_movements", "service_tickets"], unused.map((address) => address.id));
+      for (const address of unused) {
+        if (referencedAddresses.has(address.id.toString())) {
           result.skipped++;
           result.issues.push(`${group.customerCode}：地址「${address.addressLine}」舊系統已不存在，但新系統已有訂單或服務紀錄，無法刪除`);
           continue;
@@ -188,36 +230,40 @@ export async function syncLegacyMasters(legacy: PrismaClient, target: PrismaClie
       const kept = addresses.filter((a) => !removedIds.some((id) => id === a.id));
       if (kept.length > 0 && !kept.some((a) => a.isDefault)) {
         await tx.deliveryAddress.update({ where: { id: kept[0]!.id }, data: { isDefault: true } });
+        kept[0]!.isDefault = true;
       }
       const liveLegacyIds = group.rows.map((r) => r.customerId.trim());
-      await tx.$executeRaw`DELETE FROM legacy_id_map WHERE entity_type = 'customer_id' AND new_id = ${customer.id} AND legacy_key NOT IN (${Prisma.join(liveLegacyIds)})`;
-      const keptIds = kept.map((a) => a.id);
-      if (keptIds.length > 0 && liveSyncKeys.length > 0) {
-        await tx.$executeRaw`DELETE FROM legacy_id_map WHERE entity_type = 'sync_address' AND new_id IN (${Prisma.join(keptIds)}) AND legacy_key NOT IN (${Prisma.join(liveSyncKeys)})`;
+      const liveLegacySet = new Set(liveLegacyIds);
+      const staleCustomerKeys = (keysByOwner.get(`customer_id:${customerId}`) ?? []).filter((key) => !liveLegacySet.has(key));
+      if (staleCustomerKeys.length) {
+        await tx.$executeRaw`DELETE FROM legacy_id_map WHERE entity_type = 'customer_id' AND new_id = ${customerId} AND legacy_key IN (${Prisma.join(staleCustomerKeys)})`;
+      }
+      const liveSyncSet = new Set(liveSyncKeys);
+      const staleAddressKeys = kept.flatMap((address) => (keysByOwner.get(`sync_address:${address.id}`) ?? []).filter((key) => !liveSyncSet.has(key)));
+      if (staleAddressKeys.length) {
+        await tx.$executeRaw`DELETE FROM legacy_id_map WHERE entity_type = 'sync_address' AND legacy_key IN (${Prisma.join(staleAddressKeys)})`;
       }
       for (const row of group.rows) {
-        await put("customer_id", row.customerId, customer.id, { customerCode: group.customerCode, deliveryAddressId: addressIds.get(cleanAddressLine(row.customerAddress))?.toString() });
+        put("customer_id", row.customerId, customerId, { customerCode: group.customerCode, deliveryAddressId: addressIds.get(cleanAddressLine(row.customerAddress))?.toString() });
       }
+      if (pending.length >= 200) await flush();
     }
+    await flush();
 
     for (const m of maps) {
       if (m.entity_type !== "customer_code" || liveCodes.has(m.legacy_key)) continue;
-      const customer = await tx.customer.findUnique({ where: { id: m.new_id }, include: { addresses: true } });
+      const customer = customerById.get(m.new_id.toString()) ?? await tx.customer.findUnique({ where: { id: m.new_id }, include: { addresses: true } });
       if (!customer || customer.customerCode !== m.legacy_key) {
         await tx.$executeRaw`DELETE FROM legacy_id_map WHERE entity_type = 'customer_code' AND legacy_key = ${m.legacy_key} AND new_id = ${m.new_id}`;
         continue;
       }
-      const blockedCustomer = await customerIsReferenced(tx, customer.id);
-      let blockedAddress = false;
-      if (!blockedCustomer) {
-        for (const address of customer.addresses) {
-          if (await addressIsReferenced(tx, address.id)) {
-            blockedAddress = true;
-            break;
-          }
-        }
-      }
-      if (blockedCustomer || blockedAddress) {
+      const blockedCustomers = await referencedIds(tx, "customer_id", [
+        "sales_orders", "payments", "customer_ledger_entries", "ar_documents", "ar_open_items", "receipt_vouchers",
+        "prepayment_txns", "credit_notes", "billing_statements", "cutover_monthly_items", "tax_invoices",
+        "barrel_pickups", "barrel_movements", "service_tickets",
+      ], [customer.id]);
+      const blockedAddresses = blockedCustomers.size > 0 ? new Set<string>() : await referencedIds(tx, "delivery_address_id", ["sales_orders", "barrel_pickups", "barrel_movements", "service_tickets"], customer.addresses.map((address) => address.id));
+      if (blockedCustomers.size > 0 || blockedAddresses.size > 0) {
         result.skipped++;
         result.issues.push(`${customer.customerCode}：舊系統已刪除，但新系統已有訂單或帳務，無法刪除`);
         continue;
@@ -233,5 +279,5 @@ export async function syncLegacyMasters(legacy: PrismaClient, target: PrismaClie
       result.customersDeleted++;
     }
     return result;
-  }, { timeout: 180000, maxWait: 10000, isolationLevel: "Serializable" });
+  }, { timeout: 540000, maxWait: 10000, isolationLevel: "Serializable" });
 }

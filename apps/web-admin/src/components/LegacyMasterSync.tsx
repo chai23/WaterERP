@@ -9,8 +9,11 @@ export function LegacyMasterSync({ onSynced }: { onSynced: () => Promise<void> }
     setBusy(true); setMessage(""); setIssues([]);
     try {
       const res = await fetch('/api/legacy-history/sync-masters', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-      const payload = await res.json();
-      if (!res.ok || !payload.ok) throw new Error(payload.message || '同步失敗');
+      const text = await res.text();
+      let payload: { ok?: boolean; message?: string; data?: { customersCreated: number; customersUpdated: number; customersDeleted?: number; addressesCreated: number; addressesUpdated: number; addressesDeleted?: number; skipped: number; issues?: string[] } };
+      try { payload = JSON.parse(text); }
+      catch { throw new Error(res.status === 504 ? '同步超過網站等待時間，變更已回復。請再試一次。' : '伺服器沒有回傳同步結果，請重新整理後確認。'); }
+      if (!res.ok || !payload.ok || !payload.data) throw new Error(payload.message || '同步失敗');
       const d = payload.data;
       setIssues(d.issues ?? []);
       setMessage(`同步完成：新增 ${d.customersCreated} 位客戶、更新 ${d.customersUpdated} 位、刪除 ${d.customersDeleted ?? 0} 位；新增 ${d.addressesCreated} 個地址、更新 ${d.addressesUpdated} 個、刪除 ${d.addressesDeleted ?? 0} 個；略過 ${d.skipped} 筆。地址分區與隸屬公司已一併更新。訂單與帳務已保留。`);
