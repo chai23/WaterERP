@@ -4,6 +4,7 @@ import type { Customer, CustomerBillingSummary, CustomerDetail, CustomerSalesOrd
 import { billingTypeLabel, fmtLocalYmd, orderStatusBadgeClass, sumCustomerBarrelsOnSite } from "../adminUtils";
 import { breakdownCashTaxInvoicePreview, DEFAULT_VAT_RATE } from "../taxDisplay";
 import { RemarkSloganPicker } from "../components/RemarkSloganPicker";
+import { OrderProductPicker } from "../components/OrderProductPicker";
 
 function parseLineBilling(c: string | undefined | null): LineBillingType {
   if (c === "monthly" || c === "prepaid" || c === "cash") return c;
@@ -246,10 +247,18 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [historyOrders, setHistoryOrders] = useState<CustomerSalesOrder[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState(false);
   const [customerKeyword, setCustomerKeyword] = useState("");
   const [matchHint, setMatchHint] = useState("");
   const [lineProductCodes, setLineProductCodes] = useState<Record<string, string>>({});
+  const [productPickerRowId, setProductPickerRowId] = useState<string | null>(null);
   const [promotionPreview, setPromotionPreview] = useState<string[]>([]);
+  useEffect(() => {
+    if (form.customerId && selectedCustomer) return;
+    setForm((f) => ({ ...f, lines: [newOrderFormLine("cash")], remark: "", cashInvoiceMode: "none" }));
+    setLineProductCodes({});
+    setPromotionPreview([]);
+  }, [form.customerId, selectedCustomer?.id, setForm]);
   const lineFieldRefs = useRef<Record<string, HTMLElement | null>>({});
   const remarkRef = useRef<HTMLTextAreaElement | null>(null);
   const resizeRemark = useCallback(() => {
@@ -258,7 +267,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
     input.style.height = "auto";
     input.style.height = `${Math.max(56, input.scrollHeight + 2)}px`;
   }, []);
-  useEffect(() => { resizeRemark(); }, [form.remark, resizeRemark]);
+  useEffect(() => { resizeRemark(); }, [form.remark, form.customerId, resizeRemark]);
   useEffect(() => {
     const input = remarkRef.current;
     if (!input) return;
@@ -269,7 +278,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
     });
     observer.observe(input);
     return () => observer.disconnect();
-  }, [resizeRemark]);
+  }, [resizeRemark, form.customerId]);
   const pendingLineFocus = useRef<{ rowId: string; field: OrderLineField } | null>(null);
 
   useEffect(() => {
@@ -339,7 +348,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
 
       if (ambiguous) {
         setMatchHint(
-          `已自動帶入最相近客戶（${top.c.customerCode ?? "------"}／${top.c.name}）。另有相近結果，若不正確請從下方「改選」或繼續輸入更完整資料。`,
+          `已自動帶入最相近客戶（${top.c.customerCode ?? "------"}／${top.c.name}）。另有相近結果，若不正確請繼續輸入更完整資料。`,
         );
       } else {
         setMatchHint(`已自動選取：${top.c.customerCode ?? "------"}／${top.c.name}`);
@@ -382,19 +391,22 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
     }
     let cancelled = false;
     setHistoryLoading(true);
+    setHistoryOrders([]);
+    setHistoryError(false);
     void fetch(`/api/customers/${form.customerId}`)
       .then(async (r) => {
         const data: unknown = await r.json();
         if (cancelled) return;
         if (!r.ok || !data || typeof data !== "object") {
           setHistoryOrders([]);
+          setHistoryError(true);
           return;
         }
         const raw = (data as CustomerDetail).salesOrders;
         setHistoryOrders(Array.isArray(raw) ? raw : []);
       })
       .catch(() => {
-        if (!cancelled) setHistoryOrders([]);
+        if (!cancelled) { setHistoryOrders([]); setHistoryError(true); }
       })
       .finally(() => {
         if (!cancelled) setHistoryLoading(false);
@@ -861,7 +873,10 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
                     className="order-new__input-code"
                     placeholder="6 碼編號或關鍵字"
                     value={customerKeyword}
-                    onChange={(e) => setCustomerKeyword(e.target.value)}
+                    onChange={(e) => {
+                      setCustomerKeyword(e.target.value);
+                      if (!e.target.value.trim()) setForm((f) => ({ ...f, customerId: "", deliveryAddressId: "" }));
+                    }}
                     autoComplete="off"
                   />
                   {matchHint ? <p className={orderNewMatchHintClass(matchHint)}>{matchHint}</p> : null}
@@ -901,6 +916,21 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
                 </div>
               </div>
             </div>
+            <aside className="order-new__customer-alerts" aria-label="客戶提醒">
+              <strong>客戶提醒</strong>
+              {!selectedCustomer ? <p>選擇客戶後顯示提醒。</p> : <>
+                {historyLoading ? <p>正在確認未完成訂單…</p> : historyError ? <p>訂單提醒暫時無法載入，請重新選取客戶。</p> : historyOrders.some(o => ["draft", "confirmed", "assigned", "delivering", "pending_settlement"].includes(o.status)) ? (
+                  <details key={form.customerId}>
+                    <summary>近期有 {historyOrders.filter(o => ["draft", "confirmed", "assigned", "delivering", "pending_settlement"].includes(o.status)).length} 筆未完成訂單，開單前請核對</summary>
+                    <ul>{historyOrders.filter(o => ["draft", "confirmed", "assigned", "delivering", "pending_settlement"].includes(o.status)).map(o => <li key={o.id}>{fmtLocalYmd(o.scheduledDeliveryDate)} · {o.orderNo}<br />{historyGoodsSummary(o)}</li>)}</ul>
+                    <small>依最近載入的訂單顯示。</small>
+                  </details>
+                ) : <p>近期無未完成訂單。</p>}
+                {selectedCustomer.standingRemark?.trim() ? <p>固定備註：{selectedCustomer.standingRemark}</p> : null}
+                {selectedCustomer.notes?.trim() ? <p>客戶注意事項：{selectedCustomer.notes}</p> : null}
+                {!selectedCustomer.standingRemark?.trim() && !selectedCustomer.notes?.trim() ? <p className="text-muted">目前無特殊注意事項。</p> : null}
+              </>}
+            </aside>
           </section>
 
           <section className="order-new__zone order-new__zone--main" aria-labelledby="order-new-zone-main-title">
@@ -1102,6 +1132,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
             </div>
           </header>
           <div className="order-new__zone-body order-new__zone-body--lines">
+            {!form.customerId || !selectedCustomer ? <p className="order-new__empty-state">請先選擇客戶，再填寫商品明細。</p> : <>
             <span id="order-new-lines-desc" className="sr-only">
               每列請輸入三位數商品編號，並選擇結帳方式、單價與數量。
             </span>
@@ -1132,7 +1163,18 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
                         onChange={(e) => {
                           applyProductCodeChange(row.id, e.target.value);
                         }}
-                        onKeyDown={(e) => handleLineFieldEnter(e, row.id, "code")}
+                        onDoubleClick={() => setProductPickerRowId(row.id)}
+                        title="雙擊或按空白鍵選擇商品"
+                        aria-haspopup="dialog"
+                        onKeyDown={(e) => {
+                          if (e.key === " " && !e.nativeEvent.isComposing) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (!e.repeat) setProductPickerRowId(row.id);
+                            return;
+                          }
+                          handleLineFieldEnter(e, row.id, "code");
+                        }}
                         aria-label={`第 ${idx + 1} 列商品編號`}
                       />
                       {(() => {
@@ -1370,6 +1412,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
             </div>
           </div>
             </div>
+            </>}
           </div>
         </section>
 
@@ -1438,6 +1481,18 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
             )}
           </div>
         </aside>
+        {productPickerRowId && form.lines.some((row) => row.id === productPickerRowId) && (
+          <OrderProductPicker products={activeProducts}
+            onClose={() => {
+              setProductPickerRowId(null);
+              focusLineField(productPickerRowId, "code");
+            }}
+            onSelect={(product) => {
+              applyProductCodeChange(productPickerRowId, product.productCode ?? "");
+              setProductPickerRowId(null);
+              focusLineField(productPickerRowId, "billing");
+            }} />
+        )}
       </form>
   );
 

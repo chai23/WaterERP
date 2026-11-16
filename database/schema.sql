@@ -352,6 +352,7 @@ CREATE TABLE `customers` (
   `churned_at` DATE NULL DEFAULT NULL COMMENT '決定不再服務日',
   `churn_reason_id` BIGINT UNSIGNED NULL DEFAULT NULL,
   `churn_reason_note` VARCHAR(500) NULL DEFAULT NULL,
+  `handover_completed_at` DATETIME(3) NULL DEFAULT NULL COMMENT '上線交接完成時間；舊系統客戶未完成前不能新增訂單',
   `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (`id`),

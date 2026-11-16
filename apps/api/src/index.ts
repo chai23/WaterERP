@@ -43,7 +43,7 @@ import { returnAssignmentToPool } from "./returnAssignmentToPool.js";
 import { registerDeliveryPlanningRoutes } from "./modules/delivery-planning/routes.js";
 import { isDeliveryPlanningEnabled } from "./modules/delivery-planning/flag.js";
 import { registerLegacyHistoryRoutes } from "./modules/legacy-history/routes.js";
-import { pendingCutoverMonthly, claimCutoverMonthly } from "./modules/legacy-history/handover.js";
+import { pendingCutoverMonthly, claimCutoverMonthly, handoverOrderBlock } from "./modules/legacy-history/handover.js";
 import {
   generalEffectiveLatest,
   patrolWindow,
@@ -2525,6 +2525,10 @@ async function postServiceTicketBilling(
 
   if (!args.charge.greaterThan(0)) {
     throw new Error("收費金額須大於 0 才能建立帳務訂單");
+  }
+  const handoverBlock = await handoverOrderBlock(tx, args.ticket.customerId);
+  if (handoverBlock) {
+    throw Object.assign(new Error(handoverBlock), { statusCode: 409 });
   }
 
   const product = await ensureServiceFeeProduct(tx);
@@ -9349,6 +9353,10 @@ async function createConfirmedSalesOrder(
     if (cust.lifecycleStatus === "churned") {
       return { status: 400, payload: { ok: false, message: "此客戶已標記流失，無法開新訂單" } };
     }
+    const handoverBlock = await handoverOrderBlock(prisma, customerId);
+    if (handoverBlock) {
+      return { status: 409, payload: { ok: false, message: handoverBlock } };
+    }
 
     if (orderSource === "liff") {
       const openAtAddress = await prisma.salesOrder.findFirst({
@@ -14063,6 +14071,10 @@ app.post("/api/service-tickets/:ticketId/close", async (req, res) => {
 
     res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
   } catch (e) {
+    if (e instanceof Error && (e as { statusCode?: number }).statusCode === 409) {
+      res.status(409).json({ ok: false, message: e.message });
+      return;
+    }
     res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
@@ -14170,6 +14182,10 @@ app.post("/api/service-tickets/:ticketId/ensure-billing", async (req, res) => {
     });
     res.json({ ok: true, data: serializeServiceTicketAdmin(updated) });
   } catch (e) {
+    if (e instanceof Error && (e as { statusCode?: number }).statusCode === 409) {
+      res.status(409).json({ ok: false, message: e.message });
+      return;
+    }
     res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });

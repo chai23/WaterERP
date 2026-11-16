@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
-import { applyHandover, buildHandover, mergeDraft, readHandover, saveHandover, validationErrors, validDay, type HandoverSnapshot } from "../src/modules/legacy-history/handover.js";
+import { applyCustomerHandover, applyHandover, buildHandover, handoverOrderBlock, mergeDraft, readHandover, saveHandover, validationErrors, validDay, type HandoverSnapshot } from "../src/modules/legacy-history/handover.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const ui = process.argv.includes("--ui");
@@ -66,18 +66,19 @@ try {
   await db.user.create({ data: { id: 1n, employeeCode: "CUTOVERTEST", name: "交接測試管理員", role: "admin", passwordHash: await bcrypt.hash("CutoverTest2026!", 4) } });
   for (const [i, name] of ["一般與月結客戶", "未結月結客戶", "只有預收與桶數客戶"].entries()) {
     await db.customer.create({ data: { id: BigInt(i + 1), customerCode: String(i + 1).padStart(6, "0"), name, prepaidBarrelBalance: i === 2 ? 20 : 0,
-      addresses: { create: i === 2 ? [{ addressLine: "台北總店", barrelsOnSite: 2, isDefault: true }, { addressLine: "台北分店", barrelsOnSite: 3 }] : [{ addressLine: `測試地址 ${i + 1}`, isDefault: true }] } } });
+      addresses: { create: i === 2 ? [{ addressLine: "台北總店", barrelsOnSite: 9, isDefault: true }, { addressLine: "台北分店", barrelsOnSite: 8 }] : [{ addressLine: `測試地址 ${i + 1}`, isDefault: true }] } } });
   }
-  await legacy.$executeRawUnsafe("CREATE TABLE customer(customer_id VARCHAR(20), customer_id_mark VARCHAR(20), customer_name VARCHAR(100), customer_bucket VARCHAR(20), customer_remain VARCHAR(20))");
-  await legacy.$executeRawUnsafe("INSERT INTO customer VALUES ('1','1','一般與月結客戶','0','0'),('2','2','未結月結客戶','0','0'),('3','3','只有預收與桶數客戶','5','20')");
+  await legacy.$executeRawUnsafe("CREATE TABLE customer(customer_id VARCHAR(20), customer_id_mark VARCHAR(20), customer_name VARCHAR(100), customer_bucket VARCHAR(20), customer_remain VARCHAR(20), customer_address VARCHAR(500))");
+  await legacy.$executeRawUnsafe("INSERT INTO customer VALUES ('1','1','一般與月結客戶','0','0',''),('2','2','未結月結客戶','0','0',''),('3','3','只有預收與桶數客戶','2','20','台北總店'),('3-1','3','只有預收與桶數客戶','3','0','台北分店')");
   if (ui) {
     await db.customer.create({ data: { customerCode: "000004", name: "無異常批次核對客戶", addresses: { create: { addressLine: "測試地址 4", isDefault: true } } } });
-    await legacy.$executeRawUnsafe("INSERT INTO customer VALUES ('4','4','無異常批次核對客戶','0','0')");
+    await legacy.$executeRawUnsafe("INSERT INTO customer VALUES ('4','4','無異常批次核對客戶','0','0','')");
   }
   await legacy.$executeRawUnsafe("CREATE TABLE `order`(order_id VARCHAR(128), customer_id VARCHAR(20), order_day DATETIME, order_OK VARCHAR(10), collect_OK VARCHAR(10), collect_money VARCHAR(20), subtotal VARCHAR(30))");
   await legacy.$executeRawUnsafe("INSERT INTO `order` VALUES ('CASH','1','2026-09-20','True','False','現金','1000'),('BILLED','1','2026-09-25','True','False','月結','1000'),('PENDING','2','2026-09-30 23:59:59','True','False','月結','300'),('PENDING-TAX','2','2026-09-26','True','False','月結','210'),('DELIVERY','1','2026-09-29','False','False','現金','200'),('PAID','1','2026-09-25','True','True','現金','500'),('AFTER','1','2026-10-01','True','False','現金','700')");
   await legacy.$executeRawUnsafe("CREATE TABLE remittance_list(order_id VARCHAR(128), remittance_day DATETIME, money VARCHAR(30))");
   await legacy.$executeRawUnsafe("INSERT INTO remittance_list VALUES ('CASH','2026-09-30 23:59:59','200'),('PAID','2026-09-26','500')");
+  await legacy.$executeRawUnsafe("CREATE TABLE money_over_short(customer_id VARCHAR(20), money VARCHAR(30))");
   server = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], { cwd: path.join(root, "apps/api"), env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
   server.stdout?.on("data", b => { if (ui) process.stdout.write(b); });
   server.stderr?.on("data", b => process.stderr.write(b));
@@ -88,7 +89,7 @@ try {
     for (let offset = 10; offset < 5010; offset += 250) {
       const values = Array.from({ length: 250 }, (_, n) => ({ customerCode: String(offset + n).padStart(6, "0"), name: `批次測試 ${offset + n}` }));
       await db.customer.createMany({ data: values });
-      const tuples = values.map(v => `('${v.customerCode}','${v.customerCode}','scale','0','0')`).join(",");
+      const tuples = values.map(v => `('${v.customerCode}','${v.customerCode}','scale','0','0','')`).join(",");
       await legacy.$executeRawUnsafe(`INSERT INTO customer VALUES ${tuples}`);
     }
     const started = Date.now();
@@ -108,6 +109,8 @@ try {
     assert.equal(validDay("2026-02-30"), false); assert.equal(validDay("2026-02-28"), true); ok("calendar dates validated");
     let snapshot = await buildHandover(legacy, db, "2026-10-01");
     assert.equal(snapshot.rows.length, 3); assert.equal(snapshot.rows[2]!.orders.length, 0); assert.equal(snapshot.rows[2]!.addresses.length, 2);
+    assert.deepEqual(snapshot.rows[2]!.addresses.map(a => a.barrels), [2, 3]); assert.equal(snapshot.rows[2]!.legacyBarrels, 5);
+    assert(!snapshot.rows[2]!.warnings.some(w => w.includes("多個配送地址") || w.includes("多筆舊主檔")));
     assert.equal(snapshot.rows[0]!.orders.find(o => o.id === "CASH")!.outstanding, 800);
     assert(!snapshot.rows.flatMap(r => r.orders).some(o => ["AFTER", "PAID"].includes(o.id)));
     assert(snapshot.rows[1]!.orders.some(o => o.id === "PENDING")); ok("all customers, partial receipts, multi-address balances and inclusive cutoff");
@@ -127,7 +130,7 @@ try {
     assert(validationErrors(checked(await buildHandover(legacy, db, "2026-10-01"))).some(x => x.includes("已有新系統交易")));
     await db.prepaymentTxn.deleteMany(); ok("existing live transactions cannot be overwritten");
     assert(validationErrors(snapshot).length > 0); assert.throws(() => mergeDraft(snapshot, { ...snapshot, rows: [] }));
-    const invalid = checked(snapshot); invalid.rows[0]!.prepayment = -1; assert.throws(() => mergeDraft(snapshot, invalid)); ok("unreviewed/negative/tampered drafts rejected");
+    const invalid = checked(snapshot); invalid.rows[0]!.prepayment = 1.234; assert.throws(() => mergeDraft(snapshot, invalid)); ok("unreviewed or fractional short/over drafts rejected");
     await legacy.$executeRawUnsafe("INSERT INTO remittance_list VALUES ('PAID','2026-10-02','10')");
     assert((await buildHandover(legacy, db, "2026-10-01")).blockers.some(x => x.includes("截止日以後")));
     await legacy.$executeRawUnsafe("DELETE FROM remittance_list WHERE money='10'"); ok("after-cutoff receipts on currently paid orders block historical misstatement");
@@ -173,6 +176,51 @@ try {
     const receipt = await api("/ar/receipt-vouchers", { customerId: "1", amount: 1800, paymentMethod: "cash", paidAtYmd: "2026-10-02" });
     assert.equal(receipt.status, 201, JSON.stringify(receipt));
     assert.equal((await db.arOpenItem.aggregate({ where: { customerId: 1n }, _sum: { outstandingAmount: true } }))._sum.outstandingAmount?.toString(), "0"); ok("real receipt API settles carried opening receivables");
+    await legacy.$executeRawUnsafe("INSERT INTO customer VALUES ('9','9','單戶交接客戶','1','0','單戶地址')");
+    const single = await db.customer.create({ data: { customerCode: "000009", name: "單戶交接客戶", addresses: { create: { addressLine: "單戶地址", isDefault: true, barrelsOnSite: 4 } } } });
+    await db.$executeRawUnsafe("UPDATE cutover_handover SET status='draft'");
+    const singleDraft = checked(await buildHandover(legacy, db, "2026-10-01", "000009"));
+    assert.equal(singleDraft.rows.length, 1); assert.equal(singleDraft.rows[0]!.addresses[0]!.barrels, 1);
+    const singleSaved = await saveHandover(db, (await readHandover(db)).revision, singleDraft, 1n);
+    const singleApplied = await applyCustomerHandover(legacy, db, singleSaved.revision, 1n, "9");
+    assert.equal(singleApplied.status, "draft");
+    assert.equal(singleApplied.snapshot!.rows.find(r => r.code === "000009")!.handedOver, true);
+    assert.ok((await db.customer.findUniqueOrThrow({ where: { id: single.id } })).handoverCompletedAt);
+    assert.equal((await db.deliveryAddress.findFirstOrThrow({ where: { customerId: single.id } })).barrelsOnSite, 1);
+    const repeated = await applyCustomerHandover(legacy, db, singleApplied.revision, 1n, "000009");
+    assert.equal(repeated.revision, singleApplied.revision);
+    assert.equal((await db.deliveryAddress.findFirstOrThrow({ where: { customerId: single.id } })).barrelsOnSite, 1);
+    await db.$executeRawUnsafe(`INSERT INTO legacy_id_map VALUES ('customer_code','000009',${single.id})`);
+    assert.equal(await handoverOrderBlock(db, single.id), null);
+    const blocked = await db.customer.create({ data: { customerCode: "000007", name: "未交接客戶" } });
+    await db.$executeRawUnsafe(`INSERT INTO legacy_id_map VALUES ('customer_code','000007',${blocked.id})`);
+    assert.match(String(await handoverOrderBlock(db, blocked.id)), /尚未完成上線交接/);
+    const localOnly = await db.customer.create({ data: { customerCode: "000008", name: "新系統自建客戶" } });
+    assert.equal(await handoverOrderBlock(db, localOnly.id), null);
+    ok("single-customer handover posts only that customer and blocks unfinished legacy customers");
+    await legacy.$executeRawUnsafe("INSERT INTO customer VALUES ('10','10','短收客戶','0','0',''),('11','11','溢收客戶','0','0','')");
+    await legacy.$executeRawUnsafe("INSERT INTO money_over_short VALUES ('10','100'),('10','-30'),('10-1','-150'),('11','40'),('11','5')");
+    const owe = await db.customer.create({ data: { customerCode: "000010", name: "短收客戶", addresses: { create: { addressLine: "短收地址", isDefault: true } } } });
+    const credit = await db.customer.create({ data: { customerCode: "000011", name: "溢收客戶", addresses: { create: { addressLine: "溢收地址", isDefault: true } } } });
+    const oweDraft = await buildHandover(legacy, db, "2026-10-01", "000010");
+    assert.equal(oweDraft.rows[0]!.prepayment, -80);
+    assert.equal(oweDraft.rows[0]!.sourceOverShort, -80);
+    oweDraft.rows[0]!.reviewed = true; oweDraft.rows[0]!.note = "短溢收";
+    oweDraft.sourceFrozen = true; oweDraft.totalsConfirmed = true;
+    const oweSaved = await saveHandover(db, (await readHandover(db)).revision, oweDraft, 1n);
+    const oweApplied = await applyCustomerHandover(legacy, db, oweSaved.revision, 1n, "000010");
+    assert.equal((await db.arOpenItem.aggregate({ where: { customerId: owe.id }, _sum: { outstandingAmount: true } }))._sum.outstandingAmount?.toString(), "80");
+    assert.equal(await db.customerPrepaymentWallet.findUnique({ where: { customerId: owe.id } }), null);
+    const creditDraft = await buildHandover(legacy, db, "2026-10-01", "000011");
+    assert.equal(creditDraft.rows[0]!.prepayment, 45);
+    creditDraft.rows[0]!.reviewed = true; creditDraft.rows[0]!.note = "短溢收";
+    creditDraft.sourceFrozen = true; creditDraft.totalsConfirmed = true;
+    const creditSaved = await saveHandover(db, oweApplied.revision, creditDraft, 1n);
+    const creditApplied = await applyCustomerHandover(legacy, db, creditSaved.revision, 1n, "000011");
+    assert.equal(creditApplied.status, "draft");
+    assert.equal(String((await db.customerPrepaymentWallet.findUniqueOrThrow({ where: { customerId: credit.id } })).balanceAmount), "45");
+    assert.equal(await db.arOpenItem.count({ where: { customerId: credit.id } }), 0);
+    ok("legacy over/short sum posts a receivable or a prepayment wallet");
     console.log(`All ${checks} integration checks passed. Isolated databases retained: ${targetName}, ${legacyName}`);
   }
 } finally {

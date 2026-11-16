@@ -7,6 +7,7 @@
 --         支出單據、上樓獎金紀錄、通知／OTP 暫存等交易資料，
 --         以及舊庫訂單／期初開帳轉換對照（legacy_id_map 的 sales_order／remittance／legacy_settle_rv／opening_ar）。
 -- 庫存現量歸零；客戶與送貨地址的 barrels_on_site、客戶 prepaid_barrel_balance 歸零。
+-- 上線交接草稿、月結待結與客戶 handover_completed_at 一併清回未交接。
 --
 -- 會保留：客戶、送貨地址、商品、司機、車輛、使用者、供應商、
 --         地址分區、隸屬公司、支出類別、優惠活動、印刷標語、訂單公告、
@@ -110,8 +111,78 @@ SET @sql := IF(
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 SET @sql := IF(
+  (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'service_ticket_events') > 0,
+  'TRUNCATE TABLE `service_ticket_events`',
+  'SELECT 1'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql := IF(
   (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'service_tickets') > 0,
   'TRUNCATE TABLE `service_tickets`',
+  'SELECT 1'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql := IF(
+  (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'delivery_route_stops') > 0,
+  'TRUNCATE TABLE `delivery_route_stops`',
+  'SELECT 1'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql := IF(
+  (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'delivery_routes') > 0,
+  'TRUNCATE TABLE `delivery_routes`',
+  'SELECT 1'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql := IF(
+  (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'delivery_plan_unassigned') > 0,
+  'TRUNCATE TABLE `delivery_plan_unassigned`',
+  'SELECT 1'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql := IF(
+  (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'delivery_planning_audit_logs') > 0,
+  'TRUNCATE TABLE `delivery_planning_audit_logs`',
+  'SELECT 1'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql := IF(
+  (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'delivery_plans') > 0,
+  'TRUNCATE TABLE `delivery_plans`',
+  'SELECT 1'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql := IF(
+  (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'day_close_locks') > 0,
+  'TRUNCATE TABLE `day_close_locks`',
+  'SELECT 1'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql := IF(
+  (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'driver_attendance') > 0,
+  'TRUNCATE TABLE `driver_attendance`',
+  'SELECT 1'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql := IF(
+  (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'customer_lifecycle_events') > 0,
+  'TRUNCATE TABLE `customer_lifecycle_events`',
+  'SELECT 1'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql := IF(
+  (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'operation_audit_logs') > 0,
+  'TRUNCATE TABLE `operation_audit_logs`',
   'SELECT 1'
 );
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
@@ -134,6 +205,14 @@ SET FOREIGN_KEY_CHECKS = 1;
 
 UPDATE `inventory_balances` SET `qty_on_hand` = 0;
 UPDATE `customers` SET `barrels_on_site` = 0, `prepaid_barrel_balance` = 0;
+
+SET @sql := IF(
+  (SELECT COUNT(*) FROM information_schema.columns
+   WHERE table_schema = DATABASE() AND table_name = 'customers' AND column_name = 'handover_completed_at') > 0,
+  'UPDATE `customers` SET `handover_completed_at` = NULL',
+  'SELECT 1'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 SET @sql := IF(
   (SELECT COUNT(*) FROM information_schema.columns

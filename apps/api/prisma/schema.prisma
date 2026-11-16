@@ -251,6 +251,8 @@ model Customer {
   churnedAt        DateTime? @map("churned_at") @db.Date
   churnReasonId    BigInt?   @map("churn_reason_id") @db.UnsignedBigInt
   churnReasonNote  String?   @map("churn_reason_note") @db.VarChar(500)
+  /// 上線交接完成時間。由舊系統對應過來的客戶，完成前不能新增訂單。
+  handoverCompletedAt DateTime? @map("handover_completed_at") @db.DateTime(3)
   createdAt      DateTime @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt      DateTime @updatedAt @map("updated_at") @db.DateTime(3)
 
