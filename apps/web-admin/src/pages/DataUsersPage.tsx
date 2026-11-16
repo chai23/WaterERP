@@ -22,6 +22,8 @@ export default function DataUsersPage() {
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({ name: "", employeeCode: "", phone: "", role: "dispatcher", password: "" });
+  const [roleByUser, setRoleByUser] = useState<Record<string, string>>({});
+  const [updating, setUpdating] = useState(false);
   const [passwordByUser, setPasswordByUser] = useState<Record<string, string>>({});
 
   const loadUsers = async () => {
@@ -59,6 +61,7 @@ export default function DataUsersPage() {
 
   const patchUser = async (id: string, patch: Record<string, unknown>) => {
     setMessage("");
+    setUpdating(true);
     try {
       await apiJson(`/api/users/${id}`, {
         method: "PATCH",
@@ -67,8 +70,21 @@ export default function DataUsersPage() {
       });
       setMessage("已更新使用者");
       await loadUsers();
+      return true;
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "更新失敗");
+      return false;
+    } finally {
+      setUpdating(false);
+    }
+  };
+
+  const saveRole = async (u: AuthUser) => {
+    const role = roleByUser[u.id] ?? u.role;
+    if (role === u.role) return;
+    if (await patchUser(u.id, { role })) {
+      setRoleByUser(prev => { const next = { ...prev }; delete next[u.id]; return next; });
+      setMessage(`已儲存 ${u.name} 的角色：${roleLabel[role]}`);
     }
   };
 
@@ -78,7 +94,7 @@ export default function DataUsersPage() {
       setMessage("請輸入新密碼");
       return;
     }
-    await patchUser(u.id, { password });
+    if (!await patchUser(u.id, { password })) return;
     setPasswordByUser((prev) => ({ ...prev, [u.id]: "" }));
   };
 
@@ -122,7 +138,7 @@ export default function DataUsersPage() {
               <input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required />
             </label>
             <div className="field field--actions">
-              <button type="submit" className="btn btn--primary" disabled={saving}>
+              <button type="submit" className="btn btn--primary" disabled={saving || updating}>
                 {saving ? "新增中…" : "新增使用者"}
               </button>
             </div>
@@ -148,7 +164,19 @@ export default function DataUsersPage() {
                   <tr key={u.id}>
                     <td><code>{u.employeeCode}</code></td>
                     <td>{u.name}</td>
-                    <td>{roleLabel[u.role] ?? u.role}</td>
+                    <td>
+                      <div className="inline-actions">
+                        <select aria-label={`${u.name}的角色`} value={roleByUser[u.id] ?? u.role}
+                          disabled={updating || saving || u.id === currentUser?.id}
+                          onChange={e => setRoleByUser(prev => ({ ...prev, [u.id]: e.target.value }))}>
+                          {Object.entries(roleLabel).map(([role, label]) => <option key={role} value={role}>{label}</option>)}
+                        </select>
+                        <button type="button" className="btn btn--primary btn--sm"
+                          disabled={updating || saving || u.id === currentUser?.id || (roleByUser[u.id] ?? u.role) === u.role}
+                          onClick={() => void saveRole(u)}>儲存角色</button>
+                      </div>
+                      {u.id === currentUser?.id && <small>目前登入帳號的角色請由其他管理員修改</small>}
+                    </td>
                     <td>{u.isActive ? <span className="badge badge--completed">啟用</span> : <span className="badge badge--cancelled">停用</span>}</td>
                     <td>{u.phone || "—"}</td>
                     <td>
@@ -160,7 +188,7 @@ export default function DataUsersPage() {
                           onChange={(e) => setPasswordByUser((prev) => ({ ...prev, [u.id]: e.target.value }))}
                           placeholder="新密碼"
                         />
-                        <button type="button" className="btn btn--secondary btn--sm" onClick={() => void resetPassword(u)}>
+                        <button type="button" className="btn btn--secondary btn--sm" disabled={updating || saving} onClick={() => void resetPassword(u)}>
                           套用
                         </button>
                       </div>
@@ -169,7 +197,7 @@ export default function DataUsersPage() {
                       <button
                         type="button"
                         className={u.isActive ? "btn btn--danger btn--sm" : "btn btn--secondary btn--sm"}
-                        disabled={u.id === currentUser?.id}
+                        disabled={updating || saving || u.id === currentUser?.id}
                         onClick={() => void patchUser(u.id, { isActive: !u.isActive })}
                       >
                         {u.isActive ? "停用" : "啟用"}

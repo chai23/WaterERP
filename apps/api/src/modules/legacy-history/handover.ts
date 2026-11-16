@@ -316,15 +316,18 @@ export function totals(snapshot: HandoverSnapshot) {
 }
 
 // Only editable fields are accepted. Source IDs, mappings, hashes and evidence stay server-owned.
-export function mergeDraft(original: HandoverSnapshot, input: any): HandoverSnapshot {
-  if (!Array.isArray(input?.rows) || input.rows.length !== original.rows.length) throw new Error("交接客戶清單不完整，請重新載入");
+export function mergeDraft(original: HandoverSnapshot, input: any, partial = false): HandoverSnapshot {
+  if (!Array.isArray(input?.rows) || (!partial && input.rows.length !== original.rows.length)) throw new Error("交接客戶清單不完整，請重新載入");
   const next = structuredClone(original);
-  const edits = new Map(input.rows.map((r: any) => [r.key, r]));
-  if (edits.size !== original.rows.length) throw new Error("交接客戶重複");
+  const edits = new Map(input.rows.map((r: any) => [r?.key, r]));
+  if (edits.size !== input.rows.length) throw new Error("交接客戶重複");
+  const keys = new Set(original.rows.map(r => r.key));
+  if ([...edits.keys()].some(key => !keys.has(key as string))) throw new Error("交接客戶清單不符，請重新載入");
   next.sourceFrozen = input.sourceFrozen === true;
   next.totalsConfirmed = input.totalsConfirmed === true;
   for (const r of next.rows) {
     if (r.handedOver) continue;
+    if (partial && !edits.has(r.key)) continue;
     const edit: any = edits.get(r.key);
     if (!edit || typeof edit.included !== "boolean" || typeof edit.note !== "string" || edit.note.length > 400) throw new Error("客戶編輯格式錯誤");
     r.included = edit.included; r.note = edit.note.trim(); r.reviewed = edit.reviewed === true;

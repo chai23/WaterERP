@@ -36,7 +36,8 @@ export default function LegacyCutoverPage() {
   const request = async (path = "", method = "GET", body?: unknown): Promise<State> => {
     const res = await fetch(`/api/legacy-cutover/handover${path}`, { method, ...(body ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}) });
     const text = await res.text();
-    if (text.trimStart().startsWith("<")) throw new Error(res.status === 413 ? "交接資料太大，網頁伺服器拒絕接收。請再試一次。" : `伺服器回應異常（${res.status}），請再試一次。`);
+    if (res.status === 413) throw new Error("交接資料超過伺服器接收上限，尚未儲存。請保留此頁，聯絡管理員確認前後端版本及 Nginx 設定已更新。");
+    if (text.trimStart().startsWith("<")) throw new Error(`伺服器回應異常（${res.status}），請再試一次。`);
     const data = JSON.parse(text);
     if (!res.ok || !data.ok) throw new Error(data.message ?? "操作失敗");
     return data.data;
@@ -54,7 +55,22 @@ export default function LegacyCutoverPage() {
     const r = d.rows.find(r => r.key === key)!; change(r); if (!preserveReview) r.reviewed = false;
   });
   const run = async (action: () => Promise<void>) => { setBusy(true); setError(""); setMessage(""); try { await action(); } catch (e) { setError(e instanceof Error ? e.message : "操作失敗"); } finally { setBusy(false); } };
-  const save = async () => { const s = await request("/draft", "PUT", { revision: state?.revision, snapshot: draft }); accept(s); return s; };
+  const save = async () => {
+    if (!draft || !state?.snapshot) throw new Error("尚未載入交接草稿");
+    const editable = (r: Row) => ({
+      key: r.key, included: r.included, note: r.note, reviewed: r.reviewed,
+      prepayment: r.prepayment, prepaidBarrels: r.prepaidBarrels,
+      addresses: r.addresses.map(a => ({ id: a.id, barrels: a.barrels })),
+      orders: r.orders.map(o => ({ id: o.id, disposition: o.disposition, finalAmount: o.finalAmount,
+        dueDate: o.dueDate, invoiceMode: o.invoiceMode, note: o.note })),
+    });
+    const previous = new Map(state.snapshot.rows.map(r => [r.key, JSON.stringify(editable(r))]));
+    const rows = draft.rows.filter(r => !r.handedOver).map(editable)
+      .filter(r => JSON.stringify(r) !== previous.get(r.key));
+    const s = await request("/draft", "PUT", { revision: state.revision, partial: true,
+      snapshot: { sourceFrozen: draft.sourceFrozen, totalsConfirmed: draft.totalsConfirmed, rows } });
+    accept(s); return s;
+  };
   const generate = () => run(async () => { accept(await request("/draft", "POST", { startDate, revision: state?.revision })); setStep(2); setMessage("全部客戶的交接草稿已保存，尚未寫入任何帳務餘額。請逐戶按「完成此客戶交接」。"); });
   const generateOne = () => run(async () => {
     const customerCode = singleCode.trim();

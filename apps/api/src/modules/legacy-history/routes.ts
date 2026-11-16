@@ -95,7 +95,7 @@ export function registerLegacyHistoryRoutes(args: RegisterArgs): void {
     try {
       const current = await readHandover(prisma);
       if (!current.snapshot || current.revision !== req.body?.revision) throw new Error("草稿版本不同，請重新載入");
-      const snapshot = mergeDraft(current.snapshot, req.body?.snapshot);
+      const snapshot = mergeDraft(current.snapshot, req.body?.snapshot, req.body?.partial === true);
       res.json({ ok: true, data: handoverResponse(await saveHandover(prisma, current.revision, snapshot, auth.id)) });
     } catch (e) { handoverError(res, e); }
   });
