@@ -23,6 +23,7 @@ export default function LegacyCutoverPage() {
   const [message, setMessage] = useState("");
   const [search, setSearch] = useState("");
   const [onlyPending, setOnlyPending] = useState(false);
+  const [onlyReviewed, setOnlyReviewed] = useState(false);
   const [onlyExceptions, setOnlyExceptions] = useState(false);
   const [onlyOpen, setOnlyOpen] = useState(false);
   const [singleCode, setSingleCode] = useState("");
@@ -119,13 +120,13 @@ export default function LegacyCutoverPage() {
     setSearch(padded); setExpanded(padded); setStep(2);
     setMessage(`已準備客戶 ${padded} 的交接資料，尚未寫入帳務。核對後按「完成此客戶交接」。`);
   });
-  const rows = useMemo(() => draft?.rows.filter(r => (!onlyPending || !r.reviewed || !r.included) && (!onlyExceptions || (r.included && !r.reviewed && !r.handedOver && r.warnings.length > 0)) && (!onlyOpen || !r.handedOver) && `${r.code} ${r.name}`.includes(search.trim())) ?? [], [draft, search, onlyPending, onlyExceptions, onlyOpen]);
+  const rows = useMemo(() => draft?.rows.filter(r => (!onlyPending || !r.reviewed || !r.included) && (!onlyReviewed || (r.included && r.reviewed)) && (!onlyExceptions || (r.included && !r.reviewed && !r.handedOver && r.warnings.length > 0)) && (!onlyOpen || !r.handedOver) && `${r.code} ${r.name}`.includes(search.trim())) ?? [], [draft, search, onlyPending, onlyReviewed, onlyExceptions, onlyOpen]);
   const pageCount = Math.max(1, Math.ceil(rows.length / 100));
   const currentPage = Math.min(page, pageCount);
   const pageRows = rows.slice((currentPage - 1) * 100, currentPage * 100);
   const bulkRows = pageRows.filter(r => !r.handedOver && r.included && r.customerId && !r.reviewed && !r.warnings.length && !r.orders.length && (r.prepayment === null || r.prepayment === 0));
   const finished = draft?.rows.filter(r => r.handedOver).length ?? 0;
-  useEffect(() => { setPage(1); }, [search, onlyPending, onlyExceptions, onlyOpen]);
+  useEffect(() => { setPage(1); }, [search, onlyPending, onlyReviewed, onlyExceptions, onlyOpen]);
   const totals = useMemo(() => {
     const t: Record<string, number> = { cash: 0, monthly_billed: 0, monthly_pending: 0, prepayment: 0, prepaid: 0, barrels: 0, included: 0, reviewed: 0, excluded: 0 };
     for (const r of draft?.rows ?? []) {
@@ -172,8 +173,8 @@ export default function LegacyCutoverPage() {
       <div className="handover-meta"><span>最近產生：啟用 {draft.startDate} · 承接截至 {draft.cutoffDate}（各戶日期見下方）</span><span>快照 {new Date(draft.capturedAt).toLocaleString("zh-TW")} · 版本 {state?.revision}{dirty ? " · 有未儲存變更" : " · 已保存"}</span></div>
       {!!draft.blockers.length && <div className="alert alert--error"><strong>這些來源問題會擋住相關客戶交接</strong><ul>{draft.blockers.map((b, i) => <li key={i}>{b}</li>)}</ul></div>}
       {step === 2 && <div className="card handover-panel">
-        <div className="handover-toolbar"><label className="handover-field">搜尋客戶<input placeholder="客戶代號或名稱" value={search} onChange={e => setSearch(e.target.value)} /></label><label><input type="checkbox" checked={onlyOpen} onChange={e => setOnlyOpen(e.target.checked)} /> 只看未完成交接</label><label><input type="checkbox" checked={onlyPending} onChange={e => setOnlyPending(e.target.checked)} /> 只看待確認／排除</label><label><input type="checkbox" checked={onlyExceptions} onChange={e => setOnlyExceptions(e.target.checked)} /> 只看待處理異常</label><span>已完成交接 {finished} 位 · 已確認 {totals.reviewed} / {totals.included} 位 · 待處理異常 {draft.rows.filter(r => r.included && !r.reviewed && !r.handedOver && r.warnings.length > 0).length} 位 · 排除 {totals.excluded} 位</span></div>
-        <p>展開一位客戶，核對後按「完成此客戶交接」。未完成的舊系統客戶不能新增訂單。</p>
+        <div className="handover-toolbar"><label className="handover-field">搜尋客戶<input placeholder="客戶代號或名稱" value={search} onChange={e => setSearch(e.target.value)} /></label><label><input type="checkbox" checked={onlyOpen} onChange={e => setOnlyOpen(e.target.checked)} /> 只看未完成交接</label><label><input type="checkbox" checked={onlyReviewed} onChange={e => { setOnlyReviewed(e.target.checked); if (e.target.checked) { setOnlyPending(false); setOnlyExceptions(false); } }} /> 只看已確認</label><label><input type="checkbox" checked={onlyPending} onChange={e => { setOnlyPending(e.target.checked); if (e.target.checked) setOnlyReviewed(false); }} /> 只看待確認／排除</label><label><input type="checkbox" checked={onlyExceptions} onChange={e => { setOnlyExceptions(e.target.checked); if (e.target.checked) setOnlyReviewed(false); }} /> 只看待處理異常</label><span>已完成交接 {finished} 位 · 已確認 {totals.reviewed} / {totals.included} 位 · 待處理異常 {draft.rows.filter(r => r.included && !r.reviewed && !r.handedOver && r.warnings.length > 0).length} 位 · 排除 {totals.excluded} 位</span></div>
+        <p>展開一位客戶，核對後按「完成此客戶交接」。未完成的舊系統客戶不能新增訂單。{onlyReviewed && <span>「已確認」是已核對的客戶，包含已完成交接者；搭配「只看未完成交接」可找出仍待交接的客戶。</span>}</p>
         <div className="handover-toolbar handover-pagination"><span>符合 {rows.length} 位 · 第 {currentPage} / {pageCount} 頁（每頁 100 位）</span><button className="btn" disabled={currentPage === 1 || busy} onClick={() => setPage(currentPage - 1)}>上一頁</button><button className="btn" disabled={currentPage === pageCount || busy} onClick={() => setPage(currentPage + 1)}>下一頁</button>{!applied && <button className="btn" disabled={busy || !bulkRows.length} onClick={() => setConfirmation("review")}>批次確認本頁正常客戶（{bulkRows.length}）</button>}</div>
         <div className="handover-customers">{!rows.length && <p>沒有符合條件的客戶。</p>}{pageRows.map(r => <article key={r.key} className={`handover-customer ${!r.included ? "is-excluded" : ""}`}>
           <button className="handover-customer-head" aria-expanded={expanded === r.key} onClick={() => setExpanded(expanded === r.key ? null : r.key)}><span><b>{r.code} · {r.name}</b><small>{r.orders.length} 筆待處理舊單 · 舊預付 {r.sourcePrepaidBarrels} 桶 · 舊空桶 {r.legacyBarrels} 桶</small></span><span className={`handover-status ${r.handedOver || r.reviewed ? "is-done" : ""}`}>{r.handedOver ? "已完成交接" : !r.included ? "已排除" : r.reviewed ? "已確認" : r.warnings.length ? "待處理異常" : "待核對"}</span><span>{expanded === r.key ? "收合 −" : "展開 ＋"}</span></button>
@@ -195,7 +196,7 @@ export default function LegacyCutoverPage() {
             {r.handedOver ? <p className="handover-note">此客戶已完成交接，可以在新系統新增訂單。</p> : !applied && <div className="handover-footer"><button type="button" className="btn btn--primary" onClick={() => { setPendingCode(r.code); setConfirmation("customer"); }}>完成此客戶交接</button></div>}
           </fieldset>}
         </article>)}</div>
-        <div className="handover-footer"><button className="btn" disabled={busy || applied || !dirty} onClick={() => void run(async () => { await save(); setMessage("草稿已保存，尚未入帳。完成單一客戶後才會寫入該客戶的餘額。"); })}>儲存草稿</button><button className="btn" disabled={busy} onClick={() => void run(async () => { if (dirty) await save(); setStep(3); })}>查看進度</button></div>
+        <div className="handover-footer"><button className="btn" title={dirty ? "保存目前核對內容，稍後可繼續；不會完成交接或入帳" : "目前沒有未儲存的修改"} disabled={busy || applied || !dirty} onClick={() => void run(async () => { await save(); setMessage("草稿已保存，尚未入帳。完成單一客戶後才會寫入該客戶的餘額。"); })}>儲存核對內容（不入帳）</button><button className="btn" disabled={busy} onClick={() => void run(async () => { if (dirty) await save(); setStep(3); })}>查看進度</button></div>
       </div>}
       {step === 3 && <div className="card handover-panel"><h3>單戶交接進度</h3><div className="handover-totals">{[["已完成交接", `${finished} 位`], ["尚未完成", `${draft.rows.filter(r => !r.handedOver).length} 位`], ["短溢收淨額", moneyText(totals.prepayment)], ["預付桶", `${totals.prepaid} 桶`], ["各地址空桶", `${totals.barrels} 桶`]].map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div>
         <p>已完成的客戶可以新增訂單。尚未完成交接的舊系統客戶，開新訂單時會被拒絕。請回到客戶清單，一次完成一位。</p>
