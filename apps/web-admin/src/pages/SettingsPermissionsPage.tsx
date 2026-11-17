@@ -1,116 +1,86 @@
+import { Fragment, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../AuthContext";
-import { PERM_MODULES } from "../rolePermissions";
+import { permissionCatalog as catalog, refreshMenuPermissions } from "../rolePermissions";
 
-const modules = [
-  { key: "overview", label: "總覽" },
-  { key: "orders", label: "訂單新增/查詢/修改" },
-  { key: "assign", label: "派車與核銷" },
-  { key: "expenses", label: "公司支出登錄與查詢" },
-  { key: "expenseVerify", label: "支出會計核銷" },
-  { key: "masters", label: "客戶/商品/車輛主檔" },
-  { key: "accounting", label: "AR 沖帳與會計報表" },
-  { key: "users", label: "使用者與密碼重設" },
-  { key: "settings", label: "系統設定" },
-  { key: "driverApp", label: "司機端任務回報", admin: false, accounting: false, dispatcher: false, warehouse: false, driver: true },
-] as const;
-
+type Matrix = Record<string, Record<string, boolean>>;
+type Settings = { revision: number; matrix: Matrix; defaults: Matrix };
 const roles = [
-  { key: "admin", label: "管理員", note: "完整後台權限，可維護帳號與重設密碼。" },
-  { key: "accounting", label: "會計", note: "支出核銷、會計報表；可修改待核銷支出憑證。" },
-  { key: "dispatcher", label: "調度/後台", note: "日常訂單、派車、核銷、報表、支出登錄。" },
-  { key: "warehouse", label: "倉管", note: "主檔與支出登錄；不可核銷支出。" },
-  { key: "driver", label: "司機", note: "只能登入司機端，只能回報自己的派單。" },
-] as const;
-
-function Mark({ enabled }: { enabled: boolean }) {
-  return <span className={enabled ? "perm-mark perm-mark--on" : "perm-mark perm-mark--off"}>{enabled ? "允許" : "限制"}</span>;
+  { key: "admin", label: "管理員" }, { key: "accounting", label: "會計" },
+  { key: "dispatcher", label: "調度／後台" }, { key: "warehouse", label: "倉管" }, { key: "driver", label: "司機" },
+];
+const locked = (role: string, key: string) => role === "admin" || role === "driver" || key === "settings.permissions";
+async function request(init?: RequestInit): Promise<Settings> {
+  const res = await fetch("/api/settings/permissions", init);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.message ?? "權限設定操作失敗");
+  return data;
 }
-
-function moduleEnabled(modKey: string, roleKey: string): boolean {
-  if (modKey === "driverApp") return roleKey === "driver";
-  const mod = PERM_MODULES.find((m) => m.key === modKey);
-  if (!mod) return false;
-  if (roleKey === "driver") return false;
-  return Boolean(mod[roleKey as keyof typeof mod]);
-}
-
 export default function SettingsPermissionsPage() {
   const { user } = useAuth();
-
-  return (
-    <section className="settings-stack">
-      <div className="page-card">
-        <div className="page-card__header">
-          <div>
-            <h2>權限設定</h2>
-            <p>目前採角色權限控管；帳號角色由「使用者資料」維護。</p>
-          </div>
-          <Link className="btn btn--primary" to="/data/users">
-            管理使用者
-          </Link>
-        </div>
-
-        <div className="permission-summary">
-          {roles.map((role) => (
-            <article key={role.key} className={`permission-role permission-role--${role.key}`}>
-              <div className="permission-role__title">{role.label}</div>
-              <p>{role.note}</p>
-            </article>
-          ))}
-        </div>
+  const [saved, setSaved] = useState<Settings | null>(null);
+  const [draft, setDraft] = useState<Matrix | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [search, setSearch] = useState("");
+  const dirty = Boolean(saved && draft && JSON.stringify(saved.matrix) !== JSON.stringify(draft));
+  const changes = saved && draft ? roles.reduce((total, role) => total + catalog.filter(m => saved.matrix[role.key]?.[m.key] !== draft[role.key]?.[m.key]).length, 0) : 0;
+  const load = async () => {
+    setBusy(true); setError(""); setMessage("");
+    try { const data = await request(); setSaved(data); setDraft(structuredClone(data.matrix)); }
+    catch (e) { setError(e instanceof Error ? e.message : "讀取失敗"); }
+    finally { setBusy(false); }
+  };
+  useEffect(() => { if (user?.role === "admin") void load(); }, [user?.role]);
+  useEffect(() => {
+    const warn = (event: BeforeUnloadEvent) => { if (dirty) { event.preventDefault(); event.returnValue = ""; } };
+    window.addEventListener("beforeunload", warn); return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+  const toggle = (role: string, key: string, checked: boolean) => {
+    setDraft(prev => prev ? { ...prev, [role]: { ...prev[role], [key]: checked } } : prev);
+    setMessage("");
+  };
+  const save = async () => {
+    if (!saved || !draft) return;
+    setBusy(true); setError(""); setMessage("");
+    try {
+      const data = await request({ method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ revision: saved.revision, matrix: draft }) });
+      setSaved({ ...saved, ...data }); setDraft(structuredClone(data.matrix));
+      setMessage("已儲存權限。後端立即套用；使用者重新整理頁面或稍候，選單即會更新。");
+      await refreshMenuPermissions();
+    } catch (e) { setError(e instanceof Error ? e.message : "儲存失敗"); }
+    finally { setBusy(false); }
+  };
+  if (user?.role !== "admin") return <div className="alert alert--error">僅管理員可管理角色權限。</div>;
+  const groups = [...new Set(catalog.map(m => m.group))];
+  return <section className="settings-stack">
+    <div className="page-card">
+      <div className="page-card__header"><div><h2>權限設定</h2><p>依後台 38 個選單功能設定各角色可使用的範圍，勾選後按「儲存權限」。</p></div><Link className="btn btn--secondary" to="/data/users">管理使用者</Link></div>
+      <p>允許代表可進入該功能並執行其中的作業；已核銷不可修改等資料規則仍適用。功能需要的共用查詢資料也會開放讀取。</p>
+      <p>管理員保留全部權限；「權限設定」限管理員使用。司機只使用司機端，不開放後台選單。</p>
+      <div className="inline-actions">
+        <label>搜尋功能 <input value={search} onChange={e => setSearch(e.target.value)} placeholder="輸入分類或功能名稱" /></label>
+        <button type="button" className="btn btn--primary" disabled={!dirty || busy} onClick={() => void save()}>{busy ? "處理中…" : `儲存權限${changes ? `（${changes} 項變更）` : ""}`}</button>
+        <button type="button" className="btn btn--secondary" disabled={!dirty || busy} onClick={() => { setDraft(structuredClone(saved!.matrix)); setMessage(""); }}>取消修改</button>
+        <button type="button" className="btn btn--secondary" disabled={!saved || busy} onClick={() => { setDraft(structuredClone(saved!.defaults)); setMessage("已載入預設值，按儲存權限後才會生效。"); }}>載入預設值</button>
+        <button type="button" className="btn btn--secondary" disabled={busy} onClick={() => { if (!dirty || window.confirm("重新載入會放棄尚未儲存的修改，是否繼續？")) void load(); }}>重新載入</button>
       </div>
-
-      <div className="page-card">
-        <div className="page-card__header">
-          <div>
-            <h2>角色權限矩陣</h2>
-            <p>這張表反映目前後端與前端登入流程的權限規則。</p>
-          </div>
-          <span className="pill pill--subtle">目前角色：{user?.role ?? "—"}</span>
-        </div>
-
-        <div className="table-wrap">
-          <table className="data-table permission-table data-table--no-card">
-            <thead>
-              <tr>
-                <th>功能</th>
-                {roles.map((role) => (
-                  <th key={role.key}>{role.label}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {modules.map((mod) => (
-                <tr key={mod.key}>
-                  <td>{mod.label}</td>
-                  {roles.map((role) => (
-                    <td key={role.key}>
-                      <Mark enabled={moduleEnabled(mod.key, role.key)} />
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div className="page-card page-card--narrow">
-        <div className="page-card__header">
-          <div>
-            <h2>帳號維護規則</h2>
-            <p>建議日常操作時遵守下列分工。</p>
-          </div>
-        </div>
-        <ul className="settings-list">
-          <li>管理員帳號只保留給少數人，用於新增使用者、停用帳號、重設密碼。</li>
-          <li>會計帳號用於支出核銷與報表稽核，不建議共用 admin 帳號。</li>
-          <li>一般後台人員使用「調度/後台」角色，不共用 admin 帳號。</li>
-          <li>司機帳號由「司機資料」建立，登入司機端後只能看到自己的任務。</li>
-          <li>離職或停用人員請到「使用者資料」停用帳號，不要刪除歷史帳務關聯。</li>
-        </ul>
-      </div>
-    </section>
-  );
+      {saved && <p>版本 {saved.revision} · {dirty ? "有尚未儲存的修改" : "已與儲存設定同步"}</p>}
+      {error && <div className="alert alert--error" role="alert">{error}</div>}
+      {message && <div className="alert alert--success" role="status">{message}</div>}
+    </div>
+    {draft && <div className="page-card"><div className="table-wrap"><table className="data-table permission-table data-table--no-card">
+      <thead><tr><th>功能</th>{roles.map(role => <th key={role.key}>{role.label}</th>)}</tr></thead>
+      <tbody>{groups.map(group => {
+        const entries = catalog.filter(m => m.group === group && `${m.group} ${m.label}`.includes(search.trim()));
+        if (!entries.length) return null;
+        return <Fragment key={group}><tr><th colSpan={6}>{group}（{entries.length}）</th></tr>{entries.map(m => <tr key={m.key}>
+          <td>{m.label}</td>{roles.map(role => <td key={role.key}>{locked(role.key, m.key)
+            ? <span className={`perm-mark perm-mark--${draft[role.key][m.key] ? "on" : "off"}`}>{draft[role.key][m.key] ? "固定允許" : "固定限制"}</span>
+            : <label><input type="checkbox" aria-label={`${role.label}：${m.label}`} checked={draft[role.key][m.key]} disabled={busy} onChange={e => toggle(role.key, m.key, e.target.checked)} /> {draft[role.key][m.key] ? "允許" : "限制"}</label>}</td>)}
+        </tr>)}</Fragment>;
+      })}</tbody>
+    </table></div>{!catalog.some(m => `${m.group} ${m.label}`.includes(search.trim())) && <p>沒有符合的功能。</p>}</div>}
+  </section>;
 }

@@ -1,3 +1,4 @@
+import { usePermissionVersion } from "./rolePermissions";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { lazy, Suspense } from "react";
 import "./admin-ui.css";
@@ -57,10 +58,11 @@ function LazyFallback() {
 }
 function ProtectedShell() {
   const { user, loading } = useAuth();
+  const permissionVersion = usePermissionVersion();
   if (loading) return <div className="login-shell"><div className="login-panel">登入狀態確認中…</div></div>;
   if (!user) return <Navigate to="/login" replace />;
   return (
-    <DashboardProvider>
+    <DashboardProvider key={`${user.id}:${permissionVersion}`}>
       <Suspense fallback={<LazyFallback />}>
         <AdminLayout />
       </Suspense>

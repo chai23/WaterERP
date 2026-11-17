@@ -2,7 +2,7 @@ import type { Express, Request, Response } from "express";
 import { syncLegacyMasters } from "./master-sync.js";
 import type { PrismaClient } from "@prisma/client";
 import { describeDbUrl, getLegacyPrisma, resolveLegacyDatabaseUrl } from "./client.js";
-import { getLegacyOrderDetail, listLegacyOrdersForCustomer } from "./queries.js";
+import { getLegacyOrderDetail, listLegacyOrdersForCustomer, listLegacyUsualProductPrices } from "./queries.js";
 import { legacyCustomersWithOrders } from "./order-presence.js";
 import { applyCustomerHandover, buildCustomerDraft, buildHandover, keepHandedOver, mergeDraft, readHandover, saveHandover, saveCustomerDraft, saveCustomerEdits, customerVersion, totals, validationErrors } from "./handover.js";
 
@@ -270,6 +270,40 @@ export function registerLegacyHistoryRoutes(args: RegisterArgs): void {
         ok: false,
         message: `讀取舊庫失敗：${e instanceof Error ? e.message : String(e)}`,
       });
+    }
+  });
+
+  /** 開單提醒：舊系統最近叫過的商品，以及單價大於 0 的正確價格（預收配送常為 0） */
+  app.get("/api/customers/:customerId/legacy-product-prices", async (req, res) => {
+    if (!requireRole(req, res, ["admin", "accounting", "dispatcher"])) return;
+    const customerId = toBigInt(req.params.customerId);
+    if (customerId == null) {
+      res.status(400).json({ ok: false, message: "無效的客戶 ID" });
+      return;
+    }
+    const customer = await prisma.customer.findUnique({
+      where: { id: customerId },
+      select: { id: true, customerCode: true },
+    });
+    if (!customer) {
+      res.status(404).json({ ok: false, message: "找不到客戶" });
+      return;
+    }
+    if (!customer.customerCode?.trim()) {
+      res.status(400).json({ ok: false, message: "此客戶沒有客戶代號，無法對照舊系統" });
+      return;
+    }
+    const legacy = getLegacyPrisma();
+    if (!legacy) {
+      res.status(503).json({ ok: false, message: "舊系統連線未設定，無法查詢先前的商品與價格" });
+      return;
+    }
+    try {
+      const data = await listLegacyUsualProductPrices(legacy, customer.customerCode);
+      res.json({ ok: true, data });
+    } catch (e) {
+      console.error("legacy product prices", e);
+      res.status(502).json({ ok: false, message: "舊系統商品價格暫時無法載入" });
     }
   });
 

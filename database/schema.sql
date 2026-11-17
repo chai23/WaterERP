@@ -1479,6 +1479,15 @@ CREATE TABLE IF NOT EXISTS cutover_monthly_items (
 
 INSERT IGNORE INTO schema_migrations (id) VALUES ('004_cutover_handover.sql');
 
+-- 可編輯的後台選單角色權限
+CREATE TABLE IF NOT EXISTS role_permission_settings (
+  id TINYINT UNSIGNED NOT NULL PRIMARY KEY,
+  revision INT UNSIGNED NOT NULL DEFAULT 0,
+  matrix JSON NOT NULL,
+  updated_by BIGINT UNSIGNED NULL,
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS `order_number_sequences` (
   `day_key` CHAR(8) NOT NULL PRIMARY KEY,
   `last_number` INT UNSIGNED NOT NULL

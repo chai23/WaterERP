@@ -1,3 +1,4 @@
+import { canAccessPath } from "../rolePermissions";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { LegacyMasterSync } from "../components/LegacyMasterSync";
@@ -287,8 +288,8 @@ function lifecycleEventLabel(type: string): string {
 export default function DataCustomersPage() {
   const { customers, addressZones, affiliatedCompanies, products, refreshMasters } = useDashboard();
   const { user } = useAuth();
-  const canIssueLineBind = user?.role === "admin" || user?.role === "accounting" || user?.role === "dispatcher";
-  const canUnbindLine = user?.role === "admin";
+  const canIssueLineBind = canAccessPath(user?.role, "/data/customers");
+  const canUnbindLine = canAccessPath(user?.role, "/data/customers");
   const activeProducts = useMemo(() => products.filter((p) => p.isActive !== false), [products]);
   const isMobile = useMediaQuery("(max-width: 768px)");
   const [lineBindIssued, setLineBindIssued] = useState<{
@@ -1300,7 +1301,7 @@ export default function DataCustomersPage() {
           <p className="customer-hub__lead">左側選客戶、右側看帳務與訂單；切換系統時可用「上線交接」核對舊欠款、預收與桶數。</p>
         </div>
         <div className="customer-hub__header-actions">
-          {user?.role === "admin" ? <LegacyMasterSync onSynced={async () => { await refreshMasters(["customers"], true); if (detailId) await fetchDetail(detailId); }} /> : null}
+          {canAccessPath(user?.role, "/data/legacy-cutover") ? <LegacyMasterSync onSynced={async () => { await refreshMasters(["customers"], true); if (detailId) await fetchDetail(detailId); }} /> : null}
           {pageMode === "create" ? (
             <button type="button" className="btn btn--ghost" onClick={exitCreateCustomer}>
               返回瀏覽

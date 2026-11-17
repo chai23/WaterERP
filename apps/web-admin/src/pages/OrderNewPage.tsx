@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { newOrderFormLine, useDashboard, type LineBillingType, type LinePurpose } from "../DashboardContext";
 import type { Customer, CustomerBillingSummary, CustomerDetail, CustomerSalesOrder, Product } from "../adminUtils";
-import { billingTypeLabel, fmtLocalYmd, orderStatusBadgeClass, sumCustomerBarrelsOnSite } from "../adminUtils";
+import { billingTypeLabel, fmtLocalYmd, moneyText, orderStatusBadgeClass, sumCustomerBarrelsOnSite } from "../adminUtils";
 import { breakdownCashTaxInvoicePreview, DEFAULT_VAT_RATE } from "../taxDisplay";
 import { RemarkSloganPicker } from "../components/RemarkSloganPicker";
 import { OrderProductPicker } from "../components/OrderProductPicker";
@@ -219,6 +220,34 @@ function historyRowDetailTitle(o: CustomerSalesOrder): string {
   return `${historyDisplayYmd(o)}｜${o.orderNo}${emptyLine}\n${lines}`;
 }
 
+type LegacyUsualProduct = {
+  productCode: string | null;
+  productName: string;
+  qty: number;
+  latestOrderDay: string | null;
+  latestBillingLabel: string | null;
+  unitPrice: number | null;
+  priceOrderDay: string | null;
+  priceBillingLabel: string | null;
+  priceFromOlderOrder: boolean;
+};
+
+function formatLegacyQty(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "";
+  const rounded = Math.round(n * 100) / 100;
+  return Number.isInteger(rounded) ? String(rounded) : String(rounded);
+}
+
+function legacyPriceNote(p: LegacyUsualProduct): string | null {
+  if (p.unitPrice == null) return "舊系統這項商品的單價都是 0，找不到有價格的訂單。";
+  if (!p.priceFromOlderOrder) return null;
+  const latestWhen = p.latestOrderDay ?? "最近一筆";
+  const latestBill = p.latestBillingLabel ? `（${p.latestBillingLabel}）` : "";
+  const from = p.priceOrderDay ?? "較早";
+  const fromBill = p.priceBillingLabel && p.priceBillingLabel !== "預收" ? `（${p.priceBillingLabel}）` : "";
+  return `最近 ${latestWhen}${latestBill} 單價為 0，正確價格取自 ${from}${fromBill} 的訂單。`;
+}
+
 type OrderLineField = "code" | "billing" | "price" | "qty";
 
 function lineFieldKey(rowId: string, field: OrderLineField): string {
@@ -248,6 +277,10 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
   const [historyOrders, setHistoryOrders] = useState<CustomerSalesOrder[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState(false);
+  const [legacyProducts, setLegacyProducts] = useState<LegacyUsualProduct[]>([]);
+  const [legacyOmitted, setLegacyOmitted] = useState(0);
+  const [legacyPriceLoading, setLegacyPriceLoading] = useState(false);
+  const [legacyPriceError, setLegacyPriceError] = useState<string | null>(null);
   const [customerKeyword, setCustomerKeyword] = useState("");
   const [matchHint, setMatchHint] = useState("");
   const [lineProductCodes, setLineProductCodes] = useState<Record<string, string>>({});
@@ -255,7 +288,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
   const [promotionPreview, setPromotionPreview] = useState<string[]>([]);
   useEffect(() => {
     if (form.customerId && selectedCustomer) return;
-    setForm((f) => ({ ...f, lines: [newOrderFormLine("cash")], remark: "", cashInvoiceMode: "none" }));
+    setForm((f) => ({ ...f, lines: [newOrderFormLine("cash")], remark: "", cashInvoiceMode: "none", externalInvoiceNo: "" }));
     setLineProductCodes({});
     setPromotionPreview([]);
   }, [form.customerId, selectedCustomer?.id, setForm]);
@@ -418,6 +451,42 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
 
   useEffect(() => {
     if (!form.customerId) {
+      setLegacyProducts([]);
+      setLegacyOmitted(0);
+      setLegacyPriceError(null);
+      setLegacyPriceLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setLegacyPriceLoading(true);
+    setLegacyPriceError(null);
+    setLegacyProducts([]);
+    setLegacyOmitted(0);
+    void fetch(`/api/customers/${form.customerId}/legacy-product-prices`)
+      .then(async (r) => {
+        const data: unknown = await r.json().catch(() => null);
+        if (cancelled) return;
+        const body = data && typeof data === "object" ? (data as { ok?: boolean; message?: string; data?: { products?: LegacyUsualProduct[]; omittedCount?: number } }) : null;
+        if (!r.ok || !body?.ok) {
+          setLegacyPriceError(typeof body?.message === "string" ? body.message : "舊系統商品價格暫時無法載入");
+          return;
+        }
+        setLegacyProducts(Array.isArray(body.data?.products) ? body.data.products : []);
+        setLegacyOmitted(Number(body.data?.omittedCount) || 0);
+      })
+      .catch(() => {
+        if (!cancelled) setLegacyPriceError("舊系統商品價格暫時無法載入");
+      })
+      .finally(() => {
+        if (!cancelled) setLegacyPriceLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [form.customerId]);
+
+  useEffect(() => {
+    if (!form.customerId) {
       setLastPriceMap({});
       return;
     }
@@ -457,6 +526,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
     setForm((f) => ({
       ...f,
       cashInvoiceMode: inv,
+      externalInvoiceNo: inv === "none" ? "" : f.externalInvoiceNo,
       lines: f.lines.map((row) => {
         if (row.linePurpose === "prepaid_barrel_topup" || row.isReplenishment || row.isManualGift) {
           return { ...row, billingType: "cash" };
@@ -907,7 +977,13 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
                       id="order-new-cash-invoice"
                       className="order-new__select-short"
                       value={form.cashInvoiceMode ?? "none"}
-                      onChange={(e) => setForm((f) => ({ ...f, cashInvoiceMode: e.target.value }))}
+                      onChange={(e) =>
+                        setForm((f) => ({
+                          ...f,
+                          cashInvoiceMode: e.target.value,
+                          externalInvoiceNo: e.target.value === "none" ? "" : f.externalInvoiceNo,
+                        }))
+                      }
                     >
                       <option value="none">不開</option>
                       <option value="tax_exclusive">稅外加</option>
@@ -920,6 +996,30 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
             <aside className="order-new__customer-alerts" aria-label="客戶提醒">
               <strong>客戶提醒</strong>
               {!selectedCustomer ? <p>選擇客戶後顯示提醒。</p> : <>
+                <div className="order-new__legacy-prices">
+                  <p className="order-new__legacy-prices-title">舊系統商品與價格</p>
+                  {legacyPriceLoading ? <p>正在讀取舊系統訂購紀錄…</p> : legacyPriceError ? <p>{legacyPriceError}</p> : legacyProducts.length === 0 ? <p className="text-muted">舊系統查無此客戶的訂購商品。</p> : (
+                    <ul>
+                      {legacyProducts.map((p, index) => {
+                        const qty = formatLegacyQty(p.qty);
+                        const note = legacyPriceNote(p);
+                        return (
+                          <li key={`${p.productCode ?? ""}-${p.productName}-${index}`}>
+                            {p.productCode ? <span className="mono-text">{p.productCode} </span> : null}
+                            {p.productName}
+                            {qty ? ` × ${qty}` : ""}
+                            {"　單價 "}
+                            {p.unitPrice != null ? moneyText(p.unitPrice) : "找不到"}
+                            {!p.priceFromOlderOrder && p.unitPrice != null && p.priceOrderDay ? `（${p.priceOrderDay}）` : ""}
+                            {note ? <span className="order-new__legacy-price-note text-muted">{note}</span> : null}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                  {legacyOmitted > 0 ? <p className="text-muted">另有 {legacyOmitted} 項較早商品未列出。</p> : null}
+                  <p><Link to={`/data/legacy-orders?customerId=${selectedCustomer.id}`}>查看舊系統歷史訂單</Link></p>
+                </div>
                 {historyLoading ? <p>正在確認未完成訂單…</p> : historyError ? <p>訂單提醒暫時無法載入，請重新選取客戶。</p> : historyOrders.some(o => ["draft", "confirmed", "assigned", "delivering", "pending_settlement"].includes(o.status)) ? (
                   <details key={form.customerId}>
                     <summary>近期有 {historyOrders.filter(o => ["draft", "confirmed", "assigned", "delivering", "pending_settlement"].includes(o.status)).length} 筆未完成訂單，開單前請核對</summary>
@@ -1385,6 +1485,19 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
                   <span className="order-new__invoice-summary-total">含稅合計 <b>$ {cashInvoicePreview.totalWithTax.toLocaleString(undefined, { maximumFractionDigits: 2 })}</b></span>
                 </>
               ) : form.cashInvoiceMode !== "none" ? <span className="text-muted">加入現金商品後自動試算</span> : null}
+              {form.cashInvoiceMode !== "none" ? (
+                <label className="order-new__invoice-no" htmlFor="order-new-invoice-no">
+                  <span>發票號碼</span>
+                  <input
+                    id="order-new-invoice-no"
+                    value={form.externalInvoiceNo}
+                    onChange={(e) => setForm((f) => ({ ...f, externalInvoiceNo: e.target.value }))}
+                    placeholder="例如 AB12345678"
+                    maxLength={20}
+                    autoComplete="off"
+                  />
+                </label>
+              ) : null}
             </div>
 
           </div>

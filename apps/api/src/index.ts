@@ -1,4 +1,5 @@
 import { allocateShortOrderNo } from "./shortOrderNo.js";
+import { catalog, defaults as defaultPermissions, validateMatrix, readPermissions, allowed, apiPermissions } from "./modules/permissions/policy.js";
 import "dotenv/config";
 import bcrypt from "bcryptjs";
 import cors from "cors";
@@ -61,6 +62,7 @@ const JWT_SIGN_OPTIONS = { expiresIn: process.env.JWT_EXPIRES_IN ?? "7d", algori
 assertJwtSecret(String(JWT_SECRET));
 
 type AuthUser = {
+  permissions?: string[];
   id: bigint;
   employeeCode: string;
   name: string;
@@ -104,7 +106,7 @@ function requireRole(req: express.Request, res: express.Response, roles: readonl
     res.status(401).json({ ok: false, message: "請先登入" });
     return null;
   }
-  if (!roles.includes(user.role)) {
+  if (!roles.includes(user.role) && !(req as express.Request & { menuAuthorized?: boolean }).menuAuthorized) {
     res.status(403).json({ ok: false, message: "權限不足" });
     return null;
   }
@@ -1507,12 +1509,28 @@ async function createTaxInvoicePlanned(
     totalAmount: Prisma.Decimal;
     taxRate?: Prisma.Decimal;
     note?: string | null;
+    /** 開單當下已有的實際發票號碼；有值則直接記為已開立 */
+    externalInvoiceNo?: string | null;
   },
 ) {
+  const externalInvoiceNo = args.externalInvoiceNo?.trim() || null;
+  if (externalInvoiceNo) {
+    const dup = await tx.taxInvoice.findFirst({
+      where: { externalInvoiceNo, status: { not: "voided" } },
+    });
+    if (dup) {
+      const err = new Error("此發票號碼已被其他紀錄使用");
+      (err as Error & { statusCode?: number }).statusCode = 400;
+      throw err;
+    }
+  }
   const buyer = await loadCustomerInvoiceBuyer(tx, args.customerId);
   return tx.taxInvoice.create({
     data: {
       invoiceNo: generateTaxInvoiceNo(),
+      externalInvoiceNo,
+      status: externalInvoiceNo ? "issued" : "planned",
+      issuedAt: externalInvoiceNo ? new Date() : undefined,
       customerId: args.customerId,
       basisType: args.basisType,
       billingStatementId: args.billingStatementId ?? null,
@@ -1523,7 +1541,6 @@ async function createTaxInvoicePlanned(
       taxAmount: args.taxAmount,
       totalAmount: args.totalAmount,
       taxRate: args.taxRate ?? DEFAULT_VAT_RATE,
-      status: "planned",
       buyerName: buyer.buyerName,
       buyerTaxId: buyer.buyerTaxId,
       note: args.note ?? null,
@@ -1539,10 +1556,18 @@ async function syncPlannedCashTaxInvoice(
     cashInvoiceMode: "none" | "tax_inclusive" | "tax_exclusive";
     cashSubtotal: Prisma.Decimal;
     taxRate?: Prisma.Decimal;
+    externalInvoiceNo?: string | null;
   },
 ): Promise<void> {
   const br = breakdownCashTaxInvoice(args.cashSubtotal, args.cashInvoiceMode, args.taxRate);
-  if (!br) return;
+  if (!br) {
+    if (args.externalInvoiceNo) {
+      const err = new Error("已填發票號碼，但本單沒有可開票的現金金額");
+      (err as Error & { statusCode?: number }).statusCode = 400;
+      throw err;
+    }
+    return;
+  }
 
   const issued = await tx.taxInvoice.findFirst({
     where: { salesOrderId: args.salesOrderId, status: "issued", basisType: "sales_order" },
@@ -1587,6 +1612,7 @@ async function syncPlannedCashTaxInvoice(
     taxAmount: br.taxAmount,
     totalAmount: br.totalWithTax,
     taxRate: args.taxRate,
+    externalInvoiceNo: args.externalInvoiceNo,
   });
 }
 
@@ -2082,6 +2108,61 @@ app.use(async (req, res, next) => {
     next();
   } catch {
     res.status(401).json({ ok: false, message: "登入已失效，請重新登入" });
+  }
+});
+
+app.use(async (req, res, next) => {
+  const user = getAuthUser(req);
+  if (!user || user.role === "driver") { next(); return; }
+  try {
+    const policy = await readPermissions(prisma);
+    user.permissions = catalog.filter(m => allowed(policy.matrix, user.role, m.key)).map(m => m.key);
+    const required = apiPermissions(req.method, req.path, req.query);
+    if (required !== null && user.role !== "admin" && !required.some(key => user.permissions!.includes(key))) {
+      res.status(403).json({ ok: false, message: "沒有此功能的使用權限，請聯絡管理員" }); return;
+    }
+    // Only mapped and independently authorized API requests may supersede legacy role lists.
+    (req as express.Request & { menuAuthorized?: boolean }).menuAuthorized = required !== null && required.length > 0;
+    next();
+  } catch (error) {
+    console.error("Permission policy unavailable", error);
+    res.status(503).json({ ok: false, message: "權限設定暫時無法讀取，請稍後再試" });
+  }
+});
+
+app.get("/api/permissions/me", async (req, res) => {
+  const user = getAuthUser(req);
+  res.json({ ok: true, permissions: user?.permissions ?? [] });
+});
+app.get("/api/settings/permissions", async (req, res) => {
+  if (getAuthUser(req)?.role !== "admin") { res.status(403).json({ ok: false, message: "僅管理員可管理權限" }); return; }
+  try { res.json({ ok: true, ...await readPermissions(prisma), defaults: defaultPermissions(), catalog }); }
+  catch { res.status(503).json({ ok: false, message: "無法讀取權限設定" }); }
+});
+app.put("/api/settings/permissions", async (req, res) => {
+  const actor = getAuthUser(req);
+  if (actor?.role !== "admin") { res.status(403).json({ ok: false, message: "僅管理員可管理權限" }); return; }
+  let matrix;
+  try { matrix = validateMatrix(req.body?.matrix); }
+  catch (e) { res.status(400).json({ ok: false, message: e instanceof Error ? e.message : "格式錯誤" }); return; }
+  const revision = req.body?.revision;
+  if (!Number.isInteger(revision) || revision < 0) { res.status(400).json({ ok: false, message: "版本格式錯誤" }); return; }
+  try {
+    const saved = await prisma.$transaction(async tx => {
+      const initial = JSON.stringify(defaultPermissions());
+      await tx.$executeRaw`INSERT INTO role_permission_settings(id,revision,matrix) VALUES(1,0,${initial}) ON DUPLICATE KEY UPDATE id=id`;
+      await tx.$queryRaw`SELECT id FROM role_permission_settings WHERE id=1 FOR UPDATE`;
+      const previous = await readPermissions(tx);
+      if (previous.revision !== revision) throw new Error("PERMISSION_CONFLICT");
+      const json = JSON.stringify(matrix);
+      await tx.$executeRaw`UPDATE role_permission_settings SET matrix=${json}, revision=revision+1, updated_by=${actor.id}, updated_at=UTC_TIMESTAMP(3) WHERE id=1`;
+      await writeOperationAuditLog(tx, { actorUserId: actor.id, action: "role_permissions.update", entityType: "role_permissions", entityId: "1", before: previous.matrix, after: matrix });
+      return readPermissions(tx);
+    });
+    res.json({ ok: true, ...saved });
+  } catch (e) {
+    const conflict = e instanceof Error && e.message === "PERMISSION_CONFLICT";
+    res.status(conflict ? 409 : 500).json({ ok: false, message: conflict ? "權限已被其他管理員更新，請重新載入後再修改" : "儲存權限失敗" });
   }
 });
 
@@ -6026,6 +6107,9 @@ app.patch("/api/users/:userId", async (req, res) => {
     if (typeof body.name === "string" && body.name.trim()) data.name = body.name.trim();
     if (body.phone !== undefined) data.phone = typeof body.phone === "string" && body.phone.trim() ? body.phone.trim() : null;
     if (typeof body.role === "string" && ["admin", "dispatcher", "warehouse", "accounting"].includes(body.role)) data.role = body.role;
+    if (userId === auth.id && data.role && data.role !== existing.role) {
+      res.status(400).json({ ok: false, message: "目前登入帳號的角色請由其他管理員修改" }); return;
+    }
     if (typeof body.isActive === "boolean") {
       if (userId === auth.id && body.isActive === false) {
         res.status(400).json({ ok: false, message: "不可停用目前登入中的自己" });
@@ -6041,7 +6125,13 @@ app.patch("/api/users/:userId", async (req, res) => {
       }
       data.passwordHash = await hashPassword(body.password);
     }
-    const row = await prisma.user.update({ where: { id: userId }, data, include: { driver: true } });
+    const row = await prisma.$transaction(async tx => {
+      const admins = await tx.$queryRaw<{ id: bigint }[]>`SELECT id FROM users WHERE role='admin' AND is_active=1 ORDER BY id FOR UPDATE`;
+      if (admins.length === 1 && admins[0]!.id === userId && (body.isActive === false || (typeof body.role === "string" && body.role !== "admin"))) {
+        throw new Error("至少須保留一位啟用中的管理員");
+      }
+      return tx.user.update({ where: { id: userId }, data, include: { driver: true } });
+    });
     res.json({ ok: true, data: toPublicUser(row) });
   } catch (e) {
     res.status(500).json({ ok: false, message: publicErrorMessage(e) });
@@ -6166,8 +6256,8 @@ app.patch("/api/drivers/:driverId", async (req, res) => {
     res.status(401).json({ ok: false, message: "請先登入" });
     return;
   }
-  const isAdmin = auth.role === "admin";
-  const canPayroll = auth.role === "admin" || auth.role === "accounting" || auth.role === "dispatcher";
+  const isAdmin = auth.role === "admin" || Boolean(auth.permissions?.includes("data.drivers"));
+  const canPayroll = auth.role === "admin" || Boolean(auth.permissions?.some(p => p === "orders.floor-bonus" || p === "data.drivers"));
   if (!isAdmin && !canPayroll) {
     res.status(403).json({ ok: false, message: "權限不足" });
     return;
@@ -9240,6 +9330,7 @@ async function createConfirmedSalesOrder(
     remark?: unknown;
     orderCashAdjustment?: unknown;
     cashInvoiceMode?: unknown;
+    externalInvoiceNo?: unknown;
     isTest?: unknown;
     testBatchId?: unknown;
     orderKind?: unknown;
@@ -9530,6 +9621,16 @@ async function createConfirmedSalesOrder(
     }
 
     const cashInvoiceMode = normalizeCashInvoiceMode(body.cashInvoiceMode);
+    let externalInvoiceNo: string | null = null;
+    if (cashInvoiceMode !== "none" && body.externalInvoiceNo != null && String(body.externalInvoiceNo).trim() !== "") {
+      if (typeof body.externalInvoiceNo !== "string") {
+        return { status: 400, payload: { ok: false, message: "發票號碼格式錯誤" } };
+      }
+      externalInvoiceNo = body.externalInvoiceNo.trim().toUpperCase();
+      if (externalInvoiceNo.length > 20) {
+        return { status: 400, payload: { ok: false, message: "發票號碼不可超過 20 個字" } };
+      }
+    }
 
     const lineCreates = linesAfterPromotions.map((l) => {
       const product = productById.get(l.productId)!;
@@ -9688,6 +9789,7 @@ async function createConfirmedSalesOrder(
         salesOrderId: so.id,
         cashInvoiceMode,
         cashSubtotal,
+        externalInvoiceNo,
       });
       await autoApplyPrepaymentToLatestOpenAr(tx, {
         customerId,
@@ -9738,10 +9840,10 @@ async function createConfirmedSalesOrder(
   } catch (e) {
     const statusCode =
       e && typeof e === "object" && "statusCode" in e ? Number((e as { statusCode?: unknown }).statusCode) : 0;
-    if (statusCode === 409) {
+    if (statusCode === 409 || statusCode === 400) {
       return {
-        status: 409,
-        payload: { ok: false, message: e instanceof Error ? e.message : "此地址已有未完成訂單" },
+        status: statusCode,
+        payload: { ok: false, message: e instanceof Error ? e.message : statusCode === 409 ? "此地址已有未完成訂單" : "無法建立訂單" },
       };
     }
     return { status: 500, payload: { ok: false, message: publicErrorMessage(e) } };
@@ -15183,7 +15285,7 @@ function canModifyExpenseVoucher(user: AuthUser, voucher: { createdByUserId: big
 }
 
 function canVerifyExpense(user: AuthUser): boolean {
-  return user.role === "admin" || user.role === "accounting";
+  return user.role === "admin" || Boolean(user.permissions?.includes("expenses.verify"));
 }
 
 const allocateExpenseVoucherNo = async (tx: Prisma.TransactionClient, expenseDate: Date): Promise<string> => {

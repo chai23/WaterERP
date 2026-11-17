@@ -1,0 +1,412 @@
+[
+  {
+    "key": "overview",
+    "path": "/overview",
+    "label": "營運總覽",
+    "group": "營運總覽",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher",
+      "warehouse"
+    ]
+  },
+  {
+    "key": "orders.new",
+    "path": "/orders/new",
+    "label": "建立訂單",
+    "group": "訂單作業",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher"
+    ]
+  },
+  {
+    "key": "orders.assign",
+    "path": "/orders/assign",
+    "label": "分配訂單",
+    "group": "訂單作業",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher"
+    ]
+  },
+  {
+    "key": "orders.proxy-report",
+    "path": "/orders/proxy-report",
+    "label": "代登配送回報",
+    "group": "訂單作業",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher"
+    ]
+  },
+  {
+    "key": "orders.complete",
+    "path": "/orders/complete",
+    "label": "核銷訂單",
+    "group": "訂單作業",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher"
+    ]
+  },
+  {
+    "key": "orders.query",
+    "path": "/orders/query",
+    "label": "查詢訂單",
+    "group": "訂單作業",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher"
+    ]
+  },
+  {
+    "key": "orders.barrel-pickup.new",
+    "path": "/orders/barrel-pickup/new",
+    "label": "建立收空桶",
+    "group": "收空桶",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher",
+      "warehouse"
+    ]
+  },
+  {
+    "key": "orders.barrel-pickup.settle",
+    "path": "/orders/barrel-pickup/settle",
+    "label": "核銷收空桶",
+    "group": "收空桶",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher",
+      "warehouse"
+    ]
+  },
+  {
+    "key": "orders.barrel-pickup.query",
+    "path": "/orders/barrel-pickup/query",
+    "label": "查詢空桶回收",
+    "group": "收空桶",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher",
+      "warehouse"
+    ]
+  },
+  {
+    "key": "orders.service-tickets.new",
+    "path": "/orders/service-tickets/new",
+    "label": "建立服務單",
+    "group": "飲水機服務",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher"
+    ]
+  },
+  {
+    "key": "orders.service-tickets",
+    "path": "/orders/service-tickets",
+    "label": "服務單管理",
+    "group": "飲水機服務",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher"
+    ]
+  },
+  {
+    "key": "data.customers",
+    "path": "/data/customers",
+    "label": "客戶資料",
+    "group": "主檔資料",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher",
+      "warehouse"
+    ]
+  },
+  {
+    "key": "data.legacy-orders",
+    "path": "/data/legacy-orders",
+    "label": "舊系統歷史訂單",
+    "group": "主檔資料",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher",
+      "warehouse"
+    ]
+  },
+  {
+    "key": "data.legacy-cutover",
+    "path": "/data/legacy-cutover",
+    "label": "上線交接",
+    "group": "主檔資料",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher"
+    ]
+  },
+  {
+    "key": "data.drivers",
+    "path": "/data/drivers",
+    "label": "司機資料",
+    "group": "主檔資料",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher"
+    ]
+  },
+  {
+    "key": "data.products",
+    "path": "/data/products",
+    "label": "商品資料",
+    "group": "主檔資料",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher",
+      "warehouse"
+    ]
+  },
+  {
+    "key": "data.vehicles",
+    "path": "/data/vehicles",
+    "label": "車輛資料",
+    "group": "主檔資料",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher",
+      "warehouse"
+    ]
+  },
+  {
+    "key": "data.users",
+    "path": "/data/users",
+    "label": "使用者資料",
+    "group": "主檔資料",
+    "roles": [
+      "admin"
+    ]
+  },
+  {
+    "key": "reports.daily",
+    "path": "/reports/daily",
+    "label": "日報表",
+    "group": "收入與報表",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher"
+    ]
+  },
+  {
+    "key": "reports.monthly",
+    "path": "/reports/monthly",
+    "label": "月報表",
+    "group": "收入與報表",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher"
+    ]
+  },
+  {
+    "key": "reports.exceptions",
+    "path": "/reports/exceptions",
+    "label": "異常中心",
+    "group": "收入與報表",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher"
+    ]
+  },
+  {
+    "key": "reports.customer-lifecycle",
+    "path": "/reports/customer-lifecycle",
+    "label": "客戶增減",
+    "group": "收入與報表",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher"
+    ]
+  },
+  {
+    "key": "reports.driver-daily",
+    "path": "/reports/driver-daily",
+    "label": "司機日收款核對",
+    "group": "收入與報表",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher"
+    ]
+  },
+  {
+    "key": "orders.floor-bonus",
+    "path": "/orders/floor-bonus",
+    "label": "司機薪資統計",
+    "group": "收入與報表",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher"
+    ]
+  },
+  {
+    "key": "reports.billing-ar",
+    "path": "/reports/billing-ar",
+    "label": "AR 沖帳與稽核",
+    "group": "收入與報表",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher"
+    ]
+  },
+  {
+    "key": "reports.tax-invoices",
+    "path": "/reports/tax-invoices",
+    "label": "發票查詢與補登",
+    "group": "收入與報表",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher"
+    ]
+  },
+  {
+    "key": "expenses.new",
+    "path": "/expenses/new",
+    "label": "新增支出",
+    "group": "公司支出",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher",
+      "warehouse"
+    ]
+  },
+  {
+    "key": "expenses.query",
+    "path": "/expenses/query",
+    "label": "查詢支出",
+    "group": "公司支出",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher",
+      "warehouse"
+    ]
+  },
+  {
+    "key": "expenses.analytics",
+    "path": "/expenses/analytics",
+    "label": "支出報表",
+    "group": "公司支出",
+    "roles": [
+      "admin",
+      "accounting",
+      "dispatcher",
+      "warehouse"
+    ]
+  },
+  {
+    "key": "expenses.verify",
+    "path": "/expenses/verify",
+    "label": "會計核銷",
+    "group": "公司支出",
+    "roles": [
+      "admin",
+      "accounting"
+    ]
+  },
+  {
+    "key": "settings.order-print",
+    "path": "/settings/order-print",
+    "label": "訂單列印版面",
+    "group": "列印與公告",
+    "roles": [
+      "admin"
+    ]
+  },
+  {
+    "key": "settings.print-slogans",
+    "path": "/settings/print-slogans",
+    "label": "套印標語",
+    "group": "列印與公告",
+    "roles": [
+      "admin"
+    ]
+  },
+  {
+    "key": "settings.order-announcements",
+    "path": "/settings/order-announcements",
+    "label": "訂單公告",
+    "group": "列印與公告",
+    "roles": [
+      "admin"
+    ]
+  },
+  {
+    "key": "settings.promotions",
+    "path": "/settings/promotions",
+    "label": "優惠活動設定",
+    "group": "系統設定",
+    "roles": [
+      "admin"
+    ]
+  },
+  {
+    "key": "settings.customer-masters",
+    "path": "/settings/customer-masters",
+    "label": "地址分區與隸屬公司",
+    "group": "系統設定",
+    "roles": [
+      "admin"
+    ]
+  },
+  {
+    "key": "settings.expense-categories",
+    "path": "/settings/expense-categories",
+    "label": "支出類別設定",
+    "group": "系統設定",
+    "roles": [
+      "admin"
+    ]
+  },
+  {
+    "key": "settings.ops",
+    "path": "/settings/ops",
+    "label": "關帳與備份",
+    "group": "系統設定",
+    "roles": [
+      "admin"
+    ]
+  },
+  {
+    "key": "settings.permissions",
+    "path": "/settings/permissions",
+    "label": "權限設定",
+    "group": "系統設定",
+    "roles": [
+      "admin"
+    ]
+  }
+]

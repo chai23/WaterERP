@@ -1,3 +1,4 @@
+import { canAccessPath } from "../rolePermissions";
 import { useCallback, useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
 import { useAuth } from "../AuthContext";
@@ -9,7 +10,7 @@ import { paymentMethodLabel } from "../expenseUtils";
 export default function ExpenseVerifyPage() {
   const { user } = useAuth();
   const { affiliatedCompanies } = useDashboard();
-  const canVerify = user?.role === "admin" || user?.role === "accounting";
+  const canVerify = canAccessPath(user?.role, "/expenses/verify");
   const [dateFrom, setDateFrom] = useState(() => {
     const d = new Date();
     d.setDate(d.getDate() - 7);

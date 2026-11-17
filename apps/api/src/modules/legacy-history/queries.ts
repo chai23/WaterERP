@@ -323,3 +323,291 @@ export async function getLegacyOrderDetail(
     })),
   };
 }
+
+/** 舊庫裡不是商品的會計／標語／系統列，與訂單匯入腳本略過的編號一致。 */
+const LEGACY_NON_PRODUCT_IDS = new Set([
+  "000",
+  "0000",
+  "130",
+  "201",
+  "202",
+  "205",
+  "206",
+  "207",
+  "222",
+  "223",
+  "224",
+  "300",
+  "301",
+  "302",
+  "303",
+  "304",
+  "305",
+  "306",
+  "307",
+  "308",
+  "309",
+  "387",
+  "388",
+  "389",
+  "399",
+  "400",
+]);
+
+const RECENT_LINE_LIMIT = 300;
+
+export type LegacyUsualLine = {
+  orderId: string;
+  orderDay: string | null;
+  productId: string | null;
+  productName: string;
+  unitPrice: number;
+  qty: number;
+  gift: boolean;
+  billingLabel: string | null;
+};
+
+export type LegacyUsualProduct = {
+  productId: string | null;
+  /** 舊庫商品編號；與新系統 3 碼商品編號相同時可直接開單 */
+  productCode: string | null;
+  productName: string;
+  qty: number;
+  latestOrderDay: string | null;
+  latestOrderId: string | null;
+  latestBillingLabel: string | null;
+  latestUnitPrice: number;
+  /** 最近一筆大於 0 的單價；整段歷史都是 0 則為 null */
+  unitPrice: number | null;
+  priceOrderDay: string | null;
+  priceOrderId: string | null;
+  priceBillingLabel: string | null;
+  /** 最近出貨單價為 0，顯示的價格來自較早的訂單 */
+  priceFromOlderOrder: boolean;
+};
+
+type UsualLineRow = {
+  order_id: string;
+  order_day: Date | string | null;
+  product_id: string | null;
+  product_name: string | null;
+  product_price: string | null;
+  product_quantity: string | null;
+  subtotal: string | null;
+  give_free: string | null;
+  collect_money: string | null;
+};
+
+export function legacyProductCode(raw: string | null | undefined): string | null {
+  const t = String(raw ?? "").trim();
+  if (!/^\d+$/.test(t) || t.length > 3) return null;
+  return t.padStart(3, "0");
+}
+
+function normProductName(name: string): string {
+  return name.trim().replace(/\s+/g, "").toLowerCase();
+}
+
+function asDecimal(v: unknown): number {
+  if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+  if (typeof v === "bigint") return Number(v);
+  const s = String(v ?? "").trim().replace(/,/g, "");
+  if (!s) return 0;
+  const n = Number(s);
+  if (Number.isFinite(n)) return n;
+  const m = s.match(/-?\d+(?:\.\d+)?/);
+  if (!m) return 0;
+  const x = Number(m[0]);
+  return Number.isFinite(x) ? x : 0;
+}
+
+function asDay(v: Date | string | null | undefined): string | null {
+  if (v == null) return null;
+  if (v instanceof Date) return ymd(v);
+  const m = String(v).match(/^(\d{4}-\d{2}-\d{2})/);
+  return m?.[1] ?? null;
+}
+
+function isGiftFlag(v: string | null | undefined): boolean {
+  return String(v ?? "").trim().toLowerCase() === "true";
+}
+
+function isNonProduct(line: LegacyUsualLine): boolean {
+  const raw = (line.productId ?? "").trim();
+  const code = legacyProductCode(raw);
+  if (raw && LEGACY_NON_PRODUCT_IDS.has(raw)) return true;
+  if (code && LEGACY_NON_PRODUCT_IDS.has(code)) return true;
+  if (/月結|請款|標語|未收款/.test(line.productName)) return true;
+  return false;
+}
+
+function groupKey(line: Pick<LegacyUsualLine, "productId" | "productName">): string {
+  const code = legacyProductCode(line.productId);
+  if (code) return `c:${code}`;
+  return `n:${normProductName(line.productName)}`;
+}
+
+function compareNewest(a: LegacyUsualLine, b: LegacyUsualLine): number {
+  const da = a.orderDay ?? "";
+  const db = b.orderDay ?? "";
+  if (da !== db) return db.localeCompare(da);
+  return b.orderId.localeCompare(a.orderId, undefined, { numeric: true });
+}
+
+/**
+ * 由舊庫明細整理「這位客戶最近在叫的商品」與「正確單價」。
+ * 預收配送的單價常為 0，單價改取同一商品最近一筆大於 0 的訂單。
+ */
+export function assembleLegacyUsualProducts(
+  lines: LegacyUsualLine[],
+  limit = 8,
+): { products: LegacyUsualProduct[]; omittedCount: number } {
+  const cap = Math.max(1, Math.min(20, Math.trunc(limit)));
+  const usable = lines.filter((ln) => {
+    if (ln.gift || isNonProduct(ln)) return false;
+    if (ln.productName.trim()) return true;
+    return legacyProductCode(ln.productId) != null;
+  });
+  const sorted = [...usable].sort(compareNewest);
+  const latestByKey = new Map<string, LegacyUsualLine>();
+  const priceByKey = new Map<string, LegacyUsualLine>();
+  const priceByName = new Map<string, LegacyUsualLine>();
+
+  for (const ln of sorted) {
+    const key = groupKey(ln);
+    if (ln.qty > 0 && !latestByKey.has(key)) latestByKey.set(key, ln);
+    if (ln.unitPrice > 0) {
+      if (!priceByKey.has(key)) priceByKey.set(key, ln);
+      const nameKey = normProductName(ln.productName);
+      if (nameKey && !priceByName.has(nameKey)) priceByName.set(nameKey, ln);
+    }
+  }
+
+  const orderedKeys: string[] = [];
+  for (const ln of sorted) {
+    if (ln.qty <= 0) continue;
+    const key = groupKey(ln);
+    if (latestByKey.has(key) && !orderedKeys.includes(key)) orderedKeys.push(key);
+  }
+
+  const products: LegacyUsualProduct[] = [];
+  for (const key of orderedKeys.slice(0, cap)) {
+    const latest = latestByKey.get(key)!;
+    const code = legacyProductCode(latest.productId);
+    let priced = priceByKey.get(key);
+    if (!priced) {
+      const byName = priceByName.get(normProductName(latest.productName));
+      const latestCode = code;
+      const priceCode = byName ? legacyProductCode(byName.productId) : null;
+      if (byName && !(latestCode && priceCode && latestCode !== priceCode)) priced = byName;
+    }
+    const unitPrice = priced && priced.unitPrice > 0 ? priced.unitPrice : null;
+    const sameOrder =
+      priced != null && priced.orderId === latest.orderId && (priced.orderDay ?? "") === (latest.orderDay ?? "");
+    products.push({
+      productId: latest.productId ? latest.productId.trim() : null,
+      productCode: code,
+      productName: latest.productName.trim() || (code ? `商品 ${code}` : "（未命名商品）"),
+      qty: latest.qty,
+      latestOrderDay: latest.orderDay,
+      latestOrderId: latest.orderId,
+      latestBillingLabel: latest.billingLabel,
+      latestUnitPrice: latest.unitPrice,
+      unitPrice,
+      priceOrderDay: priced?.orderDay ?? null,
+      priceOrderId: priced?.orderId ?? null,
+      priceBillingLabel: priced?.billingLabel ?? null,
+      priceFromOlderOrder: unitPrice != null && latest.unitPrice <= 0 && !sameOrder,
+    });
+  }
+
+  return { products, omittedCount: Math.max(0, orderedKeys.length - cap) };
+}
+
+function mapUsualLine(row: UsualLineRow): LegacyUsualLine {
+  const qty = asDecimal(row.product_quantity);
+  let unitPrice = asDecimal(row.product_price);
+  const subtotal = asDecimal(row.subtotal);
+  if (unitPrice <= 0 && subtotal > 0 && qty > 0) {
+    unitPrice = Math.round((subtotal / qty) * 100) / 100;
+  }
+  const name = String(row.product_name ?? "").trim();
+  const billing = row.collect_money ? String(row.collect_money).trim() : "";
+  return {
+    orderId: String(row.order_id ?? "").trim(),
+    orderDay: asDay(row.order_day),
+    productId: row.product_id != null && String(row.product_id).trim() !== "" ? String(row.product_id).trim() : null,
+    productName: name,
+    unitPrice,
+    qty,
+    gift: isGiftFlag(row.give_free) || /贈送|贈品/.test(name),
+    billingLabel: billing || null,
+  };
+}
+
+const USUAL_LINE_SQL = `SELECT order_id, order_day, product_id, product_name, product_price, product_quantity,
+       subtotal, give_free, collect_money
+     FROM \`order\``;
+
+/**
+ * 開單提醒：這位客戶在舊系統最近叫過的商品，以及單價大於 0 的正確價格。
+ */
+export async function listLegacyUsualProductPrices(
+  legacy: PrismaClient,
+  customerCode: string,
+): Promise<{ products: LegacyUsualProduct[]; omittedCount: number }> {
+  const match = customerMatchParams(customerCode);
+  const whereName = `AND (
+       (product_name IS NOT NULL AND TRIM(product_name) <> '')
+       OR (product_id IS NOT NULL AND TRIM(product_id) <> '' AND TRIM(product_id) <> '0')
+     )`;
+  const priceExpr = (column: string) =>
+    `CAST(REPLACE(REPLACE(TRIM(IFNULL(${column}, '0')), ',', ''), ' ', '') AS DECIMAL(18, 4))`;
+  const skipList = [...LEGACY_NON_PRODUCT_IDS].map((id) => `'${id}'`).join(",");
+  const [recentRows, pricedRows] = await Promise.all([
+    legacy.$queryRawUnsafe<UsualLineRow[]>(
+      `${USUAL_LINE_SQL}
+       WHERE ${match.sql}
+         AND order_id IS NOT NULL AND TRIM(order_id) <> ''
+         ${whereName}
+       ORDER BY order_day DESC, order_id DESC
+       LIMIT ${RECENT_LINE_LIMIT}`,
+      ...match.params,
+    ),
+    legacy.$queryRawUnsafe<UsualLineRow[]>(
+      `SELECT order_id, order_day, product_id, product_name, product_price, product_quantity,
+              subtotal, give_free, collect_money
+       FROM (
+         SELECT order_id, order_day, product_id, product_name, product_price, product_quantity,
+                subtotal, give_free, collect_money,
+                ROW_NUMBER() OVER (
+                  PARTITION BY CASE
+                    WHEN TRIM(IFNULL(product_id, '')) REGEXP '^[0-9]{1,3}$' THEN LPAD(TRIM(product_id), 3, '0')
+                    WHEN TRIM(IFNULL(product_name, '')) <> '' THEN CONCAT('n:', TRIM(product_name))
+                    ELSE CONCAT('id:', TRIM(IFNULL(product_id, '')))
+                  END
+                  ORDER BY order_day DESC, order_id DESC
+                ) AS rn
+         FROM \`order\`
+         WHERE ${match.sql}
+           AND order_id IS NOT NULL AND TRIM(order_id) <> ''
+           AND LOWER(TRIM(IFNULL(give_free, ''))) <> 'true'
+           AND IFNULL(product_name, '') NOT REGEXP '贈送|贈品|月結|請款|標語|未收款'
+           AND NOT (
+             TRIM(IFNULL(product_id, '')) REGEXP '^[0-9]+$'
+             AND (
+               TRIM(product_id) IN (${skipList})
+               OR LPAD(TRIM(product_id), 3, '0') IN (${skipList})
+             )
+           )
+           AND (
+             ${priceExpr("product_price")} > 0
+             OR (${priceExpr("subtotal")} > 0 AND ${priceExpr("product_quantity")} > 0)
+           )
+       ) priced
+       WHERE rn = 1`,
+      ...match.params,
+    ),
+  ]);
+  return assembleLegacyUsualProducts([...recentRows, ...pricedRows].map(mapUsualLine));
+}

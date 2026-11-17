@@ -1,3 +1,4 @@
+import { canAccessPath } from "../rolePermissions";
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "../AuthContext";
 import { useDashboard } from "../DashboardContext";
@@ -18,7 +19,7 @@ async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
 
 export default function DataDriversPage() {
   const { user: currentUser } = useAuth();
-  const isAdmin = currentUser?.role === "admin";
+  const isAdmin = canAccessPath(currentUser?.role, "/data/drivers");
   const {
     vehicles,
     driverSaving,

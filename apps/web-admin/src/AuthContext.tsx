@@ -1,3 +1,4 @@
+import { refreshMenuPermissions, setMenuPermissions } from "./rolePermissions";
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 
 export type AuthUser = {
@@ -60,6 +61,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(() => {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
+    setMenuPermissions(null);
     setToken("");
     setUser(null);
   }, []);
@@ -101,6 +103,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!res.ok) throw new Error(await readApiError(res));
       const payload = (await res.json()) as { ok?: boolean; user?: AuthUser };
       if (!payload.ok || !payload.user) throw new Error("登入狀態無效");
+      await refreshMenuPermissions();
       storeSession(currentToken, payload.user);
       setToken(currentToken);
       setUser(payload.user);
@@ -126,6 +129,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!payload.ok || !payload.token || !payload.user) throw new Error(payload.message ?? "登入失敗");
     if (payload.user.role === "driver") throw new Error("司機帳號請使用司機端登入");
     storeSession(payload.token, payload.user);
+    await refreshMenuPermissions();
     setToken(payload.token);
     setUser(payload.user);
   }, []);
@@ -140,9 +144,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const payload = (await res.json()) as { ok?: boolean; token?: string; user?: AuthUser; message?: string };
     if (!payload.ok || !payload.token || !payload.user) throw new Error(payload.message ?? "建立管理員失敗");
     storeSession(payload.token, payload.user);
+    await refreshMenuPermissions();
     setToken(payload.token);
     setUser(payload.user);
   }, []);
+
+  useEffect(() => {
+    if (!token) return;
+    const refresh = () => { void refreshMe(); };
+    const timer = window.setInterval(refresh, 30000);
+    window.addEventListener("focus", refresh);
+    return () => { window.clearInterval(timer); window.removeEventListener("focus", refresh); };
+  }, [token, refreshMe]);
 
   const value = useMemo<AuthContextValue>(
     () => ({ token, user, loading, login, bootstrapAdmin, logout, refreshMe }),

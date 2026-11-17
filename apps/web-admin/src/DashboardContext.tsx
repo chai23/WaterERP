@@ -198,6 +198,8 @@ export type DashboardContextValue = {
     remark: string;
     /** none | tax_exclusive | tax_inclusive — 現金／儲值列未稅金額；月結另於結帳批次 */
     cashInvoiceMode: string;
+    /** 開單時填入的實際發票號碼；空白則仍為待開票 */
+    externalInvoiceNo: string;
   };
   setForm: React.Dispatch<
     React.SetStateAction<{
@@ -207,6 +209,7 @@ export type DashboardContextValue = {
       scheduledDeliveryDate: string;
       remark: string;
       cashInvoiceMode: string;
+      externalInvoiceNo: string;
     }>
   >;
   onSubmitCreateOrder: (e: React.FormEvent) => Promise<void>;
@@ -332,6 +335,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     scheduledDeliveryDate: todayLocalYmd(),
     remark: "",
     cashInvoiceMode: "none",
+    externalInvoiceNo: "",
   });
   const [assigning, setAssigning] = useState<boolean>(false);
   const [assignMessage, setAssignMessage] = useState<string>("");
@@ -406,6 +410,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
 
       const fetchJson = async (url: string): Promise<unknown> => {
         const r = await fetch(url);
+        if (r.status === 403) return [];
         if (!r.ok) {
           throw new Error(`${url} ${r.status}`);
         }
@@ -502,6 +507,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   const loadOrders = useCallback(async (): Promise<void> => {
     try {
       const r = await fetch("/api/sales-orders");
+      if (r.status === 403) { setOrders([]); return; }
       if (!r.ok) throw new Error(`sales-orders ${r.status}`);
       const o = await r.json();
       setOrders(asArray(o));
@@ -536,6 +542,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
           return r.json();
         }),
         fetch(`/api/accounting/summary?${params.toString()}`).then(async (r) => {
+          if (r.status === 403) return defaultSummaryState(today);
           if (!r.ok) throw new Error("摘要載入失敗");
           return r.json();
         }),
@@ -684,6 +691,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
           scheduledDeliveryDate: form.scheduledDeliveryDate || undefined,
           remark: form.remark,
           cashInvoiceMode: form.cashInvoiceMode,
+          externalInvoiceNo: form.cashInvoiceMode === "none" ? undefined : form.externalInvoiceNo.trim() || undefined,
           lines: filled.map((l) => ({
             productId: l.productId,
             qty: l.qty,
@@ -718,6 +726,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         scheduledDeliveryDate: todayLocalYmd(),
         remark: "",
         cashInvoiceMode: "none",
+        externalInvoiceNo: "",
       }));
       await loadOrders();
       await loadSummary();

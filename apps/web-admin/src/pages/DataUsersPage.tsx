@@ -1,3 +1,4 @@
+import { canAccessPath } from "../rolePermissions";
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { useAuth, type AuthUser } from "../AuthContext";
@@ -107,8 +108,8 @@ export default function DataUsersPage() {
         </div>
       </div>
 
-      {currentUser?.role !== "admin" ? (
-        <div className="alert alert--error">只有管理員可以維護使用者。</div>
+      {!canAccessPath(currentUser?.role, "/data/users") ? (
+        <div className="alert alert--error">沒有維護使用者的權限。</div>
       ) : (
         <>
           <form className="form-grid" onSubmit={createUser}>

@@ -2,7 +2,7 @@ import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../AuthContext";
 import { useDashboard } from "../DashboardContext";
-import { canAccessOverview, canAccessPath } from "../rolePermissions";
+import { canAccessOverview, canAccessPath, usePermissionVersion } from "../rolePermissions";
 import { setupResponsiveTables } from "../responsiveTables";
 import { useTheme, type AdminTheme } from "../ThemeContext";
 import { useMediaQuery } from "../useMediaQuery";
@@ -143,6 +143,7 @@ function isTabActive(tabId: string, pathname: string, navOpen: boolean) {
 
 export default function AdminLayout() {
   const { user, logout } = useAuth();
+  const permissionVersion = usePermissionVersion();
   const { error } = useDashboard();
   const { theme, setTheme } = useTheme();
   const location = useLocation();
@@ -161,7 +162,7 @@ export default function AdminLayout() {
           items: group.items.filter((item) => canAccessPath(user?.role, item.to)),
         }))
         .filter((group) => group.items.length > 0),
-    [user?.role],
+    [user?.role, permissionVersion],
   );
 
   const showOverview = canAccessOverview(user?.role);
@@ -460,7 +461,7 @@ export default function AdminLayout() {
         <main className="admin-main" id="admin-content" tabIndex={-1} ref={mainRef} inert={isMobile && navOpen ? true : undefined}>
           {error ? <div className="alert alert--error">{error}</div> : null}
           <Suspense fallback={<div className="card" role="status">載入頁面中…</div>}>
-            <Outlet />
+            {canAccessPath(user?.role, location.pathname) ? <Outlet /> : <div className="card" role="alert"><h2>沒有此功能的使用權限</h2><p>請從左側選單選擇可使用的功能，或聯絡管理員調整權限。</p></div>}
           </Suspense>
         </main>
       </div>

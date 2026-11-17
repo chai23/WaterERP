@@ -82,7 +82,7 @@ function requireStaffRole(
     res.status(401).json({ ok: false, message: "請先登入" });
     return null;
   }
-  if (!roles.includes(user.role)) {
+  if (!roles.includes(user.role) && !(req as Request & { menuAuthorized?: boolean }).menuAuthorized) {
     res.status(403).json({ ok: false, message: "權限不足" });
     return null;
   }
