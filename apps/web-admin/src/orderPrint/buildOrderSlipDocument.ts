@@ -85,7 +85,7 @@ export function buildOrderSlipHtml(order: OrderSlipSource, layout: OrderPrintLay
         const svg = encodeOrderNoToCode128Svg(rawNo);
         const b = orderNoBarcode;
         blocks.push(
-          `<div class="slip-barcode" style="left:${b.leftMm}mm;top:${b.topMm}mm;width:${b.widthMm}mm;height:${b.heightMm}mm;">${svg}</div>`,
+          `<div data-drag-key="barcode" class="slip-barcode" style="left:${b.leftMm}mm;top:${b.topMm}mm;width:${b.widthMm}mm;height:${b.heightMm}mm;">${svg}</div>`,
         );
       } catch {
         /* 略過條碼，其餘欄位仍列印 */
@@ -93,9 +93,9 @@ export function buildOrderSlipHtml(order: OrderSlipSource, layout: OrderPrintLay
     }
   }
 
-  const abs = (content: string, pos: FieldPos, extraClass = "") => {
+  const abs = (content: string, pos: FieldPos, extraClass = "", key = "") => {
     blocks.push(
-      `<div class="slip-field${extraClass ? ` ${extraClass}` : ""}" style="${fieldStyle(pos, layout)}">${content}</div>`,
+      `<div data-drag-key="field:${key}" class="slip-field${extraClass ? ` ${extraClass}` : ""}" style="${fieldStyle(pos, layout)}">${content}</div>`,
     );
   };
 
@@ -106,7 +106,7 @@ export function buildOrderSlipHtml(order: OrderSlipSource, layout: OrderPrintLay
     extraClass = "",
   ) => {
     if (!isFieldPrintEnabled(layoutWithVis, key)) return;
-    abs(content, pos, extraClass);
+    abs(content, pos, extraClass, key);
   };
 
   const absIf = (
@@ -117,7 +117,7 @@ export function buildOrderSlipHtml(order: OrderSlipSource, layout: OrderPrintLay
   ) => {
     if (!isFieldPrintEnabled(layoutWithVis, key)) return;
     if (content == null || String(content).trim() === "") return;
-    abs(escHtml(content), pos, extraClass);
+    abs(escHtml(content), pos, extraClass, key);
   };
 
   absField("orderNo", escHtml(order.orderNo), fields.orderNo);
@@ -186,10 +186,10 @@ export function buildOrderSlipHtml(order: OrderSlipSource, layout: OrderPrintLay
       const titleHtml = escHtml(line.product?.name?.trim() || "（未收款月結單）");
       const priceHtml = escHtml(`$${moneyStr(line.unitPrice)}`);
       blocks.push(
-        `<div class="slip-field slip-line" style="${colStyle(footerCfg.title, top, layout)}">${titleHtml}</div>`,
+        `<div class="slip-field slip-line" data-drag-key="footer:title" style="${colStyle(footerCfg.title, top, layout)}">${titleHtml}</div>`,
       );
       blocks.push(
-        `<div class="slip-field slip-line slip-num" style="${colStyle(footerCfg.amount, top, layout)}">${priceHtml}</div>`,
+        `<div class="slip-field slip-line slip-num" data-drag-key="footer:amount" style="${colStyle(footerCfg.amount, top, layout)}">${priceHtml}</div>`,
       );
       footerY += footerCfg.rowHeightMm;
       footerUsed += 1;
@@ -209,21 +209,21 @@ export function buildOrderSlipHtml(order: OrderSlipSource, layout: OrderPrintLay
       const amtHtml = escHtml(moneyStr(line.lineAmount));
       const bl = billingLineLabel(line);
       if (isLineColPrintEnabled(layoutWithVis, "productId")) {
-        blocks.push(`<div class="slip-field slip-line slip-num" style="${colStyle(linesBlock.productId, top, layout)}">${idHtml}</div>`);
+        blocks.push(`<div class="slip-field slip-line slip-num" data-drag-key="line:productId" style="${colStyle(linesBlock.productId, top, layout)}">${idHtml}</div>`);
       }
       if (isLineColPrintEnabled(layoutWithVis, "productName")) {
         blocks.push(
-          `<div class="slip-field slip-line" style="${colStyle(linesBlock.productName, top, layout)}">${nameHtml}${bl ? ` <span class="slip-muted">${escHtml(bl)}</span>` : ""}</div>`,
+          `<div class="slip-field slip-line" data-drag-key="line:productName" style="${colStyle(linesBlock.productName, top, layout)}">${nameHtml}${bl ? ` <span class="slip-muted">${escHtml(bl)}</span>` : ""}</div>`,
         );
       }
       if (isLineColPrintEnabled(layoutWithVis, "qty")) {
-        blocks.push(`<div class="slip-field slip-line slip-num" style="${colStyle(linesBlock.qty, top, layout)}">${qtyHtml}</div>`);
+        blocks.push(`<div class="slip-field slip-line slip-num" data-drag-key="line:qty" style="${colStyle(linesBlock.qty, top, layout)}">${qtyHtml}</div>`);
       }
       if (isLineColPrintEnabled(layoutWithVis, "unitPrice")) {
-        blocks.push(`<div class="slip-field slip-line slip-num" style="${colStyle(linesBlock.unitPrice, top, layout)}">${upHtml}</div>`);
+        blocks.push(`<div class="slip-field slip-line slip-num" data-drag-key="line:unitPrice" style="${colStyle(linesBlock.unitPrice, top, layout)}">${upHtml}</div>`);
       }
       if (isLineColPrintEnabled(layoutWithVis, "lineAmount")) {
-        blocks.push(`<div class="slip-field slip-line slip-num" style="${colStyle(linesBlock.lineAmount, top, layout)}">${amtHtml}</div>`);
+        blocks.push(`<div class="slip-field slip-line slip-num" data-drag-key="line:lineAmount" style="${colStyle(linesBlock.lineAmount, top, layout)}">${amtHtml}</div>`);
       }
       normalY += linesBlock.rowHeightMm;
       normalUsed += 1;

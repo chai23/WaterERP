@@ -1,3 +1,4 @@
+import { DraggableSlipPreview } from "../orderPrint/DraggableSlipPreview";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   DEFAULT_ORDER_PRINT_LAYOUT,
@@ -105,6 +106,7 @@ export default function SettingsOrderPrintPage() {
   const [layout, setLayout] = useState<OrderPrintLayoutV1>(() => loadOrderPrintLayout());
   const [savedMsg, setSavedMsg] = useState("");
   const [errMsg, setErrMsg] = useState("");
+  const [dragStatus, setDragStatus] = useState("點選欄位後也可用方向鍵微調，按住 Shift 可加快移動。");
   const [previewHtml, setPreviewHtml] = useState("");
 
   const previewSlip = useMemo(() => ({ ...SAMPLE_ORDER_SLIP }), []);
@@ -184,6 +186,35 @@ export default function SettingsOrderPrintPage() {
     qty: "數量欄",
     unitPrice: "單價欄",
     lineAmount: "小計欄",
+  };
+
+  const dragLabels: Record<string, string> = Object.fromEntries(FIELD_LABELS.map(({ key, label }) => [`field:${key}`, label]));
+  dragLabels.barcode = "訂單條碼";
+  for (const key of lineColKeys) dragLabels[`line:${key}`] = lineColLabel[key];
+  dragLabels["footer:title"] = "未收款月結單品名";
+  dragLabels["footer:amount"] = "未收款月結單金額";
+
+  const movePreviewItem = (key: string, dx: number, dy: number) => {
+    setSavedMsg("");
+    setLayout((L) => {
+      const x = (v: number) => Math.round(Math.max(0, Math.min(L.pageWidthMm - 2, v + dx)) * 100) / 100;
+      const y = (v: number) => Math.round(Math.max(0, Math.min(L.pageHeightMm - 2, v + dy)) * 100) / 100;
+      const [group, name] = key.split(":");
+      if (group === "field" && name in L.fields) {
+        const k = name as keyof typeof L.fields;
+        return updateField(L, k, { leftMm: x(L.fields[k].leftMm), topMm: y(L.fields[k].topMm) });
+      }
+      if (group === "barcode") return { ...L, orderNoBarcode: { ...L.orderNoBarcode, leftMm: x(L.orderNoBarcode.leftMm), topMm: y(L.orderNoBarcode.topMm) } };
+      if (group === "line" && lineColKeys.some(k => k === name)) {
+        const k = name as typeof lineColKeys[number];
+        return { ...L, linesBlock: { ...L.linesBlock, startTopMm: y(L.linesBlock.startTopMm), [k]: { ...L.linesBlock[k], leftMm: x(L.linesBlock[k].leftMm) } } };
+      }
+      if (group === "footer" && (name === "title" || name === "amount")) {
+        const f = L.linesBlock.footerNotice;
+        return { ...L, linesBlock: { ...L.linesBlock, footerNotice: { ...f, startTopMm: y(f.startTopMm), [name]: { ...f[name], leftMm: x(f[name].leftMm) } } } };
+      }
+      return L;
+    });
   };
 
   return (
@@ -285,9 +316,49 @@ export default function SettingsOrderPrintPage() {
       </section>
 
       <section className="card">
+        <h3 className="card__title">
+          套印預覽（假資料，螢幕
+          {ORDER_PRINT_PREVIEW_SCALE >= 0.999 ? " 1:1" : ` 約 ${Math.round(ORDER_PRINT_PREVIEW_SCALE * 100)}% 縮小`}
+          ）
+        </h3>
+        <p className="card__hint">
+          直接拖曳文字或條碼調整位置，完成後按「儲存設定」。明細左右拖曳移動整欄，上下拖曳移動整組；格線不會列印。實際對紙請用 100% 比例測試列印。
+        </p>
+        <button type="button" className="btn btn--primary" onClick={() => persist(layout)}>儲存設定</button>
+        <button type="button" className="btn btn--secondary" onClick={testPrint}>測試列印（假資料）</button>
+        <p className="card__hint" role="status" style={{ marginTop: "1rem" }}>{dragStatus}</p>
+        <div className="order-print-preview-shell">
+          {previewHtml ? (
+            <div
+              className="order-print-preview-frame"
+              style={
+                {
+                  ["--op-scale" as string]: String(ORDER_PRINT_PREVIEW_SCALE),
+                  ["--op-w" as string]: `${layout.pageWidthMm}mm`,
+                  ["--op-h" as string]: `${layout.pageHeightMm}mm`,
+                } as React.CSSProperties
+              }
+            >
+              <div className="order-print-preview-scaler">
+                <DraggableSlipPreview
+                  html={previewHtml}
+                  layout={layout}
+                  labels={dragLabels}
+                  onMove={movePreviewItem}
+                  onStatus={setDragStatus}
+                />
+              </div>
+            </div>
+          ) : (
+            <span className="text-muted">預覽載入中…</span>
+          )}
+        </div>
+      </section>
+
+      <section className="card">
         <h3 className="card__title">列印項目</h3>
         <p className="card__hint" style={{ marginTop: 0 }}>
-          取消勾選的項目不會印在紙上（座標設定仍保留，日後可再勾選啟用）。變更後請用下方預覽或測試列印確認。
+          取消勾選的項目不會印在紙上（座標設定仍保留，日後可再勾選啟用）。變更後請用上方預覽或測試列印確認。
         </p>
         <div className="form-actions" style={{ marginTop: "0.5rem", flexWrap: "wrap", gap: "0.5rem" }}>
           <button
@@ -420,6 +491,8 @@ export default function SettingsOrderPrintPage() {
         </div>
       </section>
 
+      <details>
+        <summary style={{ cursor: "pointer", padding: "1rem" }}>進階設定：字級、欄寬、列距與手動座標</summary>
       <section className="card">
         <h3 className="card__title">訂單編號一維條碼（Code 128）</h3>
         <p className="card__hint" style={{ marginTop: 0 }}>
@@ -899,41 +972,8 @@ export default function SettingsOrderPrintPage() {
         </div>
       </section>
 
-      <section className="card">
-        <h3 className="card__title">
-          套印預覽（假資料，螢幕
-          {ORDER_PRINT_PREVIEW_SCALE >= 0.999 ? " 1:1" : ` 約 ${Math.round(ORDER_PRINT_PREVIEW_SCALE * 100)}% 縮小`}
-          ）
-        </h3>
-        <p className="card__hint">
-          僅供對位參考；實際列印請用「測試列印」以 1:1 對紙。若仍嫌小可縮小瀏覽器側邊欄或使用全螢幕；區塊可橫向捲動。
-        </p>
-        <div className="order-print-preview-shell">
-          {previewHtml ? (
-            <div
-              className="order-print-preview-frame"
-              style={
-                {
-                  ["--op-scale" as string]: String(ORDER_PRINT_PREVIEW_SCALE),
-                  ["--op-w" as string]: `${layout.pageWidthMm}mm`,
-                  ["--op-h" as string]: `${layout.pageHeightMm}mm`,
-                } as React.CSSProperties
-              }
-            >
-              <div className="order-print-preview-scaler">
-                <iframe
-                  title="套印預覽"
-                  srcDoc={previewHtml}
-                  className="order-print-preview-iframe"
-                  style={{ width: `${layout.pageWidthMm}mm`, height: `${layout.pageHeightMm}mm` }}
-                />
-              </div>
-            </div>
-          ) : (
-            <span className="text-muted">預覽載入中…</span>
-          )}
-        </div>
-      </section>
+
+      </details>
     </>
   );
 }
