@@ -507,6 +507,7 @@ ALTER TABLE `delivery_addresses`
 CREATE TABLE `sales_orders` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `order_no` VARCHAR(40) NOT NULL COMMENT '對外單號',
+  `short_order_no` VARCHAR(24) NULL COMMENT '列印短單號 YYMMDD-流水號',
   `customer_id` BIGINT UNSIGNED NOT NULL,
   `delivery_address_id` BIGINT UNSIGNED NOT NULL,
   `status` VARCHAR(32) NOT NULL DEFAULT 'draft' COMMENT 'draft,confirmed,in_production,ready_to_ship,assigned,delivering,completed,cancelled,exception',
@@ -550,6 +551,7 @@ CREATE TABLE `sales_orders` (
   `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_sales_order_no` (`order_no`),
+  UNIQUE KEY `uk_sales_order_short_no` (`short_order_no`),
   KEY `fk_so_customer` (`customer_id`),
   KEY `fk_so_addr` (`delivery_address_id`),
   KEY `fk_so_creator` (`created_by_user_id`),
@@ -1476,3 +1478,8 @@ CREATE TABLE IF NOT EXISTS cutover_monthly_items (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT IGNORE INTO schema_migrations (id) VALUES ('004_cutover_handover.sql');
+
+CREATE TABLE IF NOT EXISTS `order_number_sequences` (
+  `day_key` CHAR(8) NOT NULL PRIMARY KEY,
+  `last_number` INT UNSIGNED NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

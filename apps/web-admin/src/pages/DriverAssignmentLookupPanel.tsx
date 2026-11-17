@@ -17,6 +17,7 @@ type LookupLine = {
 type LookupOrder = {
   id?: string;
   orderNo?: string;
+    shortOrderNo?: string;
   status?: string;
   scheduledDeliveryDate?: string | null;
   preferredTimeNote?: string | null;
@@ -141,7 +142,7 @@ export default function DriverAssignmentLookupPanel() {
       .filter((row) => {
         if (!q) return true;
         const order = row.salesOrder;
-        const haystack = `${order?.orderNo ?? ""} ${order?.customer?.name ?? ""} ${order?.customer?.customerCode ?? ""} ${order?.deliveryAddress?.addressLine ?? ""}`.toLowerCase();
+        const haystack = `${order?.orderNo ?? ""} ${order?.shortOrderNo ?? ""} ${order?.customer?.name ?? ""} ${order?.customer?.customerCode ?? ""} ${order?.deliveryAddress?.addressLine ?? ""}`.toLowerCase();
         return haystack.includes(q);
       })
       .sort((a, b) => sortKey(a).localeCompare(sortKey(b)) || Number(a.id) - Number(b.id));

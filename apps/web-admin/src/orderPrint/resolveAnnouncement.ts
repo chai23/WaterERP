@@ -21,6 +21,7 @@ export async function fetchResolvedOrderAnnouncement(dateYmd?: string | null): P
 }
 
 type PrintEnrichment = {
+  shortOrderNo?: string | null;
   customerMobile?: string | null;
   taxAmount?: string | number | null;
   cashInvoiceMode?: string | null;
@@ -61,6 +62,7 @@ function applyPrintEnrichment(slip: OrderSlipSource, en: PrintEnrichment): Order
       : slip.lastBottleQty;
   return {
     ...slip,
+    shortOrderNo: en.shortOrderNo?.trim() || slip.shortOrderNo,
     taxAmount: en.taxAmount != null && en.taxAmount !== "" ? en.taxAmount : null,
     cashInvoiceMode: en.cashInvoiceMode ?? slip.cashInvoiceMode,
     driverName: en.driverName?.trim() || null,

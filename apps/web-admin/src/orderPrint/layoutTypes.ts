@@ -88,6 +88,7 @@ export type OrderPrintLayoutV1 = {
 /** 建立訂單 API 回傳或查詢訂單等皆可套用的最小欄位 */
 export type OrderSlipSource = {
   orderNo: string;
+  shortOrderNo?: string | null;
   scheduledDeliveryDate?: string | null;
   /** 開單備註（sales_orders.remark）；套印時對應 productRemark */
   remark?: string | null;

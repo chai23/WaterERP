@@ -65,6 +65,7 @@ function billingLineLabel(line: SlipLine): string {
  * 若版面啟用訂單編號一維條碼（Code 128），會嵌入 SVG。
  */
 export function buildOrderSlipHtml(order: OrderSlipSource, layout: OrderPrintLayoutV1): string {
+  const printOrderNo = order.shortOrderNo?.trim() || order.orderNo;
   const printVisibility = layout.printVisibility ?? coercePrintVisibility(undefined, layout.orderNoBarcode?.enabled);
   const { pageWidthMm, pageHeightMm, fontFamily, fields, linesBlock, orderNoBarcode } = layout;
   const layoutWithVis: OrderPrintLayoutV1 = { ...layout, printVisibility };
@@ -79,7 +80,7 @@ export function buildOrderSlipHtml(order: OrderSlipSource, layout: OrderPrintLay
   const blocks: string[] = [];
 
   if (printVisibility.orderNoBarcode && orderNoBarcode.enabled) {
-    const rawNo = String(order.orderNo ?? "").trim();
+    const rawNo = String(printOrderNo ?? "").trim();
     if (rawNo) {
       try {
         const svg = encodeOrderNoToCode128Svg(rawNo);
@@ -120,7 +121,7 @@ export function buildOrderSlipHtml(order: OrderSlipSource, layout: OrderPrintLay
     abs(escHtml(content), pos, extraClass, key);
   };
 
-  absField("orderNo", escHtml(order.orderNo), fields.orderNo);
+  absField("orderNo", escHtml(printOrderNo), fields.orderNo);
   absField("customerCode", escHtml(cust?.customerCode ?? "—"), fields.customerCode);
   absField("customerName", escHtml(cust?.name ?? "—"), fields.customerName);
   absField("customerPhone", escHtml(cust?.phone ?? "—"), fields.customerPhone);
@@ -246,7 +247,7 @@ export function buildOrderSlipHtml(order: OrderSlipSource, layout: OrderPrintLay
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
-  <title>訂單 ${escHtml(order.orderNo)}</title>
+  <title>訂單 ${escHtml(printOrderNo)}</title>
   <style>
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; }

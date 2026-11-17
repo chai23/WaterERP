@@ -3,6 +3,7 @@ import type { OrderSlipSource } from "./layoutTypes";
 /** 設定頁「測試列印」用假資料（欄位對應舊版 WinForms 套印） */
 export const SAMPLE_ORDER_SLIP: OrderSlipSource = {
   orderNo: "SO20260101120000",
+  shortOrderNo: "260101-001",
   scheduledDeliveryDate: "2026-01-15",
   remark: "送貨備註：請放管理室",
   taxAmount: "62",

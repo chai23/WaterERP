@@ -702,13 +702,13 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       }
       const slip = await slipFromDashboardOrderWithAnnouncement(payload.data as Record<string, unknown>);
       setLastOrderSlipForPrint(slip);
-      setFormMessage(`建立成功：${payload.data.orderNo}`);
+      setFormMessage(`建立成功：${payload.data.shortOrderNo || payload.data.orderNo}`);
       const layout = loadOrderPrintLayout();
       if (layout.autoPrintAfterCreate) {
         const ok = openOrderPrintWindow(slip, layout);
         if (!ok) {
           setFormMessage(
-            `建立成功：${payload.data.orderNo}（瀏覽器阻擋列印視窗，請允許彈出視窗後點「列印上一筆訂單」補印）`,
+            `建立成功：${payload.data.shortOrderNo || payload.data.orderNo}（瀏覽器阻擋列印視窗，請允許彈出視窗後點「列印上一筆訂單」補印）`,
           );
         }
       }

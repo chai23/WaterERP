@@ -78,6 +78,8 @@ export default function OrderQueryPage() {
   const { orders, loadOrders, onCancelOrder } = useDashboard();
   const isMobile = useMediaQuery("(max-width: 768px)");
   const [q, setQ] = useState("");
+  const [searchRows, setSearchRows] = useState<OrderRecord[]>([]);
+  const [searchError, setSearchError] = useState("");
   const [sourceFilter, setSourceFilter] = useState<"all" | "liff" | "admin">("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [visibleCount, setVisibleCount] = useState(MOBILE_PAGE_SIZE);
@@ -104,21 +106,45 @@ export default function OrderQueryPage() {
     setVisibleCount(MOBILE_PAGE_SIZE);
   }, [q, sourceFilter, statusFilter]);
 
+  // 搜尋結果只屬於本頁，避免影響其他頁面共用的訂單資料。
+  useEffect(() => {
+    setSearchRows([]);
+    setSearchError("");
+    if (!q.trim()) { setRefreshing(false); return; }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        setRefreshing(true);
+        try {
+          const response = await fetch(`/api/sales-orders?q=${encodeURIComponent(q.trim())}`, { signal: controller.signal });
+          if (!response.ok) throw new Error("搜尋失敗，請稍後再試。");
+          const rows: unknown = await response.json();
+          if (!controller.signal.aborted) setSearchRows(Array.isArray(rows) ? rows : []);
+        } catch {
+          if (!controller.signal.aborted) setSearchError("搜尋失敗，請稍後再試。");
+        } finally {
+          if (!controller.signal.aborted) setRefreshing(false);
+        }
+      })();
+    }, 250);
+    return () => { controller.abort(); window.clearTimeout(timer); };
+  }, [q, orders]);
+
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
-    return orders.filter((o) => {
+    return (s ? searchRows : orders).filter((o) => {
       const rec = o as OrderRecord;
       const source = orderSource(rec);
       if (sourceFilter !== "all" && source !== sourceFilter) return false;
       if (statusFilter !== "all" && String(rec.status ?? "") !== statusFilter) return false;
       if (!s) return true;
-      const no = String(rec.orderNo ?? "").toLowerCase();
+      const no = `${rec.orderNo ?? ""} ${rec.shortOrderNo ?? ""}`.toLowerCase();
       const cust = String(rec.customer?.name ?? "").toLowerCase();
       const code = String(rec.customer?.customerCode ?? "").toLowerCase();
       const addr = String(rec.deliveryAddress?.addressLine ?? "").toLowerCase();
       return no.includes(s) || cust.includes(s) || code.includes(s) || addr.includes(s);
     });
-  }, [orders, q, sourceFilter, statusFilter]);
+  }, [orders, searchRows, q, sourceFilter, statusFilter]);
 
   const grouped = useMemo(() => {
     const map = new Map<string, OrderRecord[]>();
@@ -155,6 +181,7 @@ export default function OrderQueryPage() {
 
   return (
     <>
+      {searchError ? <p className="feedback feedback--err" role="alert">{searchError}</p> : null}
       {isMobile ? (
         <div className="oq-mobile">
           <div className="oq-mobile__toolbar">
@@ -242,7 +269,7 @@ export default function OrderQueryPage() {
                             </span>
                             <span>{source === "liff" ? "LINE" : "後台"}</span>
                             <span>{lineCount} 項</span>
-                            <code>{String(o.orderNo ?? "—")}</code>
+                            <code title={`完整單號：${String(o.orderNo ?? "")}`}>{String(o.shortOrderNo || o.orderNo || "—")}</code>
                           </div>
                         </button>
                         {canCancelOrderStatus(o.status) ? (
@@ -325,7 +352,7 @@ export default function OrderQueryPage() {
                       onClick={() => setDetailOrder(rec)}
                     >
                       <td>
-                        <code style={{ fontSize: "0.8em" }}>{String(rec.orderNo ?? "")}</code>
+                        <code style={{ fontSize: "0.8em" }} title={`完整單號：${String(rec.orderNo ?? "")}`}>{String(rec.shortOrderNo || rec.orderNo || "")}</code>
                       </td>
                       <td>
                         {orderSource(rec) === "liff" ? <span className="badge">LINE</span> : <span className="text-muted">後台</span>}

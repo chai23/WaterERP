@@ -496,7 +496,7 @@ export default function SettingsOrderPrintPage() {
       <section className="card">
         <h3 className="card__title">訂單編號一維條碼（Code 128）</h3>
         <p className="card__hint" style={{ marginTop: 0 }}>
-          條碼<strong>內容與訂單編號字串相同</strong>（非網址）。掃描槍掃入後可貼到「查詢訂單」關鍵字、或內部流程用於分派辨識。紙上為橫向長條，請以寬／高（mm）框住條碼區；若與格線重疊請調整。
+          條碼<strong>內容與紙上短單號相同，未編配短單號時使用完整單號</strong>（非網址）。掃描槍掃入後可貼到「查詢訂單」關鍵字、或內部流程用於分派辨識。紙上為橫向長條，請以寬／高（mm）框住條碼區；若與格線重疊請調整。
         </p>
         <div className="field" style={{ marginTop: "0.75rem" }}>
           <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>

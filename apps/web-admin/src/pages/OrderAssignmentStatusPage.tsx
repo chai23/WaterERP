@@ -5,6 +5,7 @@ import { OrderDetailModal } from "../components/OrderDetailModal";
 type PoolOrder = {
     id: string;
     orderNo: string;
+    shortOrderNo?: string;
     status: string;
     scheduledDeliveryDate?: string | null;
     customerId?: string;
@@ -145,7 +146,7 @@ export default function AssignmentStatusPanel() {
     const visible = orders.filter(o => {
         const day = orderDay(o);
         const matches = filter === 'all' || (filter === 'today' ? day === date : filter === 'future' ? day > date : !!day && day < date);
-        return matches && `${o.orderNo} ${o.customer?.name} ${o.customer?.customerCode} ${o.deliveryAddress?.addressLine}`.toLowerCase().includes(query.trim().toLowerCase());
+        return matches && `${o.orderNo} ${o.shortOrderNo ?? ""} ${o.customer?.name} ${o.customer?.customerCode} ${o.deliveryAddress?.addressLine}`.toLowerCase().includes(query.trim().toLowerCase());
     });
     const prepare = (driverId: string, ids: string[]) => {
         if (loading || busy || !date || fleet[driverId]?.error || !fleet[driverId])

@@ -43,6 +43,7 @@ type SettlementRow = {
   orderBillableAmount?: unknown;
   salesOrder?: {
     orderNo?: string;
+    shortOrderNo?: string;
     billingTypeAtOrder?: string | null;
     customer?: { name?: string };
     totalAmount?: unknown;
@@ -146,7 +147,7 @@ export default function OrderCompletePage() {
     const s = q.trim().toLowerCase();
     if (s) {
       list = list.filter((row) => {
-        const no = String(row.salesOrder?.orderNo ?? "").toLowerCase();
+        const no = `${row.salesOrder?.orderNo ?? ""} ${row.salesOrder?.shortOrderNo ?? ""}`.toLowerCase();
         const cust = String(row.salesOrder?.customer?.name ?? "").toLowerCase();
         const driver = String(row.driver?.user?.employeeCode ?? row.driver?.user?.name ?? "").toLowerCase();
         return no.includes(s) || cust.includes(s) || driver.includes(s);

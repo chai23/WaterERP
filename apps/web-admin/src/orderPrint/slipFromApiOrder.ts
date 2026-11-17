@@ -38,6 +38,7 @@ export function slipFromDashboardOrder(row: Record<string, unknown>): OrderSlipS
   const strOpt = (v: unknown) => (v != null ? String(v) : undefined);
   return {
     orderNo: String(row.orderNo ?? ""),
+    shortOrderNo: strOpt(row.shortOrderNo),
     scheduledDeliveryDate: row.scheduledDeliveryDate != null ? String(row.scheduledDeliveryDate) : null,
     remark: row.remark != null ? String(row.remark) : null,
     taxAmount: tax != null ? (typeof tax === "number" ? tax : String(tax)) : undefined,

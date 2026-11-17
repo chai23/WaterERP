@@ -1,3 +1,4 @@
+import { allocateShortOrderNo } from "./shortOrderNo.js";
 import "dotenv/config";
 import bcrypt from "bcryptjs";
 import cors from "cors";
@@ -2549,6 +2550,7 @@ async function postServiceTicketBilling(
   const so = await tx.salesOrder.create({
     data: {
       orderNo,
+      shortOrderNo: await allocateShortOrderNo(tx),
       customerId: args.ticket.customerId,
       deliveryAddressId: args.ticket.deliveryAddressId,
       status: "completed",
@@ -6304,10 +6306,17 @@ app.patch("/api/drivers/:driverId", async (req, res) => {
 app.get("/api/sales-orders", async (req, res) => {
   try {
     const sourceRaw = typeof req.query.source === "string" ? req.query.source.trim() : "";
-    const where =
-      sourceRaw === "liff" || sourceRaw === "admin"
-        ? { source: sourceRaw }
-        : undefined;
+    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    const where: Prisma.SalesOrderWhereInput = {
+      ...(sourceRaw === "liff" || sourceRaw === "admin" ? { source: sourceRaw } : {}),
+      ...(q ? { OR: [
+        { orderNo: { contains: q } },
+        { shortOrderNo: { contains: q } },
+        { customer: { name: { contains: q } } },
+        { customer: { customerCode: { contains: q } } },
+        { deliveryAddress: { addressLine: { contains: q } } },
+      ] } : {}),
+    };
     const rows = await prisma.salesOrder.findMany({
       where,
       include: salesOrderDetailInclude,
@@ -6391,6 +6400,7 @@ app.get("/api/sales-orders/assignment-queue", async (req, res) => {
         {
           OR: [
             { orderNo: { contains: q } },
+            { shortOrderNo: { contains: q } },
             { customer: { name: { contains: q } } },
             { customer: { customerCode: { contains: q } } },
             { customer: { phone: { contains: q } } },
@@ -6597,6 +6607,7 @@ app.get("/api/sales-orders/:salesOrderId/print-enrichment", async (req, res) => 
       ok: true,
       data: {
         customerMobile: order.customer.mobile?.trim() || null,
+        shortOrderNo: order.shortOrderNo,
         taxAmount,
         cashInvoiceMode: invoiceMode === "none" ? null : invoiceMode,
         driverName,
@@ -9628,6 +9639,7 @@ async function createConfirmedSalesOrder(
       const so = await tx.salesOrder.create({
         data: {
           orderNo: generateOrderNo(),
+          shortOrderNo: await allocateShortOrderNo(tx),
           customerId,
           deliveryAddressId,
           status: initialStatus,
@@ -12453,6 +12465,7 @@ app.get("/api/tax-invoices", async (req, res) => {
         { buyerTaxId: { contains: q } },
         { customer: { name: { contains: q } } },
         { salesOrder: { orderNo: { contains: q } } },
+        { salesOrder: { shortOrderNo: { contains: q } } },
         { billingStatement: { statementNo: { contains: q } } },
         { receiptVoucher: { voucherNo: { contains: q } } },
       ];

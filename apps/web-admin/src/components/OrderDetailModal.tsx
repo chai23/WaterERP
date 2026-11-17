@@ -31,6 +31,7 @@ function fmtDateTimeShort(value: unknown): string {
 export type OrderRecord = Record<string, unknown> & {
   id?: unknown;
   orderNo?: unknown;
+  shortOrderNo?: unknown;
   status?: unknown;
   scheduledDeliveryDate?: unknown;
   createdAt?: unknown;
@@ -262,7 +263,8 @@ export function OrderDetailModal({ order, onClose }: { order: OrderRecord; onClo
             <h2 id="order-detail-title" className="modal-dialog__title">
               訂單詳情
             </h2>
-            <code className="modal-dialog__order-no">{String(order.orderNo ?? "")}</code>
+            <code className="modal-dialog__order-no">{String(order.shortOrderNo || order.orderNo || "")}</code>
+            {order.shortOrderNo ? <small>完整單號：{String(order.orderNo ?? "")}</small> : null}
             <div className="order-detail__header-badges">
               <span className={orderStatusBadgeClass(statusRaw)}>{orderStatusLabel(statusRaw)}</span>
               {billingAtOrder ? <span className="badge badge--default">{billingTypeLabel(billingAtOrder)}</span> : null}

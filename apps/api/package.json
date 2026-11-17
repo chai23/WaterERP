@@ -4,6 +4,7 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
+    "test:short-orders": "tsx scripts/test-short-order-numbers.ts",
     "test:cutover": "tsx scripts/test-cutover-handover.ts",
     "dev": "tsx watch src/index.ts",
     "build": "tsc",

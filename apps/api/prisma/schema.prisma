@@ -487,9 +487,17 @@ model PromotionDispenserGiftRule {
   @@map("promotion_dispenser_gift_rules")
 }
 
+model OrderNumberSequence {
+  dayKey String @id @map("day_key") @db.Char(8)
+  lastValue Int @map("last_number") @db.UnsignedInt
+
+  @@map("order_number_sequences")
+}
+
 model SalesOrder {
   id                     BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
   orderNo                String    @unique @map("order_no") @db.VarChar(40)
+  shortOrderNo           String?   @unique(map: "uk_sales_order_short_no") @map("short_order_no") @db.VarChar(24)
   customerId             BigInt    @map("customer_id") @db.UnsignedBigInt
   deliveryAddressId      BigInt    @map("delivery_address_id") @db.UnsignedBigInt
   status                 String    @default("draft") @db.VarChar(32)
