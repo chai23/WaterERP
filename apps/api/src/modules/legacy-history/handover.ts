@@ -1,3 +1,4 @@
+import { isMonthlyStatementAmount, isUnpaidPrepaidInvoice, legacyMonthlyKind } from "./monthly-kind.js";
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { cleanAddressLine } from "./master-mapping.js";
@@ -6,11 +7,13 @@ import { legacyCustomersWithOrders } from "./order-presence.js";
 type DB = PrismaClient | Prisma.TransactionClient;
 export type HandoverOrder = {
   id: string; day: string; amount: number; received: number; outstanding: number;
-  completed: boolean; billing: string; disposition: "cash" | "monthly_billed" | "monthly_pending" | "exclude";
+  completed: boolean; billing: string; monthlyKind?: "statement" | "mixed"; disposition: "cash" | "monthly_billed" | "monthly_pending" | "exclude";
   finalAmount: number; dueDate: string; invoiceMode: "none" | "tax_inclusive" | "tax_exclusive"; note: string;
   arDocumentId?: string; arNo?: string;
 };
 export type HandoverRow = {
+  sourceAddresses?: {legacyId:string; label:string; barrels:number}[];
+  prepaidAllocation?: { products: {code:string; barrels:number}[]; unassignedReason:string; allowOverdraft:boolean };
   draftId?: string; targetHash?: string; noLegacyOrders?: boolean;
   key: string; code: string; name: string; customerId: string | null; included: boolean;
   warnings: string[]; reviewed: boolean; note: string; prepayment: number | null; sourceOverShort?: number;
@@ -102,8 +105,8 @@ async function legacyAddressIds(db: DB): Promise<Array<[string, string]>> {
   return [...map].sort((a, b) => a[0].localeCompare(b[0]));
 }
 
-async function targetState(db: DB) {
-  const customers = await db.customer.findMany({ orderBy: { id: "asc" }, include: {
+export async function targetState(db: DB, customer?: { id: bigint } | { customerCode: string }) {
+  const customers = await db.customer.findMany({ where: customer, orderBy: { id: "asc" }, include: {
     addresses: { orderBy: { id: "asc" } }, prepaymentWallet: true,
     _count: { select: { salesOrders: true, ledgerEntries: true, prepaymentTxns: true, arDocuments: true, receiptVouchers: true, barrelMovements: true, prepaidProductBalances: true } },
   } });
@@ -112,7 +115,7 @@ async function targetState(db: DB) {
   return { customers, old, addressLinks: await legacyAddressIds(db) };
 }
 
-function customerTargetHash(state: Awaited<ReturnType<typeof targetState>>, customerId: string) {
+export function customerTargetHash(state: Awaited<ReturnType<typeof targetState>>, customerId: string) {
   const customers = state.customers.filter(c => c.id.toString() === customerId);
   const addresses = new Set(customers.flatMap(c => c.addresses.map(a => a.id.toString())));
   return hashTarget({ customers, old: state.old, addressLinks: state.addressLinks.filter(([, id]) => addresses.has(id)) } as typeof state);
@@ -134,7 +137,7 @@ async function sourceState(legacy: PrismaClient, startDate: string, customerCode
       ...(customerCode ? [...ids, ...ids] : []),
     );
     const orders = await tx.$queryRawUnsafe<any[]>(
-      `SELECT order_id, customer_id, order_day, order_OK, collect_OK, collect_money, subtotal FROM \`order\` WHERE (order_day < DATE_ADD(?, INTERVAL 1 DAY) OR order_day IS NULL)${orderWhere} ORDER BY order_id, customer_id, subtotal`,
+      `SELECT order_id, customer_id, order_day, order_OK, collect_OK, collect_money, subtotal, product_name FROM \`order\` WHERE (order_day < DATE_ADD(?, INTERVAL 1 DAY) OR order_day IS NULL)${orderWhere} ORDER BY order_id, customer_id, subtotal`,
       startDate, ...(customerCode ? ids : []),
     );
     const receipts = customerCode
@@ -182,7 +185,7 @@ export async function buildHandover(legacy: PrismaClient, target: PrismaClient, 
   const cutoffDate = startDate;
   const source = await sourceState(legacy, startDate, wanted);
   const overShort = await overShortTotals(legacy, wanted);
-  const state = await targetState(target);
+  const state = await targetState(target, wanted ? { customerCode: wanted } : undefined);
   const blockers: string[] = [];
   if (state.old.length) blockers.push("已有舊版切換日開帳紀錄，請先核對並處理既有期初帳，不能重複交接。");
   const byCode = new Map(state.customers.map(c => [c.customerCode, c]));
@@ -223,8 +226,9 @@ export async function buildHandover(legacy: PrismaClient, target: PrismaClient, 
     const existing = rows.get(key);
     if (existing) {
       existing.legacyBarrels += bucket;
+      existing.sourceAddresses?.push({legacyId:id,label:String(c.customer_address ?? ""),barrels:bucket});
       const branchPrepaid = num(c.customer_remain);
-      if (branchPrepaid !== 0) existing.warnings.push(`舊主檔 ${id} 另有預付桶 ${branchPrepaid}，目前以主檔預付桶為準。`);
+      if (branchPrepaid !== existing.sourcePrepaidBarrels) existing.warnings.push(`舊主檔 ${id} 另有預付桶 ${branchPrepaid}，目前以主檔預付桶為準。`);
       placeBarrels(existing, id, bucket, String(c.customer_address ?? ""));
       continue;
     }
@@ -237,6 +241,7 @@ export async function buildHandover(legacy: PrismaClient, target: PrismaClient, 
     const row: HandoverRow = { draftId: randomUUID(), targetHash: targetCustomer ? customerTargetHash(state, targetCustomer.id.toString()) : undefined,
       key, code: customerCode ?? id, name: targetCustomer?.name ?? String(c.customer_name ?? id),
       customerId: targetCustomer?.id.toString() ?? null, included: true, warnings, reviewed: alreadyDone, note: "", prepayment: alreadyDone ? 0 : null,
+      sourceAddresses: [{legacyId:id,label:String(c.customer_address ?? ""),barrels:bucket}],
       prepaidBarrels: prepaid, sourcePrepaidBarrels: prepaid, legacyBarrels: bucket, addresses, orders: [],
       handedOver: alreadyDone, handedOverAt: targetCustomer?.handoverCompletedAt?.toISOString() };
     placeBarrels(row, id, bucket, String(c.customer_address ?? ""));
@@ -260,30 +265,38 @@ export async function buildHandover(legacy: PrismaClient, target: PrismaClient, 
   }
   for (const [id, lines] of grouped) {
     const first = lines[0];
+    const kind = legacyMonthlyKind(lines.map(l=>({name:l.product_name,subtotal:num(l.subtotal)})));
+    if (kind === "monthly_reminder" || kind === "payment_reminder") continue;
+    const statement = kind === "statement";
     const r = receipts.get(id);
     if (r?.after) blockers.push(`舊單 ${id} 有截止日以後的收款，請使用截止日凍結備份或調整啟用日。`);
     const completed = lines.every(l => String(l.order_OK).trim() === "True");
-    if (completed && lines.every(l => String(l.collect_OK).trim() === "True") && !r?.after) continue;
+    const statementLines = statement ? lines.filter(l=>isMonthlyStatementAmount(l.product_name,num(l.subtotal))) : lines;
+    if ((completed || statement) && statementLines.every(l => String(l.collect_OK).trim() === "True") && !r?.after) continue;
     const customerId = String(first.customer_id ?? "").trim();
     const key = customerKeys.get(customerId) ?? markKeys.get(customerId);
     const row = key ? rows.get(key) : undefined;
     if (!row) { blockers.push(`舊單 ${id} 找不到客戶主檔 ${customerId}`); continue; }
     if (lines.some(l => String(l.customer_id).trim() !== customerId)) blockers.push(`舊單 ${id} 對應多位客戶，不能自動沖帳。`);
-    const amount = round(lines.reduce((s, l) => s + num(l.subtotal), 0));
+    const amount = round(statementLines.filter(l=>!statement || String(l.collect_OK).trim()!=="True").reduce((s, l) => s + num(l.subtotal), 0));
     const received = r?.before ?? 0;
     const outstanding = round(amount - received);
-    if (outstanding === 0 && completed) continue;
+    if (outstanding === 0 && (completed || statement)) continue;
+    const prepaidInvoice = kind === "ordinary" && !r?.unknown && !r?.after && isUnpaidPrepaidInvoice(
+      lines.map(l=>({name:l.product_name,subtotal:num(l.subtotal),completed:String(l.order_OK).trim()==="True",
+        collected:String(l.collect_OK).trim()==="True",billing:String(l.collect_money ?? "").trim()})), received);
     if (r?.unknown) row.warnings.push(`舊單 ${id} 有無日期收款，請人工核對剩餘金額。`);
-    if (lines.some(l => String(l.collect_OK).trim() === "True")) row.warnings.push(`舊單 ${id} 明細收款狀態不一致，請核對。`);
-    const billing = String(first.collect_money ?? "").trim();
-    if (lines.some(l => String(l.collect_money ?? "").trim() !== billing)) row.warnings.push(`舊單 ${id} 有混合結帳方式，請先拆分來源或排除後另外處理。`);
+    if (!prepaidInvoice && lines.some(l => String(l.collect_OK).trim() === "True")) row.warnings.push(`舊單 ${id} 明細收款狀態不一致，請核對。`);
+    const billing = prepaidInvoice ? "現金" : String(first.collect_money ?? "").trim();
+    if (!prepaidInvoice && lines.some(l => String(l.collect_money ?? "").trim() !== billing)) row.warnings.push(`舊單 ${id} 有混合結帳方式，請先拆分來源或排除後另外處理。`);
     const d = day(first.order_day);
     if (!validDay(d)) row.warnings.push(`舊單 ${id} 無有效日期，請核對並填入到期日。`);
     if (billing === "預收") row.warnings.push(`舊單 ${id} 為預收類型，請判斷是未收儲值款或已扣預付桶；不能直接視為欠款。`);
-    if (!completed) row.warnings.push(`舊單 ${id} 未完成配送，預設排除；請記錄移交處理方式。`);
+    if (kind === "mixed") row.warnings.push(`舊單 ${id} 月結單夾有其他商品，請核對並另行處理。`);
+    if (!completed && kind === "ordinary") row.warnings.push(`舊單 ${id} 未完成配送，預設排除；請記錄移交處理方式。`);
     if (outstanding < 0) row.warnings.push(`舊單 ${id} 溢收 ${-outstanding}，這張單不會變成應收。請核對這筆是否已包含在短溢收總和。`);
-    row.orders.push({ id, day: validDay(d) ? d : cutoffDate, amount, received, outstanding, completed, billing,
-      disposition: !completed || outstanding < 0 ? "exclude" : billing === "月結" ? "monthly_pending" : "cash",
+    row.orders.push({ id, day: validDay(d) ? d : cutoffDate, amount, received, outstanding, completed, billing, monthlyKind: statement || kind==="mixed" ? kind : undefined,
+      disposition: kind==="mixed" || outstanding < 0 || (!completed && !statement) ? "exclude" : statement ? "monthly_billed" : billing === "月結" ? "monthly_pending" : "cash",
       finalAmount: Math.max(0, outstanding), dueDate: startDate, invoiceMode: "none", note: "" });
   }
   for (const row of rows.values()) {
@@ -357,6 +370,14 @@ export function mergeDraft(original: HandoverSnapshot, input: any, partial = fal
     if (edit.prepayment !== null && !signedMoney(edit.prepayment)) throw new Error(`${r.code} 短溢收須為最多兩位小數的金額`);
     if (!whole(edit.prepaidBarrels, true)) throw new Error(`${r.code} 預付桶數須為整數`);
     r.prepayment = edit.prepayment; r.prepaidBarrels = edit.prepaidBarrels;
+    if (edit.prepaidAllocation !== undefined) {
+      const { products, unassignedReason, allowOverdraft } = edit.prepaidAllocation ?? {};
+      if (!Array.isArray(products) || products.length > 100 || typeof unassignedReason !== "string" ||
+          unassignedReason.length > 400 || typeof allowOverdraft !== "boolean" ||
+          products.some(p => !p || typeof p.code !== "string" || !/^\d{3}$/.test(p.code) || !whole(p.barrels, true)) ||
+          new Set(products.map(p => p.code)).size !== products.length) throw new Error("商品別預付桶格式錯誤");
+      r.prepaidAllocation = {products: products.map(p => ({code:p.code,barrels:p.barrels})), unassignedReason:unassignedReason.trim(), allowOverdraft};
+    }
     if (!Array.isArray(edit.addresses) || edit.addresses.length !== r.addresses.length || new Set(edit.addresses.map((a: any) => a.id)).size !== r.addresses.length) throw new Error("地址清單不完整");
     for (const a of r.addresses) {
       const e = edit.addresses.find((x: any) => x.id === a.id);
@@ -382,6 +403,14 @@ export function customerHandoverErrors(r: HandoverRow): string[] {
     return errors;
   }
   if (!r.customerId) errors.push(prefix + "尚未對應客戶");
+  const allocation = r.prepaidAllocation;
+  if (allocation) {
+    const {products, unassignedReason, allowOverdraft} = allocation;
+    if (products.length && (products.some(p => p.barrels === 0 || Math.sign(p.barrels) !== Math.sign(r.prepaidBarrels)) ||
+        products.reduce((sum,p)=>sum+p.barrels,0) !== r.prepaidBarrels)) errors.push(prefix + "商品別桶數須和預付桶總數一致");
+    if (!products.length && r.prepaidBarrels !== 0 && !unassignedReason) errors.push(prefix + "請分配預付商品或填寫不掛商品原因");
+    if (allowOverdraft && !products.length) errors.push(prefix + "開啟透支須指定預付商品");
+  }
   if (!r.reviewed) errors.push(prefix + "尚未確認交接內容");
   if (r.prepayment === null) errors.push(prefix + "請填寫短溢收（沒有則填 0）");
   if (typeof r.sourceOverShort === "number" && r.prepayment !== r.sourceOverShort && !r.note) errors.push(prefix + "短溢收與舊系統總和不同，須填寫原因");
@@ -390,8 +419,10 @@ export function customerHandoverErrors(r: HandoverRow): string[] {
   if (r.addresses.length === 0 && r.legacyBarrels !== 0) errors.push(prefix + "請先補上配送地址");
   if ((r.prepaidBarrels !== r.sourcePrepaidBarrels || r.addresses.reduce((s, a) => s + a.barrels, 0) !== r.legacyBarrels) && !r.note) errors.push(prefix + "桶數與舊資料不同，須填寫原因");
   for (const o of r.orders) {
-    if ((o.disposition === "exclude" || o.finalAmount !== o.outstanding || (o.billing === "月結" && o.disposition === "cash") || (o.billing !== "月結" && o.disposition.startsWith("monthly"))) && !o.note) errors.push(prefix + `舊單 ${o.id} 排除或調整須填寫原因`);
-    if (!o.completed && o.disposition !== "exclude") errors.push(prefix + `舊單 ${o.id} 未完成配送，請作待辦訂單移交`);
+    if ((o.disposition === "exclude" || o.finalAmount !== o.outstanding || (o.billing === "月結" && o.disposition === "cash") || (o.billing !== "月結" && o.monthlyKind !== "statement" && o.disposition.startsWith("monthly"))) && !o.note) errors.push(prefix + `舊單 ${o.id} 排除或調整須填寫原因`);
+    if (o.monthlyKind === "mixed" && o.disposition !== "exclude") errors.push(prefix + `舊單 ${o.id} 夾有其他商品，請排除並另行處理`);
+    if (o.monthlyKind === "statement" && !["monthly_billed","exclude"].includes(o.disposition)) errors.push(prefix + `舊單 ${o.id} 為正式月結單，請選擇月結已出帳未收或排除`);
+    if (!o.completed && o.monthlyKind !== "statement" && o.disposition !== "exclude") errors.push(prefix + `舊單 ${o.id} 未完成配送，請作待辦訂單移交`);
     if (o.disposition === "monthly_pending" && o.received !== 0) errors.push(prefix + `舊單 ${o.id} 已有部分收款，請先完成舊系統結帳，以已出帳餘額承接`);
     if (o.disposition !== "exclude" && o.finalAmount <= 0) errors.push(prefix + `舊單 ${o.id} 金額為零，請選擇排除並註明原因`);
   }
@@ -414,7 +445,7 @@ function sourceSignature(r: HandoverRow) {
     sourcePrepaidBarrels: r.sourcePrepaidBarrels,
     warnings: r.warnings,
     addresses: r.addresses.map(a => ({ id: a.id, original: a.original })),
-    orders: r.orders.map(o => ({ id: o.id, day: o.day, amount: o.amount, received: o.received, outstanding: o.outstanding, completed: o.completed, billing: o.billing })),
+    orders: r.orders.map(o => ({ id: o.id, day: o.day, amount: o.amount, received: o.received, outstanding: o.outstanding, completed: o.completed, billing: o.billing, monthlyKind:o.monthlyKind })),
   });
 }
 
@@ -524,7 +555,7 @@ export async function applyHandover(legacy: PrismaClient, target: PrismaClient, 
   }, { timeout: 120000, maxWait: 10000, isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }
 
-async function postIncludedBalances(tx: DB, r: HandoverRow, startDate: string, userId: bigint) {
+export async function postIncludedBalances(tx: DB, r: HandoverRow, startDate: string, userId: bigint) {
   const customerId = BigInt(r.customerId!);
   for (const o of r.orders) {
     if (o.disposition === "exclude") continue;
@@ -557,6 +588,14 @@ async function postIncludedBalances(tx: DB, r: HandoverRow, startDate: string, u
     await tx.arOpenItem.create({ data: { arDocumentId: ar.id, customerId, originalAmount: amount, outstandingAmount: amount, dueDate, expectedCollectDate: dueDate } });
     await tx.customerLedgerEntry.create({ data: { customerId, entryType: "cutover_opening", amount, sourceType: "cutover", sourceId: 1n,
       note: `舊系統短溢收，客戶欠公司 ${amount.toFixed(2)}；${r.note}`.slice(0, 500), createdByUserId: userId } });
+  }
+  if (r.prepaidAllocation) {
+    for (const allocation of r.prepaidAllocation.products) {
+      const product = await tx.product.findFirst({where:{productCode:allocation.code,isActive:true,consumesPrepaidBarrel:true},select:{id:true}});
+      if (!product) throw new Error(`預付商品 ${allocation.code} 無法承接`);
+      await tx.customerPrepaidProductBalance.create({data:{customerId,productId:product.id,balanceBarrels:allocation.barrels}});
+    }
+    await tx.customer.update({where:{id:customerId},data:{allowPrepaidOverdraft:r.prepaidAllocation.allowOverdraft}});
   }
   await tx.customer.update({ where: { id: customerId }, data: { prepaidBarrelBalance: r.prepaidBarrels, handoverCompletedAt: new Date() } });
   await tx.customerLedgerEntry.create({ data: { customerId, entryType: "cutover_prepaid_barrels", barrelDelta: r.prepaidBarrels, sourceType: "cutover", sourceId: 1n, note: `預付桶期初；${r.note}`.slice(0, 500), createdByUserId: userId } });
@@ -643,12 +682,13 @@ export async function applyCustomerHandover(legacy: PrismaClient, target: Prisma
       await tx.$queryRaw`SELECT id FROM delivery_addresses WHERE id IN (${Prisma.join(ids)}) ORDER BY id FOR UPDATE`;
     }
     const targetNow = await targetState(tx);
+    if (targetNow.customers.some(c => c.id === BigInt(currentRow.customerId!) && c.handoverCompletedAt)) throw new Error("此客戶已完成交接，請重新整理");
     const targetMatches = currentRow.targetHash
       ? customerTargetHash(targetNow, currentRow.customerId!) === currentRow.targetHash
       : hashTarget(targetNow) === current.snapshot.targetHash;
     if (!targetMatches) throw new Error("此客戶的新系統主檔或交易已變動，請重新產生此客戶的交接草稿；不會覆蓋目前餘額");
     if (autoNoOrders && (await legacyCustomersWithOrders(legacy)).has(wanted)) throw new Error("處理期間舊系統新增了訂單，本戶未交接或變更餘額");
-    Object.assign(currentRow, { included: row.included, note: row.note, reviewed: row.reviewed, prepayment: row.prepayment, prepaidBarrels: row.prepaidBarrels, addresses: row.addresses, orders: row.orders });
+    Object.assign(currentRow, { included: row.included, note: row.note, reviewed: row.reviewed, prepayment: row.prepayment, prepaidBarrels: row.prepaidBarrels, addresses: row.addresses, orders: row.orders, prepaidAllocation: row.prepaidAllocation });
     if (autoNoOrders) currentRow.sourceOverShort = row.sourceOverShort;
     if (currentRow.included) await postIncludedBalances(tx, currentRow, rowStartDate, userId);
     else await markHandoverComplete(tx, currentRow);

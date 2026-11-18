@@ -2037,7 +2037,7 @@ const corsOriginList = process.env.CORS_ORIGIN?.split(",").map((s) => s.trim()).
 const corsOrigin = corsOriginList && corsOriginList.length > 0 ? corsOriginList : isProductionRuntime() ? false : true;
 
 app.use(cors({ origin: corsOrigin }));
-app.use("/api/legacy-cutover/handover", express.json({ limit: "20mb" }));
+app.use("/api/legacy-cutover", express.json({ limit: "20mb" }));
 app.use(
   express.json({
     verify: (req, _res, buf) => {

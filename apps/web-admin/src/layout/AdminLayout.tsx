@@ -44,6 +44,7 @@ const navGroups: { id: string; title: string; items: { to: string; label: string
       { to: "/data/customers", label: "客戶資料" },
       { to: "/data/legacy-orders", label: "舊系統歷史訂單" },
       { to: "/data/legacy-cutover", label: "上線交接" },
+      { to: "/data/legacy-cutover/methods", label: "交接方法" },
       { to: "/data/drivers", label: "司機資料" },
       { to: "/data/products", label: "商品資料" },
       { to: "/data/vehicles", label: "車輛資料" },

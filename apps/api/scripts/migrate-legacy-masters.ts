@@ -83,8 +83,6 @@ type OldCustomerRow = {
   customerInvoice: string;
   customerBillAddress: string;
   customerCollectMoney: string;
-  customerBucket: string;
-  customerRemain: string;
   areaId: string;
   areaId2: string;
   company: string;
@@ -137,11 +135,6 @@ function describeDbUrl(url: string): string {
 function trimToNull(s: string | undefined | null): string | null {
   const t = (s ?? "").trim();
   return t === "" ? null : t;
-}
-
-function parseIntField(s: string | undefined, fallback = 0): number {
-  const n = Math.floor(Number((s ?? "").trim()));
-  return Number.isFinite(n) ? n : fallback;
 }
 
 function normalizeCustomerCode(raw: string): string | null {
@@ -367,8 +360,6 @@ async function loadLegacyCustomers(legacy: PrismaClient): Promise<OldCustomerRow
       customer_invoice,
       customer_bill_address,
       customer_collect_money,
-      customer_bucket,
-      customer_remain,
       area_id,
       area_id_2,
       company,
@@ -395,8 +386,6 @@ async function loadLegacyCustomers(legacy: PrismaClient): Promise<OldCustomerRow
       customerInvoice: String(r.customer_invoice ?? ""),
       customerBillAddress: String(r.customer_bill_address ?? ""),
       customerCollectMoney: String(r.customer_collect_money ?? ""),
-      customerBucket: String(r.customer_bucket ?? ""),
-      customerRemain: String(r.customer_remain ?? ""),
       areaId: String(r.area_id ?? ""),
       areaId2: String(r.area_id_2 ?? ""),
       company: String(r.company ?? ""),
@@ -510,8 +499,6 @@ async function migrateCustomers(
       continue;
     }
 
-    const barrelsOnSite = Math.max(0, parseIntField(primary.customerBucket, 0));
-    const prepaidBarrelBalance = parseIntField(primary.customerRemain, 0);
     if (dryRun) {
       created++;
       continue;
@@ -531,23 +518,12 @@ async function migrateCustomers(
           addressZoneId: resolveZoneId(primary, areaByLegacyId),
           affiliatedCompanyId: resolveCompanyId(primary, companyByName),
           standingRemark: trimToNull(primary.customerRemark) ?? undefined,
-          prepaidBarrelBalance,
           addresses: {
             create: addressCreates.map((a) => a.data),
           },
         },
         include: { addresses: true },
       });
-
-      if (barrelsOnSite > 0) {
-        const defaultAddr = customer.addresses.find((a) => a.isDefault) ?? customer.addresses[0];
-        if (defaultAddr) {
-          await target.deliveryAddress.update({
-            where: { id: defaultAddr.id },
-            data: { barrelsOnSite },
-          });
-        }
-      }
 
       await upsertLegacyMap(target, "customer_code", customerCode, customer.id);
 

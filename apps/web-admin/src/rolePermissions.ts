@@ -20,6 +20,7 @@ const aliases: Record<string, string> = {
   "/orders/patrol": "/orders/new", "/orders/liff-review": "/orders/new",
   "/orders/assignment-status": "/orders/assign", "/expenses/today": "/expenses/analytics",
   "/expenses/reports": "/expenses/analytics", "/reports/billing-monthly": "/reports/billing-ar",
+  "/data/legacy-cutover/methods": "/data/legacy-cutover",
 };
 export function canAccessPath(role: string | undefined, path: string): boolean {
   if (!role || role === "driver") return false;

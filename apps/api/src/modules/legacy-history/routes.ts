@@ -1,3 +1,5 @@
+import { resetBatchHandover } from "./batch-reset.js";
+import { batchPreview, postBatchItem } from "./batch.js";
 import type { Express, Request, Response } from "express";
 import { syncLegacyMasters } from "./master-sync.js";
 import type { PrismaClient } from "@prisma/client";
@@ -5,6 +7,7 @@ import { describeDbUrl, getLegacyPrisma, resolveLegacyDatabaseUrl } from "./clie
 import { getLegacyOrderDetail, listLegacyOrdersForCustomer, listLegacyUsualProductPrices } from "./queries.js";
 import { legacyCustomersWithOrders } from "./order-presence.js";
 import { applyCustomerHandover, buildCustomerDraft, buildHandover, keepHandedOver, mergeDraft, readHandover, saveHandover, saveCustomerDraft, saveCustomerEdits, customerVersion, totals, validationErrors } from "./handover.js";
+import { buildHandoverMethodReport } from "./method-report.js";
 
 type AuthUser = {
   id: bigint;
@@ -47,12 +50,12 @@ export function registerLegacyHistoryRoutes(args: RegisterArgs): void {
   let syncingMasters = false;
   app.post("/api/legacy-history/sync-masters", async (req, res) => {
     if (!requireRole(req, res, ["admin"])) return;
-    if (syncingMasters) { res.status(409).json({ ok: false, message: "同步進行中，請稍後再試。" }); return; }
+    if (syncingMasters || job?.running || resetting) { res.status(409).json({ ok: false, message: "同步進行中，請稍後再試。" }); return; }
     const legacy = getLegacyPrisma();
     if (!legacy) { res.status(503).json({ ok: false, message: "未設定舊庫連線" }); return; }
     syncingMasters = true;
-    try { res.json({ ok: true, data: await syncLegacyMasters(legacy, prisma) }); }
-    catch (e) { console.error("Master sync failed", e); res.status(409).json({ ok: false, message: "同步失敗，所有變更已回復。請檢查舊庫連線、資料長度及舊新對照後重試。" }); }
+    try { const data = await syncLegacyMasters(legacy, prisma, true); job = null; res.json({ ok: true, data }); }
+    catch (e) { console.error("Master sync failed", e); res.status(409).json({ ok: false, message: e instanceof Error && e.message.includes("客戶已有") ? e.message : "同步失敗，所有變更已回復。請檢查舊庫連線、資料長度及舊新對照後重試。" }); }
     finally { syncingMasters = false; }
   });
 
@@ -164,6 +167,99 @@ export function registerLegacyHistoryRoutes(args: RegisterArgs): void {
       if (!row?.noLegacyOrders) throw new Error("此客戶已完成交接，未重新入帳或改為流失");
       res.json({ ok: true, data: { customerCode, completed: true } });
     } catch (e) { handoverError(res, e); }
+  });
+
+  type Job = { total: number; processed: number; succeeded: number; running: boolean; errors: {code:string; reason:string}[] };
+  let job: Job | null = null;
+  let stopRequested = false;
+  let resetting = false;
+  app.post("/api/legacy-cutover/batch/stop", (req,res) => {
+    if (!requireRole(req,res,["admin","accounting"])) return;
+    if (job?.running) stopRequested = true;
+    res.json({ok:true,data:job});
+  });
+  app.get("/api/legacy-cutover/batch", (req,res) => {
+    if (!requireRole(req,res,["admin","accounting"])) return;
+    res.setHeader("Cache-Control","no-store");
+    res.json({ok:true,data:job});
+  });
+  app.post("/api/legacy-cutover/batch/:action", async (req,res) => {
+    const auth = requireRole(req,res,["admin","accounting"]);
+    if (!auth) return;
+    const legacy = getLegacyPrisma();
+    const date = parseYmd(req.body?.startDate);
+    if (!legacy || !date) { res.status(400).json({ok:false,message:"請檢查舊庫連線與日期"}); return; }
+    try {
+      if (req.params.action === "reset") {
+        if (job?.running || resetting || syncingMasters) throw new Error("請等目前作業停止");
+        if (req.body?.confirmReset !== true) throw new Error("請確認還原已交接客戶");
+        resetting = true;
+        try {
+          const count = await resetBatchHandover(prisma);
+          job = null;
+          res.json({ok:true,data:{count}});
+        } finally { resetting = false; }
+        return;
+      }
+      if (resetting || syncingMasters) throw new Error("交接還原或客戶同步中");
+      if (req.params.action === "preview") {
+        const {report,items} = await batchPreview(legacy,prisma,date);
+        res.json({ok:true,data:{...report,rows:items.map(i=>({...i.method,eligibility:i.reason,version:i.version}))}});
+        return;
+      }
+      if (req.params.action !== "start") { res.sendStatus(404); return; }
+      const versions = req.body?.versions;
+      if (!Array.isArray(versions) || !versions.length || versions.length>20000 || versions.some(v=>typeof v!=="string" || !/^[a-f0-9]{64}$/.test(v))) throw new Error("請重新產生預覽");
+      if (job?.running) throw new Error("已有批次執行中");
+      const requested = new Set<string>(versions);
+      const current:Job = {total:requested.size,processed:0,succeeded:0,running:true,errors:[]};
+      stopRequested=false;
+      job=current;
+      res.json({ok:true,data:current});
+      try {
+        const {items}=await batchPreview(legacy,prisma,date);
+        const selected=items.filter(i=>requested.has(i.version) && !i.reason);
+        current.processed=current.total-selected.length;
+        if(current.processed) current.errors.push({code:"",reason:current.processed+" 位資料已變更或已完成，請重新分析"});
+        for(const item of selected) {
+          if (stopRequested) { current.errors.push({code:"",reason:"已停止交接"}); break; }
+          try { await postBatchItem(legacy,prisma,item,date,auth.id); current.succeeded++; }
+          catch(e) {current.errors.push({code:item.code,reason:e instanceof Error?e.message:"交接失敗"});}
+          current.processed++;
+        }
+      } catch(e) {current.errors.push({code:"",reason:e instanceof Error?e.message:"批次失敗"});}
+      finally {current.running=false;}
+    } catch(e) {handoverError(res,e);}
+  });
+
+  app.get("/api/legacy-cutover/manual/options", async (req,res) => {
+    if (!requireRole(req,res,["admin","accounting"])) return;
+    const legacy = getLegacyPrisma();
+    const date = parseYmd(req.query.date);
+    const code = String(req.query.code ?? "");
+    if (!legacy || !date || !/^\d{6}$/.test(code)) {res.status(400).json({ok:false,message:"請確認客戶及截止日"});return;}
+    try {
+      const [report,products] = await Promise.all([
+        buildHandoverMethodReport(legacy,prisma,date,code),
+        prisma.product.findMany({where:{isActive:true,consumesPrepaidBarrel:true,productCode:{not:null}},select:{productCode:true,name:true},orderBy:{productCode:"asc"}}),
+      ]);
+      res.json({ok:true,data:{products,candidates:report.rows.find(r=>r.code===code)?.productCandidates ?? []}});
+    } catch(e) {handoverError(res,e);}
+  });
+
+  let buildingMethodReport = false;
+  app.post("/api/legacy-cutover/handover/method-report", async (req, res) => {
+    if (!requireRole(req, res, ["admin", "accounting"])) return;
+    const legacy = getLegacyPrisma();
+    if (!legacy) { res.status(503).json({ ok: false, message: "未設定舊庫連線" }); return; }
+    if (buildingMethodReport) { res.status(409).json({ ok: false, message: "報表正在產生，請稍後再按一次。" }); return; }
+    const startDate = parseYmd(req.body?.startDate);
+    if (!startDate) { res.status(400).json({ ok: false, message: "請輸入有效的啟用日期" }); return; }
+    buildingMethodReport = true;
+    res.setHeader("Cache-Control", "no-store");
+    try { res.json({ ok: true, data: await buildHandoverMethodReport(legacy, prisma, startDate) }); }
+    catch (e) { handoverError(res, e); }
+    finally { buildingMethodReport = false; }
   });
 
   app.get("/api/legacy-history/status", async (req, res) => {

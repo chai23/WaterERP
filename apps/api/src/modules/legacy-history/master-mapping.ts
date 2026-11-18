@@ -11,8 +11,6 @@ type OldCustomerRow = {
   customerInvoice: string;
   customerBillAddress: string;
   customerCollectMoney: string;
-  customerBucket: string;
-  customerRemain: string;
   areaId: string;
   areaId2: string;
   company: string;
@@ -238,8 +236,6 @@ export async function loadLegacyCustomers(legacy: PrismaClient): Promise<OldCust
       customer_invoice,
       customer_bill_address,
       customer_collect_money,
-      customer_bucket,
-      customer_remain,
       area_id,
       area_id_2,
       company,
@@ -265,8 +261,6 @@ export async function loadLegacyCustomers(legacy: PrismaClient): Promise<OldCust
       customerInvoice: String(r.customer_invoice ?? ""),
       customerBillAddress: String(r.customer_bill_address ?? ""),
       customerCollectMoney: String(r.customer_collect_money ?? ""),
-      customerBucket: String(r.customer_bucket ?? ""),
-      customerRemain: String(r.customer_remain ?? ""),
       areaId: String(r.area_id ?? ""),
       areaId2: String(r.area_id_2 ?? ""),
       company: String(r.company ?? ""),

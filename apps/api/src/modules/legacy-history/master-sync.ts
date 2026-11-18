@@ -1,3 +1,4 @@
+import { resetHandoverInTransaction } from "./batch-reset.js";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   loadLegacyAreas,
@@ -48,7 +49,7 @@ async function referencedIds(tx: Tx, column: "delivery_address_id" | "customer_i
 }
 
 /** Master fields only. Never writes opening balances, ledgers, orders or receipts. */
-export async function syncLegacyMasters(legacy: PrismaClient, target: PrismaClient) {
+export async function syncLegacyMasters(legacy: PrismaClient, target: PrismaClient, restartHandover = false) {
   const [rows, areas] = await Promise.all([loadLegacyCustomers(legacy), loadLegacyAreas(legacy)]);
   const { groups, invalid } = groupRows(rows);
   if (!groups.length) throw new Error("舊系統沒有可同步的客戶，未變更任何資料。");
@@ -60,7 +61,9 @@ export async function syncLegacyMasters(legacy: PrismaClient, target: PrismaClie
     UNIQUE KEY uk_legacy_map (entity_type, legacy_key)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
   return target.$transaction(async (tx) => {
+    if (restartHandover) await tx.$queryRaw`SELECT id FROM cutover_handover WHERE id=1 FOR UPDATE`;
     await tx.$queryRaw`SELECT id FROM customers ORDER BY id FOR UPDATE`;
+    const handoverReset = restartHandover ? await resetHandoverInTransaction(tx, true) : 0;
     const maps = await tx.$queryRaw<MapRow[]>`SELECT entity_type, legacy_key, new_id, meta_json FROM legacy_id_map WHERE entity_type IN ('customer_code', 'customer_id', 'sync_address', 'area', 'affiliated_company') FOR UPDATE`;
     const map = new Map(maps.map((m) => [`${m.entity_type}:${m.legacy_key}`, m]));
     const keysByOwner = new Map<string, string[]>();
@@ -278,6 +281,6 @@ export async function syncLegacyMasters(legacy: PrismaClient, target: PrismaClie
       await tx.$executeRaw`DELETE FROM legacy_id_map WHERE entity_type = 'customer_id' AND new_id = ${customer.id}`;
       result.customersDeleted++;
     }
-    return result;
+    return {...result,handoverReset};
   }, { timeout: 540000, maxWait: 10000, isolationLevel: "Serializable" });
 }

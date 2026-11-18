@@ -51,6 +51,7 @@ export type LegacyOrderSummary = {
 
 export type LegacyOrderDetail = LegacyOrderSummary & {
   lines: Array<{
+    billingLabel: string | null; collected: boolean;
     productIndex: string | null;
     productId: string | null;
     productName: string | null;
@@ -298,6 +299,7 @@ export async function getLegacyOrderDetail(
   return {
     ...summary,
     lines: lines.map((ln) => ({
+      billingLabel: ln.collect_money?.trim() || null, collected: asBool(ln.collect_OK),
       productIndex: ln.product_index ? String(ln.product_index).trim() : null,
       productId: ln.product_id ? String(ln.product_id).trim() : null,
       productName: ln.product_name ? String(ln.product_name).trim() : null,

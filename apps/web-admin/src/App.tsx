@@ -22,7 +22,8 @@ const BarrelPickupSettlePage = lazy(() => import("./pages/BarrelPickupSettlePage
 const BarrelPickupQueryPage = lazy(() => import("./pages/BarrelPickupQueryPage"));
 const DataCustomersPage = lazy(() => import("./pages/DataCustomersPage"));
 const CustomerLegacyOrdersPage = lazy(() => import("./pages/CustomerLegacyOrdersPage"));
-const LegacyCutoverPage = lazy(() => import("./pages/LegacyCutoverPage"));
+
+const HandoverMethodReportPage = lazy(() => import("./pages/HandoverMethodReportPage"));
 const DataDriversPage = lazy(() => import("./pages/DataDriversPage"));
 const DataProductsPage = lazy(() => import("./pages/DataProductsPage"));
 const DataVehiclesPage = lazy(() => import("./pages/DataVehiclesPage"));
@@ -99,7 +100,8 @@ export default function App() {
               <Route path="data" element={<Navigate to="/data/customers" replace />} />
               <Route path="data/customers" element={<DataCustomersPage />} />
               <Route path="data/legacy-orders" element={<CustomerLegacyOrdersPage />} />
-              <Route path="data/legacy-cutover" element={<LegacyCutoverPage />} />
+              <Route path="data/legacy-cutover" element={<HandoverMethodReportPage />} />
+              <Route path="data/legacy-cutover/methods" element={<HandoverMethodReportPage />} />
               <Route path="data/drivers" element={<DataDriversPage />} />
               <Route path="data/products" element={<DataProductsPage />} />
               <Route path="data/vehicles" element={<DataVehiclesPage />} />

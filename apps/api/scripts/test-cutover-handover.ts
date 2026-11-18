@@ -75,8 +75,8 @@ try {
     await db.customer.create({ data: { customerCode: "000004", name: "無異常批次核對客戶", addresses: { create: { addressLine: "測試地址 4", isDefault: true } } } });
     await legacy.$executeRawUnsafe("INSERT INTO customer VALUES ('4','4','無異常批次核對客戶','0','0','')");
   }
-  await legacy.$executeRawUnsafe("CREATE TABLE `order`(order_id VARCHAR(128), customer_id VARCHAR(20), order_day DATETIME, order_OK VARCHAR(10), collect_OK VARCHAR(10), collect_money VARCHAR(20), subtotal VARCHAR(30))");
-  await legacy.$executeRawUnsafe("INSERT INTO `order` VALUES ('CASH','1','2026-09-20','True','False','現金','1000'),('BILLED','1','2026-09-25','True','False','月結','1000'),('PENDING','2','2026-09-30 23:59:59','True','False','月結','300'),('PENDING-TAX','2','2026-09-26','True','False','月結','210'),('DELIVERY','1','2026-09-29','False','False','現金','200'),('PAID','1','2026-09-25','True','True','現金','500'),('AFTER','1','2026-10-02','True','False','現金','700')");
+  await legacy.$executeRawUnsafe("CREATE TABLE `order`(order_id VARCHAR(128), customer_id VARCHAR(20), order_day DATETIME, order_OK VARCHAR(10), collect_OK VARCHAR(10), collect_money VARCHAR(20), subtotal VARCHAR(30), product_name VARCHAR(100) NULL)");
+  await legacy.$executeRawUnsafe("INSERT INTO `order` (order_id,customer_id,order_day,order_OK,collect_OK,collect_money,subtotal) VALUES ('CASH','1','2026-09-20','True','False','現金','1000'),('BILLED','1','2026-09-25','True','False','月結','1000'),('PENDING','2','2026-09-30 23:59:59','True','False','月結','300'),('PENDING-TAX','2','2026-09-26','True','False','月結','210'),('DELIVERY','1','2026-09-29','False','False','現金','200'),('PAID','1','2026-09-25','True','True','現金','500'),('AFTER','1','2026-10-02','True','False','現金','700')");
   await legacy.$executeRawUnsafe("CREATE TABLE remittance_list(order_id VARCHAR(128), remittance_day DATETIME, money VARCHAR(30))");
   await legacy.$executeRawUnsafe("INSERT INTO remittance_list VALUES ('CASH','2026-09-30 23:59:59','200'),('PAID','2026-09-26','500')");
   await legacy.$executeRawUnsafe("CREATE TABLE money_over_short(customer_id VARCHAR(20), money VARCHAR(30))");
@@ -108,7 +108,7 @@ try {
     await new Promise<void>(resolve => { process.once("SIGINT", resolve); process.once("SIGTERM", resolve); });
   } else {
     assert.equal(validDay("2026-02-30"), false); assert.equal(validDay("2026-02-28"), true); ok("calendar dates validated");
-    await legacy.$executeRawUnsafe("INSERT INTO `order` VALUES ('SAME-DAY','2','2026-10-01 23:59:59','True','False','月結','205')");
+    await legacy.$executeRawUnsafe("INSERT INTO `order` (order_id,customer_id,order_day,order_OK,collect_OK,collect_money,subtotal) VALUES ('SAME-DAY','2','2026-10-01 23:59:59','True','False','月結','205')");
     await legacy.$executeRawUnsafe("INSERT INTO remittance_list VALUES ('SAME-DAY','2026-10-01 23:59:59','5')");
     const boundary = await buildHandover(legacy, db, "2026-10-01");
     assert.equal(boundary.cutoffDate, "2026-10-01");
@@ -134,7 +134,7 @@ try {
     await legacy.$executeRawUnsafe("UPDATE `order` SET subtotal='+1000' WHERE order_id='CASH'");
     assert.equal((await buildHandover(legacy, db, "2026-10-01")).rows[0]!.orders.find(o => o.id === "CASH")!.outstanding, 800);
     await legacy.$executeRawUnsafe("UPDATE `order` SET subtotal='1000' WHERE order_id='CASH'"); ok("legacy signed number format accepted without changing amount");
-    await legacy.$executeRawUnsafe("INSERT INTO `order` VALUES ('PAID-DELIVERY','1','2026-09-28','False','True','現金','100')");
+    await legacy.$executeRawUnsafe("INSERT INTO `order` (order_id,customer_id,order_day,order_OK,collect_OK,collect_money,subtotal) VALUES ('PAID-DELIVERY','1','2026-09-28','False','True','現金','100')");
     await legacy.$executeRawUnsafe("INSERT INTO remittance_list VALUES ('PAID-DELIVERY','2026-09-28','100')");
     assert((await buildHandover(legacy, db, "2026-10-01")).rows[0]!.orders.some(o => o.id === "PAID-DELIVERY" && o.disposition === "exclude"));
     await legacy.$executeRawUnsafe("DELETE FROM `order` WHERE order_id='PAID-DELIVERY'");
@@ -193,13 +193,29 @@ try {
     const receipt = await api("/ar/receipt-vouchers", { customerId: "1", amount: 1800, paymentMethod: "cash", paidAtYmd: "2026-10-02" });
     assert.equal(receipt.status, 201, JSON.stringify(receipt));
     assert.equal((await db.arOpenItem.aggregate({ where: { customerId: 1n }, _sum: { outstandingAmount: true } }))._sum.outstandingAmount?.toString(), "0"); ok("real receipt API settles carried opening receivables");
-    await legacy.$executeRawUnsafe("INSERT INTO customer VALUES ('9','9','單戶交接客戶','1','0','單戶地址')");
+    await legacy.$executeRawUnsafe("INSERT INTO customer VALUES ('9','9','單戶交接客戶','1','-3','單戶地址')");
+    await legacy.$executeRawUnsafe("INSERT INTO `order` (order_id,customer_id,order_day,order_OK,collect_OK,collect_money,subtotal,product_name) VALUES ('FORMAL-MONTHLY','9','2026-09-30','False','False','現金','2331','月結單'),('MONTHLY-REMINDER','9','2026-10-01','False','False','現金','2331','未收款月結單2026-09-30')");
     const single = await db.customer.create({ data: { customerCode: "000009", name: "單戶交接客戶", addresses: { create: { addressLine: "單戶地址", isDefault: true, barrelsOnSite: 4 } } } });
     await db.$executeRawUnsafe("UPDATE cutover_handover SET status='draft'");
     const singleDraft = checked(await buildHandover(legacy, db, "2026-10-01", "000009"));
     assert.equal(singleDraft.rows.length, 1); assert.equal(singleDraft.rows[0]!.addresses[0]!.barrels, 1);
     const singleSaved = await saveHandover(db, (await readHandover(db)).revision, singleDraft, 1n);
-    const singleApplied = await applyCustomerHandover(legacy, db, singleSaved.revision, 1n, "9");
+    const products = await Promise.all(["190","191"].map(productCode => db.product.create({data:{productCode,name:productCode,consumesPrepaidBarrel:true}})));
+    const savedRow = singleSaved.snapshot!.rows[0]!;
+    const allocation = {products:[{code:"190",barrels:-2},{code:"191",barrels:-1}],unassignedReason:"",allowOverdraft:true};
+    const edited = await saveCustomerEdits(db,{rows:[{...savedRow,version:customerVersion(singleSaved.snapshot!,savedRow),prepaidAllocation:allocation}]},1n);
+    const singleApplied = await applyCustomerHandover(legacy, db, edited.revision, 1n, "9");
+    const formal = singleApplied.snapshot!.rows[0]!.orders;
+    assert.deepEqual(formal.map(o=>[o.id,o.disposition,o.completed]),[["FORMAL-MONTHLY","monthly_billed",false]]);
+    const formalAR = await db.arDocument.findMany({where:{customerId:single.id}});
+    assert.equal(formalAR.length,1);
+    assert.equal(formalAR[0]!.billingType,"monthly");
+    assert.equal(formalAR[0]!.documentAmount.toString(),"2331");
+    const balances = await db.customerPrepaidProductBalance.findMany({where:{customerId:single.id}});
+    assert.equal(balances.length,2);
+    assert.equal(balances.find(b=>b.productId===products[0]!.id)?.balanceBarrels,-2);
+    assert.equal(balances.find(b=>b.productId===products[1]!.id)?.balanceBarrels,-1);
+    assert.equal((await db.customer.findUniqueOrThrow({where:{id:single.id}})).allowPrepaidOverdraft,true);
     assert.equal(singleApplied.status, "draft");
     assert.equal(singleApplied.snapshot!.rows.find(r => r.code === "000009")!.handedOver, true);
     assert.ok((await db.customer.findUniqueOrThrow({ where: { id: single.id } })).handoverCompletedAt);
@@ -287,7 +303,7 @@ try {
     ok("same-customer target mutation blocks posting; unrelated customer mutation does not");
     await legacy.$executeRawUnsafe("INSERT INTO customer VALUES ('20','20','無單承接','5','12','無單地址'),('21','21','已付歷史','0','0',''),('22','22','未來歷史','0','0',''),('23','23','新增歷史','0','0',''),('24','24','分址歷史','0','0',''),('000099-1','24','別名地址','0','0','')");
     await legacy.$executeRawUnsafe("INSERT INTO money_over_short VALUES ('20','50')");
-    await legacy.$executeRawUnsafe("INSERT INTO `order` VALUES ('OLDPAID','21','2020-01-01','True','True','現金','100'),('FUTURE','22','2099-01-01','True','True','現金','100'),('ALIAS','99-1','2020-01-01','True','True','現金','100')");
+    await legacy.$executeRawUnsafe("INSERT INTO `order` (order_id,customer_id,order_day,order_OK,collect_OK,collect_money,subtotal) VALUES ('OLDPAID','21','2020-01-01','True','True','現金','100'),('FUTURE','22','2099-01-01','True','True','現金','100'),('ALIAS','99-1','2020-01-01','True','True','現金','100')");
     const autoCustomer = await db.customer.create({ data: { customerCode: "000020", name: "無單承接", prepaidBarrelBalance: 12, addresses: { create: { addressLine: "無單地址", barrelsOnSite: 5, isDefault: true } } } });
     for (const code of ["000021", "000022", "000023", "000024"]) await db.customer.create({ data: { customerCode: code, name: code } });
     for (const customerCode of ["000020", "000021", "000022", "000023", "000024"]) {
@@ -333,7 +349,7 @@ try {
     assert.equal(await db.customerLedgerEntry.count({ where: { customerId: autoCustomer.id } }), autoLedgerCount);
     assert.equal(await db.customerLifecycleEvent.count({ where: { customerId: autoCustomer.id, eventType: "churned" } }), 1);
     const late = preview.data.rows.find((r: any) => r.code === "000023");
-    await legacy.$executeRawUnsafe("INSERT INTO `order` VALUES ('LATE','23','2099-01-01','True','True','現金','100')");
+    await legacy.$executeRawUnsafe("INSERT INTO `order` (order_id,customer_id,order_day,order_OK,collect_OK,collect_money,subtotal) VALUES ('LATE','23','2099-01-01','True','True','現金','100')");
     assert.equal((await api("/legacy-cutover/handover/auto-no-orders", { customerCode: "000023", customerVersion: late.version })).status, 409);
     const alreadyDone = autoSnapshot.rows.find(r => r.code === "000014")!;
     assert.equal((await api("/legacy-cutover/handover/auto-no-orders", { customerCode: "000014", customerVersion: customerVersion(autoSnapshot, alreadyDone) })).status, 409);
