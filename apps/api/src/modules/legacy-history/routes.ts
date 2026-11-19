@@ -1,4 +1,4 @@
-import { resetBatchHandover } from "./batch-reset.js";
+import { HandoverResetBlocked, resetBatchHandover } from "./batch-reset.js";
 import { batchPreview, postBatchItem } from "./batch.js";
 import type { Express, Request, Response } from "express";
 import { syncLegacyMasters } from "./master-sync.js";
@@ -55,7 +55,7 @@ export function registerLegacyHistoryRoutes(args: RegisterArgs): void {
     if (!legacy) { res.status(503).json({ ok: false, message: "未設定舊庫連線" }); return; }
     syncingMasters = true;
     try { const data = await syncLegacyMasters(legacy, prisma, true); job = null; res.json({ ok: true, data }); }
-    catch (e) { console.error("Master sync failed", e); res.status(409).json({ ok: false, message: e instanceof Error && e.message.includes("客戶已有") ? e.message : "同步失敗，所有變更已回復。請檢查舊庫連線、資料長度及舊新對照後重試。" }); }
+    catch (e) { console.error("Master sync failed", e); res.status(409).json({ ok: false, message: e instanceof HandoverResetBlocked ? e.message : "同步失敗，所有變更已回復。請檢查舊庫連線、資料長度及舊新對照後重試。" }); }
     finally { syncingMasters = false; }
   });
 

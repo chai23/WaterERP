@@ -565,9 +565,9 @@
 .order-create-page .order-new__invoice-summary span { white-space:nowrap; }
 .order-create-page .order-new__invoice-no { display:inline-flex; align-items:center; gap:6px; }
 .order-create-page .order-new__invoice-no input { width:9.5rem; min-height:32px; padding:4px 8px; }
-:root[data-theme] .order-create-page .order-new__checkout-summary { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--bg-app); }
-:root[data-theme] .order-create-page .order-new__checkout-summary .order-new__totals-bar { margin-left:auto; padding:0; border:0; background:transparent; }
-:root[data-theme] .order-create-page .order-new__checkout-summary .order-new__invoice-summary { flex:1 0 100%; width:auto; margin:0; padding:8px 0 0; border:0; border-top:1px solid var(--border); border-radius:0; background:transparent; }
+:root[data-theme] .order-create-page .order-new__checkout-summary { display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; padding:6px 10px; border:1px solid var(--border); border-radius:8px; background:var(--bg-app); }
+:root[data-theme] .order-create-page .order-new__checkout-summary .order-new__totals-bar { margin:0; padding:0; border:0; background:transparent; text-align:left; }
+:root[data-theme] .order-create-page .order-new__checkout-summary .order-new__invoice-summary { flex:1 1 auto; width:auto; min-width:0; margin:0; padding:0; border:0; border-radius:0; background:transparent; gap:6px 10px; }
 /* Center the short remark field and align slogans with the submit action. */
 .order-create-compact .order-new__lines-extras-remark { display:flex; flex-direction:column; align-items:center; gap:10px; }
 .order-create-compact .order-new__field--remark { width:100%; max-width:560px; }
@@ -637,3 +637,67 @@
 @media (min-width:1100px) and (max-width:1399px) {
   .order-create-compact .order-new__workspace { height:330px; }
 }
+
+.order-create-compact .order-lines { container: order-line-list / inline-size; }
+.order-create-compact .order-lines__head .order-lines__col--flags { display:none; }
+
+@container order-line-list (min-width: 680px) {
+  .order-create-compact .order-lines__head,
+  .order-create-compact .order-lines__row {
+    display:grid;
+    grid-template-columns:minmax(0,1fr) 88px 68px 54px 64px 42px 182px;
+    align-items:center;
+    gap:7px;
+    padding:5px 10px;
+  }
+  .order-create-compact .order-lines__head .order-lines__col--flags { display:block; }
+  .order-create-compact .order-lines__main { display:contents; }
+  .order-create-compact .order-lines__row .order-lines__remove {
+    width:100%;
+    min-height:26px;
+    padding:3px 4px;
+    font-size:12px;
+    line-height:1.2;
+    white-space:nowrap;
+  }
+  .order-create-compact .order-lines__product-main { flex-wrap:nowrap; gap:6px; }
+  .order-create-compact .order-lines__product-main .order-new__product-code { width:3.75rem; }
+  .order-create-compact .order-lines__product-main .order-new__line-help {
+    flex:1 1 0;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    font-size:12px;
+  }
+  .order-create-compact .order-line-flags {
+    grid-column:7;
+    flex-wrap:nowrap;
+    gap:8px;
+    margin:0;
+    padding:0;
+  }
+  .order-create-compact .order-line-flag { gap:4px; font-size:12px; }
+}
+
+@media (min-width:1000px) {
+  :root[data-theme] .order-create-page .order-new__checkout-summary {
+    flex-wrap:nowrap;
+    gap:8px;
+    overflow-x:auto;
+  }
+  :root[data-theme] .order-create-page .order-new__checkout-summary .order-new__totals-bar {
+    flex:none;
+    white-space:nowrap;
+  }
+  :root[data-theme] .order-create-page .order-new__checkout-summary .order-new__invoice-summary {
+    flex:1 0 auto;
+    flex-wrap:nowrap;
+    gap:8px;
+    white-space:nowrap;
+  }
+  .order-create-page .order-new__checkout-summary .order-new__invoice-no input { width:8.5rem; }
+}
+
+.order-create-error-dialog { width:min(480px,calc(100% - 32px)); max-height:calc(100% - 32px); margin:auto; color:var(--text); }
+.order-create-error-dialog::backdrop { background:rgba(15,23,42,.54); }
+.order-create-error-dialog p { overflow-wrap:anywhere; }

@@ -190,6 +190,7 @@ export type DashboardContextValue = {
   selectedCustomer: Customer | undefined;
   saving: boolean;
   formMessage: string;
+  clearFormMessage: () => void;
   form: {
     customerId: string;
     deliveryAddressId: string;
@@ -723,7 +724,6 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       setForm((prev) => ({
         ...prev,
         lines: [newOrderFormLine(defaultLineBillingForCustomer(selectedCustomer))],
-        scheduledDeliveryDate: todayLocalYmd(),
         remark: "",
         cashInvoiceMode: "none",
         externalInvoiceNo: "",
@@ -994,6 +994,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     selectedCustomer,
     saving,
     formMessage,
+    clearFormMessage: () => setFormMessage(""),
     form,
     setForm,
     onSubmitCreateOrder,

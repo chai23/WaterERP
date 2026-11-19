@@ -1,5 +1,7 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 
+export class HandoverResetBlocked extends Error {}
+
 export async function resetBatchHandover(db: PrismaClient) {
   return db.$transaction(tx => resetHandoverInTransaction(tx),{isolationLevel:"Serializable",timeout:120000});
 }
@@ -19,7 +21,12 @@ export async function resetHandoverInTransaction(tx: Prisma.TransactionClient, c
         tx.barrelMovement.count({where:{customerId}}),
         tx.$queryRaw<{n:bigint}[]>`SELECT COUNT(*) AS n FROM cutover_monthly_items m JOIN customers c ON c.id=m.customer_id WHERE c.handover_completed_at IS NOT NULL AND m.billing_statement_id IS NOT NULL`,
       ]);
-      if (orders || receipts || otherLedger || otherAR || otherWallet || otherEvents || movements || claimed[0]?.n) throw new Error("已交接客戶有後續交易或狀態異動，請先核對再重新交接");
+      const conflicts = [
+        ["新系統訂單", orders], ["收款憑證", receipts], ["帳務流水", otherLedger],
+        ["應收單", otherAR], ["預收交易", otherWallet], ["客戶狀態異動", otherEvents],
+        ["桶數異動", movements], ["已結帳的月結承接", claimed[0]?.n ?? 0n],
+      ].filter(([,count])=>Number(count)>0).map(([label,count])=>`${label} ${count} 筆`);
+      if (conflicts.length) throw new HandoverResetBlocked(`已交接客戶有後續交易或狀態異動（${conflicts.join("、")}），請先核對再重新交接`);
       await tx.$executeRaw`DELETE m FROM cutover_monthly_items m JOIN customers c ON c.id=m.customer_id WHERE c.handover_completed_at IS NOT NULL`;
       await tx.arOpenItem.deleteMany({where:{customerId}});
       await tx.arDocument.deleteMany({where:{customerId,documentType:"opening_balance"}});
@@ -49,7 +56,7 @@ export async function resetHandoverInTransaction(tx: Prisma.TransactionClient, c
           tx.barrelMovement.count({where:{customerId}}),
           tx.customerPrepaidProductBalance.count({where:{customerId}}),
         ]);
-        if (orders || ledger || movements || products) throw new Error("未交接客戶已有桶數交易，無法歸零同步");
+        if (orders || ledger || movements || products) throw new HandoverResetBlocked("未交接客戶已有桶數交易，無法歸零同步");
         await tx.customer.updateMany({where:{id:{in:pendingIds}},data:{prepaidBarrelBalance:0,barrelsOnSite:0}});
         await tx.deliveryAddress.updateMany({where:{customerId},data:{barrelsOnSite:0}});
       }

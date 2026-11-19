@@ -248,7 +248,8 @@ function legacyPriceNote(p: LegacyUsualProduct): string | null {
   return `最近 ${latestWhen}${latestBill} 單價為 0，正確價格取自 ${from}${fromBill} 的訂單。`;
 }
 
-type OrderLineField = "code" | "billing" | "price" | "qty";
+const orderLineFields = ["code", "billing", "price", "qty", "gift", "topup", "replenishment"] as const;
+type OrderLineField = typeof orderLineFields[number];
 
 function lineFieldKey(rowId: string, field: OrderLineField): string {
   return `${rowId}-${field}`;
@@ -265,12 +266,20 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
     products,
     saving,
     formMessage,
+    clearFormMessage,
     form,
     setForm,
     onSubmitCreateOrder,
     selectedCustomer,
     refreshMasters,
   } = useDashboard();
+  const errorDialog = useRef<HTMLDialogElement>(null);
+  const orderCreated = formMessage.startsWith("建立成功");
+  const submitError = orderCreated ? "" : formMessage;
+  useEffect(() => {
+    const dialog = errorDialog.current;
+    if (dialog && submitError && !dialog.open) dialog.showModal();
+  }, [submitError]);
   const [billingSummary, setBillingSummary] = useState<CustomerBillingSummary | null>(null);
   const [lastPriceMap, setLastPriceMap] = useState<Record<string, { unitPrice: string; orderedAt: string }>>({});
   const [summaryLoading, setSummaryLoading] = useState(false);
@@ -322,7 +331,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
     requestAnimationFrame(() => {
       const el = lineFieldRefs.current[lineFieldKey(rowId, field)];
       el?.focus();
-      if (el instanceof HTMLInputElement && field !== "billing") {
+      if (el instanceof HTMLInputElement && el.type !== "checkbox") {
         el.select();
       }
     });
@@ -861,7 +870,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
 
   const handleLineFieldEnter = useCallback(
     (e: React.KeyboardEvent, rowId: string, field: OrderLineField) => {
-      if (e.key !== "Enter") return;
+      if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
       e.preventDefault();
       e.stopPropagation();
 
@@ -870,17 +879,14 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
 
       if (field === "code") {
         const digits = (lineProductCodes[rowId] ?? "").trim();
-        if (/^\d{3}$/.test(digits) && resolveProductByCode(activeProducts, digits)) {
-          focusLineField(rowId, "billing");
-        }
-        return;
+        if (!/^\d{3}$/.test(digits) || !resolveProductByCode(activeProducts, digits)) return;
       }
-      if (field === "billing") {
-        focusLineField(rowId, "price");
-        return;
-      }
-      if (field === "price") {
-        focusLineField(rowId, "qty");
+      const nextField = orderLineFields.slice(orderLineFields.indexOf(field) + 1).find(candidate => {
+        const element = lineFieldRefs.current[lineFieldKey(rowId, candidate)];
+        return element && !element.matches(":disabled");
+      });
+      if (nextField) {
+        focusLineField(rowId, nextField);
         return;
       }
       const idx = form.lines.findIndex((ln) => ln.id === rowId);
@@ -900,16 +906,11 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
   );
 
   const onOrderLinesKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key !== "Enter") return;
+    if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
     if ((e.target as HTMLElement).closest(".order-lines-field")) {
       e.preventDefault();
     }
   }, []);
-
-  const addLine = () => {
-    const def = parseLineBilling(selectedCustomer?.billingType);
-    setForm((f) => ({ ...f, lines: [...f.lines, newOrderFormLine(def)] }));
-  };
 
   const removeLine = (id: string) => {
     setForm((f) => {
@@ -944,6 +945,12 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
                     className="order-new__input-code"
                     placeholder="6 碼編號或關鍵字"
                     value={customerKeyword}
+                    onKeyDown={(e) => {
+                      if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
+                      e.preventDefault();
+                      const first = form.lines[0];
+                      if (selectedCustomer && first) focusLineField(first.id, "code");
+                    }}
                     onChange={(e) => {
                       setCustomerKeyword(e.target.value);
                       if (!e.target.value.trim()) setForm((f) => ({ ...f, customerId: "", deliveryAddressId: "" }));
@@ -1247,6 +1254,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
               <span className="order-lines__col order-lines__col--qty">數量</span>
               <span className="order-lines__col order-lines__col--sub">小計</span>
               <span className="order-lines__col order-lines__col--act" />
+              <span className="order-lines__col order-lines__col--flags">配送選項</span>
             </div>
             {form.lines.map((row, idx) => (
               <div key={row.id} className="order-lines__row">
@@ -1258,7 +1266,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
                         inputMode="numeric"
                         maxLength={3}
                         className="mono-text order-new__product-code"
-                        placeholder="例 001"
+                        placeholder="001"
                         value={lineProductCodes[row.id] ?? ""}
                         ref={setLineFieldRef(row.id, "code")}
                         onChange={(e) => {
@@ -1291,7 +1299,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
                         if (matched) {
                           const last = row.productId ? lastPriceMap[row.productId] : undefined;
                           return (
-                            <span className="order-new__line-help order-new__line-help--product">
+                            <span className="order-new__line-help order-new__line-help--product" title={`${matched.name} · 售價 $ ${matched.salePrice}${matched.unit ? `／${matched.unit}` : ""}${last ? ` · 上次 ${last.orderedAt ? fmtLocalYmd(last.orderedAt) + " · " : ""}$ ${last.unitPrice}` : ""}`}>
                               <strong>{matched.name}</strong>
                               <span className="order-new__line-help__sep">·</span>
                               售價 <strong>$ {matched.salePrice}</strong>
@@ -1381,7 +1389,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
                 {selectedCustomer ? (
                   <div className="order-line-flags">
                     <label className={`order-line-flag${row.isManualGift ? " order-line-flag--on" : ""}`} title="免費贈送，仍計實際配送與空桶；不觸發活動贈品">
-                      <input type="checkbox" checked={row.isManualGift} aria-label={`第 ${idx + 1} 列贈送`}
+                      <input type="checkbox" ref={setLineFieldRef(row.id, "gift")} onKeyDown={(e) => handleLineFieldEnter(e, row.id, "gift")} checked={row.isManualGift} aria-label={`第 ${idx + 1} 列贈送`}
                         onChange={(e) => {
                           const on = e.target.checked;
                           const p = activeProducts.find((x) => String(x.id) === row.productId);
@@ -1401,6 +1409,8 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
                     >
                       <input
                         type="checkbox"
+                        ref={setLineFieldRef(row.id, "topup")}
+                        onKeyDown={(e) => handleLineFieldEnter(e, row.id, "topup")}
                         checked={row.linePurpose === "prepaid_barrel_topup"}
                         disabled={row.isReplenishment || row.isManualGift}
                         onChange={(e) => {
@@ -1420,6 +1430,8 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
                     >
                       <input
                         type="checkbox"
+                        ref={setLineFieldRef(row.id, "replenishment")}
+                        onKeyDown={(e) => handleLineFieldEnter(e, row.id, "replenishment")}
                         checked={row.isReplenishment}
                         disabled={row.linePurpose === "prepaid_barrel_topup" || row.isManualGift}
                         onChange={(e) => {
@@ -1452,11 +1464,8 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
             ))}
           </div>
           <div className="order-lines__toolbar order-new__checkout-summary">
-            <button type="button" className="btn btn--secondary btn--sm" onClick={addLine} disabled={form.lines.length >= 30}>
-              ＋ 新增商品列
-            </button>
             <div className="order-new__totals-bar order-lines__total">
-              預計合計（依售價）：<strong>$ {estimatedTotal.toLocaleString()}</strong>
+              預計合計 <strong>$ {estimatedTotal.toLocaleString()}</strong>
               {estimatedTotal > 0 && (lineBillingMix || estimatedByBilling.cash > 0) ? (
                 <>
                   {" "}
@@ -1532,11 +1541,7 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
                   <button type="submit" className="btn btn--primary" disabled={saving}>
                     {saving ? "建立中..." : "建立訂單"}
                   </button>
-                  {formMessage ? (
-                    <span className={formMessage.includes("成功") ? "feedback feedback--ok" : "feedback feedback--err"}>
-                      {formMessage}
-                    </span>
-                  ) : null}
+                  {orderCreated && <span className="feedback feedback--ok" role="status">{formMessage}</span>}
                 </div>
               </div>
             </div>
@@ -1623,6 +1628,13 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
               focusLineField(productPickerRowId, "billing");
             }} />
         )}
+        <dialog ref={errorDialog} className="modal-card order-create-error-dialog" aria-labelledby="order-create-error-title" aria-describedby="order-create-error-detail" onClose={clearFormMessage}>
+          <h2 id="order-create-error-title" className="modal-card__title">無法建立訂單</h2>
+          <p id="order-create-error-detail">{submitError}</p>
+          <div className="modal-card__actions">
+            <button type="button" className="btn btn--primary" autoFocus onClick={() => errorDialog.current?.close()}>關閉</button>
+          </div>
+        </dialog>
       </form>
   );
 

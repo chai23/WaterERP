@@ -248,7 +248,7 @@ export async function buildHandoverMethodReport(legacy: PrismaClient, target: Pr
   const source = await legacy.$transaction(async tx => {
     const customers = await tx.$queryRawUnsafe<Array<Record<string, unknown>>>("SELECT customer_id, customer_id_mark, customer_name, customer_bucket, customer_remain FROM customer" + customerFilter + " ORDER BY customer_id");
     const lines = await tx.$queryRawUnsafe<Array<Record<string, unknown>>>(
-      "SELECT order_id, customer_id, TRIM(order_OK) AS order_ok, TRIM(collect_OK) AS collect_ok, TRIM(collect_money) AS collect_money, subtotal, TRIM(product_name) AS product_name FROM `order` WHERE (order_day < DATE_ADD(?, INTERVAL 1 DAY) OR order_day IS NULL) AND " + member + " ORDER BY order_id, customer_id, subtotal",
+      "SELECT order_id, customer_id, TRIM(order_OK) AS order_ok, TRIM(collect_OK) AS collect_ok, TRIM(collect_money) AS collect_money, subtotal, TRIM(product_name) AS product_name FROM `order` WHERE (order_day < DATE_ADD(?, INTERVAL 1 DAY) OR order_day IS NULL) AND " + member + " ORDER BY order_id, customer_id, subtotal, collect_money, collect_OK, order_OK, product_name, order_day",
       cutoffDate,
     );
     const receipts = await tx.$queryRawUnsafe<Array<Record<string, unknown>>>(

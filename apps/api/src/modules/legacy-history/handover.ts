@@ -137,7 +137,7 @@ async function sourceState(legacy: PrismaClient, startDate: string, customerCode
       ...(customerCode ? [...ids, ...ids] : []),
     );
     const orders = await tx.$queryRawUnsafe<any[]>(
-      `SELECT order_id, customer_id, order_day, order_OK, collect_OK, collect_money, subtotal, product_name FROM \`order\` WHERE (order_day < DATE_ADD(?, INTERVAL 1 DAY) OR order_day IS NULL)${orderWhere} ORDER BY order_id, customer_id, subtotal`,
+      `SELECT order_id, customer_id, order_day, order_OK, collect_OK, collect_money, subtotal, product_name FROM \`order\` WHERE (order_day < DATE_ADD(?, INTERVAL 1 DAY) OR order_day IS NULL)${orderWhere} ORDER BY order_id, customer_id, subtotal, collect_money, collect_OK, order_OK, product_name, order_day`,
       startDate, ...(customerCode ? ids : []),
     );
     const receipts = customerCode
