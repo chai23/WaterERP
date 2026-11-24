@@ -1,3 +1,4 @@
+import { MoneyInput } from "../../../shared-ui/MoneyInput";
 import { canAccessPath } from "../rolePermissions";
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "../AuthContext";
@@ -298,10 +299,8 @@ export default function DataDriversPage() {
                       />
                     </td>
                     <td>
-                      <input
-                        type="number"
+                      <MoneyInput
                         min={0}
-                        step="0.01"
                         className="input--compact"
                         style={{ width: "6rem" }}
                         value={edit.baseSalary}

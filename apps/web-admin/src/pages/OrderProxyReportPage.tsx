@@ -1,3 +1,4 @@
+import { MoneyInput } from "../../../shared-ui/MoneyInput";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useDashboard } from "../DashboardContext";
@@ -1130,10 +1131,8 @@ export default function OrderProxyReportPage() {
                                   <label className="proxy-report-collect__field">
                                     <span>實收現金</span>
                                     <div className="proxy-report-collect__input">
-                                      <input
-                                        type="number"
+                                      <MoneyInput
                                         min={0}
-                                        step="0.01"
                                         value={form.cashReceived}
                                         onFocus={(e) => e.currentTarget.select()}
                                         onChange={(e) => updateForm(id, { cashReceived: Number(e.target.value) || 0 })}
@@ -1144,10 +1143,8 @@ export default function OrderProxyReportPage() {
                                   <label className="proxy-report-collect__field">
                                     <span>實收支票</span>
                                     <div className="proxy-report-collect__input">
-                                      <input
-                                        type="number"
+                                      <MoneyInput
                                         min={0}
-                                        step="0.01"
                                         value={form.checkReceived}
                                         onFocus={(e) => e.currentTarget.select()}
                                         onChange={(e) => updateForm(id, { checkReceived: Number(e.target.value) || 0 })}

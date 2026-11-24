@@ -1,3 +1,4 @@
+import { MoneyInput } from "../../shared-ui/MoneyInput";
 import { useCallback, useEffect, useState } from "react";
 
 function todayYmd(): string {
@@ -217,10 +218,8 @@ export default function ServiceTicketTab({ authHeaders }: Props) {
                     </label>
                     <label>
                       現場費用（可略）
-                      <input
-                        type="number"
+                      <MoneyInput
                         min={0}
-                        step="1"
                         value={feeByJob[id] ?? ""}
                         onChange={(e) => setFeeByJob((p) => ({ ...p, [id]: e.target.value }))}
                         placeholder="0"

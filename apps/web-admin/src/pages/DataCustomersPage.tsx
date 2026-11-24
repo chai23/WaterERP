@@ -1,3 +1,4 @@
+import { MoneyInput } from "../../../shared-ui/MoneyInput";
 import { canAccessPath } from "../rolePermissions";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
@@ -1607,7 +1608,7 @@ export default function DataCustomersPage() {
                 ) : null}
                 <div className="field">
                   <span>信用額度</span>
-                  <input type="number" min={0} step="0.01" value={creditLimit} onChange={(e) => setCreditLimit(e.target.value)} />
+                  <MoneyInput min={0} value={creditLimit} onChange={(e) => setCreditLimit(e.target.value)} />
                 </div>
                 {billingType === "prepaid" ? (
                   <p className="card__hint customer-edit-section__hint">
@@ -2576,7 +2577,7 @@ export default function DataCustomersPage() {
                     ) : null}
                     <div className="field">
                       <span>信用額度</span>
-                      <input type="number" min={0} step="0.01" value={editBasicCredit} onChange={(e) => setEditBasicCredit(e.target.value)} />
+                      <MoneyInput min={0} value={editBasicCredit} onChange={(e) => setEditBasicCredit(e.target.value)} />
                     </div>
                     {editBasicBilling === "prepaid" ? (
                       <p className="card__hint customer-edit-section__hint">

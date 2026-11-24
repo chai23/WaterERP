@@ -1,3 +1,4 @@
+import { MoneyInput } from "../../../shared-ui/MoneyInput";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { moneyText } from "../adminUtils";
@@ -161,7 +162,7 @@ export default function ManualHandoverPage({code,date,reason,onCompleted}: {code
       <fieldset className="card handover-panel" disabled={busy || needsRefresh}>
         <legend>核對客戶餘額</legend>
         <div className="handover-toolbar">
-          <label className="handover-field">短溢收（來源 {moneyText(row.sourceOverShort ?? 0)}）<input type="number" step="0.01" value={row.prepayment ?? ""} onChange={e=>edit({prepayment:e.target.value==="" ? null : Number(e.target.value)})}/></label>
+          <label className="handover-field">短溢收（來源 {moneyText(row.sourceOverShort ?? 0)}）<MoneyInput value={row.prepayment ?? ""} onChange={e=>edit({prepayment:e.target.value==="" ? null : Number(e.target.value)})}/></label>
           <label className="handover-field">預付桶總數（來源 {row.sourcePrepaidBarrels}）<input type="number" step="1" value={row.prepaidBarrels} onChange={e=>edit({prepaidBarrels:Number(e.target.value)})}/></label>
         </div>
         <div className="manual-allocation">
@@ -219,7 +220,7 @@ export default function ManualHandoverPage({code,date,reason,onCompleted}: {code
             <label className="handover-field">處理方式<select value={o.disposition} onChange={e=>editOrder(o.id,{disposition:e.target.value})}>
               {!o.monthlyKind && <><option value="cash">一般未收款</option><option value="monthly_pending">月結尚未出帳</option></>}{o.monthlyKind !== "mixed" && <option value="monthly_billed">月結已出帳未收</option>}<option value="exclude">排除／另行處理</option>
             </select></label>
-            <label className="handover-field">承接金額<input type="number" min="0" step="0.01" value={o.finalAmount} onChange={e=>editOrder(o.id,{finalAmount:Number(e.target.value)})}/></label>
+            <label className="handover-field">承接金額<MoneyInput min="0" value={o.finalAmount} onChange={e=>editOrder(o.id,{finalAmount:Number(e.target.value)})}/></label>
             <label className="handover-field">到期日<input type="date" value={o.dueDate} onChange={e=>editOrder(o.id,{dueDate:e.target.value})}/></label>
             {o.disposition==="monthly_pending" && <label className="handover-field">發票方式<select value={o.invoiceMode} onChange={e=>editOrder(o.id,{invoiceMode:e.target.value})}><option value="none">免開</option><option value="tax_inclusive">含稅</option><option value="tax_exclusive">外加稅</option></select></label>}
           </div>

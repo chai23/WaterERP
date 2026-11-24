@@ -1,3 +1,4 @@
+import { MoneyInput } from "../../../shared-ui/MoneyInput";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { billingTypeLabel, matchCustomerQuery, moneyText, todayLocalYmd } from "../adminUtils";
@@ -694,7 +695,7 @@ export default function BillingArPage() {
                   <div className="form-row-2">
                     <div className="field">
                       <span>收款金額</span>
-                      <input type="number" min={0} step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
+                      <MoneyInput min={0} value={amount} onChange={(e) => setAmount(e.target.value)} />
                     </div>
                   </div>
                   <div className="form-actions">
@@ -1071,7 +1072,7 @@ export default function BillingArPage() {
                     </div>
                     <div className="field">
                       <span>儲值金額</span>
-                      <input type="number" min={0} step="0.01" value={topupAmount} onChange={(e) => setTopupAmount(e.target.value)} />
+                      <MoneyInput min={0} value={topupAmount} onChange={(e) => setTopupAmount(e.target.value)} />
                     </div>
                   </div>
                   <div className="form-row-2">
@@ -1112,7 +1113,7 @@ export default function BillingArPage() {
                   <div className="form-row-2">
                     <div className="field">
                       <span>扣抵金額</span>
-                      <input type="number" min={0} step="0.01" value={applyAmount} onChange={(e) => setApplyAmount(e.target.value)} />
+                      <MoneyInput min={0} value={applyAmount} onChange={(e) => setApplyAmount(e.target.value)} />
                     </div>
                     <div className="form-actions">
                       <button type="submit" className="btn btn--primary" disabled={loading || !applyOpenItemId}>

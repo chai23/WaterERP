@@ -1,3 +1,4 @@
+import { MoneyInput } from "../../../shared-ui/MoneyInput";
 import { useCallback, useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useDashboard } from "../DashboardContext";
@@ -758,10 +759,8 @@ export default function ServiceTicketsPage() {
                   {onsiteAdminOutcome === "onsite_fixed" ? (
                     <label className="field">
                       <span>現場維修費用</span>
-                      <input
-                        type="number"
+                      <MoneyInput
                         min={0}
-                        step="1"
                         value={onsiteFeeAmount}
                         onChange={(e) => setOnsiteFeeAmount(e.target.value)}
                         placeholder="例如 800"
@@ -861,7 +860,7 @@ export default function ServiceTicketsPage() {
                   </label>
                   <label className="field">
                     <span>報價金額</span>
-                    <input value={quoteAmount} onChange={(e) => setQuoteAmount(e.target.value)} placeholder="例如 1200" />
+                    <MoneyInput value={quoteAmount} onChange={(e) => setQuoteAmount(e.target.value)} placeholder="例如 1200" />
                   </label>
                   <label className="field field--span2">
                     <span>報價說明</span>

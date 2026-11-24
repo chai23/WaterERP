@@ -1,3 +1,4 @@
+import { MoneyInput } from "../../../shared-ui/MoneyInput";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { newOrderFormLine, useDashboard, type LineBillingType, type LinePurpose } from "../DashboardContext";
@@ -1338,10 +1339,8 @@ export default function OrderNewPage({ embedded = false }: OrderNewPageProps) {
                     </select>
                   </div>
                   <div className="order-lines__col order-lines__col--price">
-                    <input
-                      type="number"
+                    <MoneyInput
                       min={0}
-                      step="0.01"
                       ref={setLineFieldRef(row.id, "price")}
                       disabled={row.isManualGift}
                       value={row.unitPrice}

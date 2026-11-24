@@ -1,3 +1,4 @@
+import { MoneyInput } from "../../shared-ui/MoneyInput";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import "./driver-ui.css";
@@ -1084,20 +1085,16 @@ export default function App() {
                       </label>
                       <label className="d-inline">
                         現場現金
-                        <input
-                          type="number"
+                        <MoneyInput
                           min={0}
-                          step="0.01"
                           value={form.cashReceived}
                           onChange={(e) => updateForm(id, { cashReceived: Number(e.target.value) || 0 })}
                         />
                       </label>
                       <label className="d-inline">
                         現場支票
-                        <input
-                          type="number"
+                        <MoneyInput
                           min={0}
-                          step="0.01"
                           value={form.checkReceived}
                           onChange={(e) => updateForm(id, { checkReceived: Number(e.target.value) || 0 })}
                         />

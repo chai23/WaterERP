@@ -1,3 +1,4 @@
+import { MoneyInput } from "../../../shared-ui/MoneyInput";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../AuthContext";
@@ -403,10 +404,8 @@ export default function ExpenseNewPage() {
                   </label>
                   <label className="expense-lines__cell">
                     <span className="expense-lines__label">單價</span>
-                    <input
-                      type="number"
+                    <MoneyInput
                       min={0}
-                      step="0.01"
                       value={line.unitPrice}
                       onChange={(e) => updateLine(line.id, { unitPrice: e.target.value })}
                       disabled={readOnly || saving}

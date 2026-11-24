@@ -1,3 +1,4 @@
+import { MoneyInput } from "../../../shared-ui/MoneyInput";
 import { useCallback, useEffect, useMemo, useState, Fragment } from "react";
 import { moneyText } from "../adminUtils";
 import { formatDeliveryFloor } from "../floorBonusUtils";
@@ -605,7 +606,7 @@ export default function FloorDeliveryBonusQueryPage() {
               <h3 className="payroll-rates__title">回收空桶</h3>
               <div className="field" style={{ maxWidth: "14rem", marginBottom: 0 }}>
                 <span>單價（元／桶）</span>
-                <input type="number" min={0} step="0.01" value={emptyWage} onChange={(e) => setEmptyWage(e.target.value)} />
+                <MoneyInput min={0} value={emptyWage} onChange={(e) => setEmptyWage(e.target.value)} />
               </div>
             </section>
 
@@ -623,10 +624,8 @@ export default function FloorDeliveryBonusQueryPage() {
                       <div key={`${row.floor}-${idx}`} style={{ display: "flex", alignItems: "center", gap: "0.75rem", padding: "0.375rem 0.5rem", background: "var(--bg-muted, #f7f8fa)", borderRadius: 6 }}>
                         <strong style={{ minWidth: "5rem" }}>{formatDeliveryFloor(Number(row.floor))}</strong>
                         <span style={{ flex: 1 }}>
-                          <input
-                            type="number"
+                          <MoneyInput
                             min={0}
-                            step="0.01"
                             className="input--compact"
                             style={{ width: "6rem", textAlign: "right" }}
                             value={row.wage}
@@ -665,10 +664,8 @@ export default function FloorDeliveryBonusQueryPage() {
                 </div>
                 <div className="field" style={{ margin: 0 }}>
                   <span>單價</span>
-                  <input
-                    type="number"
+                  <MoneyInput
                     min={0}
-                    step="0.01"
                     value={newFloorWage}
                     onChange={(e) => setNewFloorWage(e.target.value)}
                     style={{ width: "6.5rem" }}
@@ -694,10 +691,8 @@ export default function FloorDeliveryBonusQueryPage() {
                       <div key={`fee-${row.floor}-${idx}`} style={{ display: "flex", alignItems: "center", gap: "0.75rem", padding: "0.375rem 0.5rem", background: "var(--bg-muted, #f7f8fa)", borderRadius: 6 }}>
                         <strong style={{ minWidth: "5rem" }}>{formatDeliveryFloor(Number(row.floor))}</strong>
                         <span style={{ flex: 1 }}>
-                          <input
-                            type="number"
+                          <MoneyInput
                             min={0}
-                            step="0.01"
                             className="input--compact"
                             style={{ width: "6rem", textAlign: "right" }}
                             value={row.unitPrice}
@@ -734,10 +729,8 @@ export default function FloorDeliveryBonusQueryPage() {
                 </div>
                 <div className="field" style={{ margin: 0 }}>
                   <span>客戶單價</span>
-                  <input
-                    type="number"
+                  <MoneyInput
                     min={0}
-                    step="0.01"
                     value={newCustomerPrice}
                     onChange={(e) => setNewCustomerPrice(e.target.value)}
                     style={{ width: "6.5rem" }}
@@ -788,10 +781,8 @@ export default function FloorDeliveryBonusQueryPage() {
                     </td>
                     <td>{d.name}</td>
                     <td className="num">
-                      <input
-                        type="number"
+                      <MoneyInput
                         min={0}
-                        step="0.01"
                         className="input--compact"
                         style={{ width: "7rem", textAlign: "right" }}
                         value={baseDraft[d.driverId] ?? d.baseSalary}

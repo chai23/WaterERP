@@ -1,3 +1,4 @@
+import { MoneyInput } from "../../../shared-ui/MoneyInput";
 import { useEffect, useMemo, useState } from "react";
 import type { Product } from "../adminUtils";
 import { useDashboard } from "../DashboardContext";
@@ -300,20 +301,16 @@ export default function DataProductsPage() {
               <div className="form-row-2">
                 <div className="field">
                   <span>售價</span>
-                  <input
-                    type="number"
+                  <MoneyInput
                     min={0}
-                    step="0.01"
                     value={productForm.salePrice}
                     onChange={(e) => setProductForm({ ...productForm, salePrice: e.target.value })}
                   />
                 </div>
                 <div className="field">
                   <span>參考成本</span>
-                  <input
-                    type="number"
+                  <MoneyInput
                     min={0}
-                    step="0.01"
                     value={productForm.costPrice}
                     onChange={(e) => setProductForm({ ...productForm, costPrice: e.target.value })}
                   />
@@ -322,10 +319,8 @@ export default function DataProductsPage() {
               <div className="form-row-2">
                 <div className="field">
                   <span>司機配送薪資（元／單位）</span>
-                  <input
-                    type="number"
+                  <MoneyInput
                     min={0}
-                    step="0.01"
                     value={productForm.driverDeliveryWage}
                     onChange={(e) => setProductForm({ ...productForm, driverDeliveryWage: e.target.value })}
                   />
@@ -542,16 +537,16 @@ export default function DataProductsPage() {
               <div className="form-row-2">
                 <div className="field">
                   <span>售價</span>
-                  <input type="number" min={0} step="0.01" value={editForm.salePrice} onChange={(e) => setEditForm({ ...editForm, salePrice: e.target.value })} />
+                  <MoneyInput min={0} value={editForm.salePrice} onChange={(e) => setEditForm({ ...editForm, salePrice: e.target.value })} />
                 </div>
                 <div className="field">
                   <span>參考成本</span>
-                  <input type="number" min={0} step="0.01" value={editForm.costPrice} onChange={(e) => setEditForm({ ...editForm, costPrice: e.target.value })} />
+                  <MoneyInput min={0} value={editForm.costPrice} onChange={(e) => setEditForm({ ...editForm, costPrice: e.target.value })} />
                 </div>
               </div>
               <div className="field">
                 <span>司機配送薪資（元／單位）</span>
-                <input type="number" min={0} step="0.01" value={editForm.driverDeliveryWage} onChange={(e) => setEditForm({ ...editForm, driverDeliveryWage: e.target.value })} />
+                <MoneyInput min={0} value={editForm.driverDeliveryWage} onChange={(e) => setEditForm({ ...editForm, driverDeliveryWage: e.target.value })} />
               </div>
             </div>
             <div className="modal-card__actions">
