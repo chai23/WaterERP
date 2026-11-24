@@ -40,8 +40,11 @@ try {
   const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap(e => e.isDirectory() ? walk(path.join(dir, e.name)) : e.name.endsWith(".ts") ? [path.join(dir, e.name)] : []);
   for (const file of walk(path.join(root, "apps/api/src"))) {
     for (const match of fs.readFileSync(file, "utf8").matchAll(/app\.(get|post|put|patch|delete)\("(\/api\/[^"?]+)"/g)) {
-      const required = apiPermissions(match[1]!.toUpperCase(), match[2]!.replace(/:[A-Za-z]+/g, "1"));
-      assert(required === null || required.length > 0, `Unmapped: ${match[1]} ${match[2]}`);
+      const route = match[2]!;
+      // The print agent authenticates with its own agent credentials.
+      if (route.startsWith("/api/print-agent/")) continue;
+      const required = apiPermissions(match[1]!.toUpperCase(), route.replace(/:[A-Za-z]+/g, "1"));
+      assert(required === null || required.length > 0, `Unmapped: ${match[1]} ${route}`);
       for (const key of required ?? []) assert(catalog.some(m => m.key === key), `Unknown menu ${key}`);
     }
   }
@@ -55,7 +58,7 @@ try {
   assert.equal(canAccessPath("warehouse", "/expenses/edit/1"), true);
   assert.equal(canAccessPath("warehouse", "/unknown"), false);
   assert.equal(canAccessPath("driver", "/overview"), false);
-  pass("38 menus and direct URLs gated; all API routes explicitly mapped");
+  pass("38 menus and direct URLs gated; back-office API routes explicitly mapped");
   const bad = defaults(); bad.driver["orders.new"] = true; assert.throws(() => validateMatrix(bad));
   const locked = defaults(); locked.admin.overview = false; assert.throws(() => validateMatrix(locked));
   pass("admin and driver invariants validated");

@@ -6844,14 +6844,20 @@ async function runOfficeSettlementApprove(
 
     if (outcome === "not_delivered") {
       const result = await prisma.$transaction(async (tx) => {
-        await tx.deliveryAssignment.update({
-          where: { id: assignmentId },
+        const orderClaim = await tx.$queryRaw<Array<{ id: bigint }>>`
+          SELECT id FROM sales_orders
+          WHERE id = ${order.id} AND lock_version = ${order.lockVersion} AND status = ${order.status}
+          FOR UPDATE`;
+        if (orderClaim.length !== 1) throw new Error("任務狀態已變更，請重新整理後再操作");
+        const claimed = await tx.deliveryAssignment.updateMany({
+          where: { id: assignmentId, status: assignment.status, updatedAt: assignment.updatedAt },
           data: {
             status: "not_delivered",
             completedAt: settledAt,
             officeSettledAt: settledAt,
           } as Prisma.DeliveryAssignmentUpdateInput,
         });
+        if (claimed.count !== 1) throw new Error("任務狀態已變更，請重新整理後再操作");
 
         await tx.salesOrder.update({
           where: { id: assignment.salesOrderId },
@@ -6984,14 +6990,20 @@ async function runOfficeSettlementApprove(
     const expected = order.totalAmount;
 
     const result = await prisma.$transaction(async (tx) => {
-      await tx.deliveryAssignment.update({
-        where: { id: assignmentId },
+      const orderClaim = await tx.$queryRaw<Array<{ id: bigint }>>`
+        SELECT id FROM sales_orders
+        WHERE id = ${order.id} AND lock_version = ${order.lockVersion} AND status = ${order.status}
+        FOR UPDATE`;
+      if (orderClaim.length !== 1) throw new Error("任務狀態已變更，請重新整理後再操作");
+      const claimed = await tx.deliveryAssignment.updateMany({
+        where: { id: assignmentId, status: assignment.status, updatedAt: assignment.updatedAt },
         data: {
           status: "completed",
           completedAt: settledAt,
           officeSettledAt: settledAt,
         } as Prisma.DeliveryAssignmentUpdateInput,
       });
+      if (claimed.count !== 1) throw new Error("任務狀態已變更，請重新整理後再操作");
 
       const topupAlreadyPosted = await tx.customerLedgerEntry.findFirst({
         where: { salesOrderId: assignment.salesOrderId, entryType: "prepaid_topup" },
@@ -7275,6 +7287,9 @@ async function runOfficeSettlementApprove(
     };
   } catch (e) {
     const msg = String(e);
+    if (msg === "任務狀態已變更，請重新整理後再操作") {
+      return { ok: false as const, httpStatus: 409, message: msg };
+    }
     if (msg.includes("PREPAID_INSUFFICIENT:")) {
       const [, pName, need, avail] = msg.split(":");
       return {
@@ -10202,9 +10217,26 @@ app.post("/api/sales-orders/:salesOrderId/confirm-review", async (req, res) => {
   }
 });
 
+app.get("/api/driver/report-products", async (_req, res) => {
+  try {
+    const products = await prisma.product.findMany({
+      where: {
+        isActive: true,
+        salePrice: { gt: 0 },
+        OR: [{ productCode: null }, { productCode: { notIn: ["201", "202"] } }],
+      },
+      select: { id: true, name: true, unit: true, salePrice: true, consumesPrepaidBarrel: true },
+      orderBy: { name: "asc" },
+    });
+    res.json(products);
+  } catch (e) {
+    res.status(500).json({ ok: false, message: publicErrorMessage(e) });
+  }
+});
+
 app.post("/api/driver/confirm-line-deliveries", async (req, res) => {
   try {
-    const body = req.body as { assignmentId?: unknown; lines?: unknown };
+    const body = req.body as { assignmentId?: unknown; lines?: unknown; append?: unknown; orderVersion?: unknown };
     const assignmentId = toBigInt(body.assignmentId);
     if (!assignmentId) {
       res.status(400).json({ ok: false, message: "參數錯誤：assignmentId 必填" });
@@ -10218,7 +10250,8 @@ app.post("/api/driver/confirm-line-deliveries", async (req, res) => {
     const assignment = await prisma.deliveryAssignment.findUnique({
       where: { id: assignmentId },
       include: {
-        salesOrder: {
+        events: { where: { eventType: "line_delivery_confirm" }, select: { payloadJson: true } },
+      salesOrder: {
           include: { lines: true, customer: true },
         },
       },
@@ -10241,16 +10274,46 @@ app.post("/api/driver/confirm-line-deliveries", async (req, res) => {
       return;
     }
 
+    const append = body.append as { productId?: unknown; qty?: unknown; billingType?: unknown } | undefined;
+    const productId = toBigInt(append?.productId);
+    const qty = Number(append?.qty);
+    const billingType = append?.billingType;
+    if (append !== undefined && (
+      !productId || !Number.isSafeInteger(qty) || qty < 1 || qty > 2147483647 ||
+      (billingType !== "cash" && billingType !== "monthly" && billingType !== "prepaid") ||
+      !Number.isInteger(body.orderVersion)
+    )) {
+      res.status(400).json({ ok: false, message: "請選擇商品、結帳方式及有效數量，並重新載入最新訂單。" });
+      return;
+    }
+    if (append && (!auth || !["assigned", "delivering"].includes(assignment.status))) {
+      res.status(409).json({ ok: false, message: "請在提交配送回報前追加商品。" });
+      return;
+    }
+
     const order = assignment.salesOrder;
     const parsed = parseLineDeliveriesFromBody(body.lines, order.lines);
     if (!parsed.ok) {
       res.status(400).json({ ok: false, message: parsed.message });
       return;
     }
-    const hasTbdQty = order.lines.some(
-      (l) => (l.linePurpose ?? "delivery") === "delivery" && l.qtyOrdered === 0,
-    );
-    if (hasTbdQty && parsed.lines.some((l) => l.qtyDelivered <= 0)) {
+    const appendedIds = new Set(assignment.events.flatMap(({ payloadJson }) => {
+      if (payloadJson && typeof payloadJson === "object" && !Array.isArray(payloadJson) &&
+          typeof payloadJson.appendedLineId === "string") return [payloadJson.appendedLineId];
+      return [];
+    }));
+    const removedIds = parsed.lines
+      .filter((line) => line.qtyDelivered === 0 && appendedIds.has(line.lineId.toString()))
+      .map((line) => line.lineId);
+    if (removedIds.length && !["assigned", "delivering"].includes(assignment.status)) {
+      res.status(409).json({ ok: false, message: "請在提交配送回報前撤銷追加商品。" });
+      return;
+    }
+    const quantitiesById = new Map(parsed.lines.map((line) => [line.lineId, line.qtyDelivered]));
+    if (order.lines.some((line) =>
+      (line.linePurpose ?? "delivery") === "delivery" &&
+      line.qtyOrdered === 0 && (quantitiesById.get(line.id) ?? 0) <= 0,
+    )) {
       res.status(400).json({ ok: false, message: "開單數量為 0（待定）的品項，須填寫實際配送桶數" });
       return;
     }
@@ -10275,7 +10338,92 @@ app.post("/api/driver/confirm-line-deliveries", async (req, res) => {
         lineAmount: l.lineAmount.toString(),
       }));
 
-      await applyLineDeliveriesAtReport(tx, order, parsed.lines);
+      if (body.orderVersion !== undefined && body.orderVersion !== order.lockVersion) {
+        throw new Error("任務狀態已變更，請重新整理後再操作");
+      }
+      const versionClaim = await tx.salesOrder.updateMany({
+        where: { id: order.id, lockVersion: order.lockVersion, status: order.status },
+        data: { lockVersion: { increment: 1 } },
+      });
+      if (versionClaim.count !== 1) throw new Error("任務狀態已變更，請重新整理後再操作");
+
+      let orderForTotals = order;
+      let appendedLineId: string | undefined;
+      if (removedIds.length) {
+        await tx.salesOrderLine.deleteMany({ where: { salesOrderId: order.id, id: { in: removedIds } } });
+        parsed.lines = parsed.lines.filter((line) => !removedIds.includes(line.lineId));
+      }
+      if (productId && typeof billingType === "string") {
+        const product = await tx.product.findUnique({ where: { id: productId } });
+        if (!product?.isActive || ["201", "202"].includes(product.productCode ?? "") || product.salePrice.lessThanOrEqualTo(0) ||
+            (billingType === "prepaid" && !product.consumesPrepaidBarrel)) {
+          throw new Error("REPORT_APPEND_PRODUCT_INVALID");
+        }
+        const line = await tx.salesOrderLine.create({
+          data: {
+            salesOrderId: order.id,
+            productId,
+            qtyOrdered: qty,
+            qtyDelivered: qty,
+            unitPrice: product.salePrice,
+            lineAmount: product.salePrice.mul(qty),
+            billingTypeAtLine: billingType,
+            linePurpose: "delivery",
+            invoiceMode: billingType === "cash" ? normalizeLineInvoiceMode(order.cashInvoiceMode) : null,
+          },
+        });
+        appendedLineId = line.id.toString();
+        parsed.lines.push({ lineId: line.id, qtyDelivered: qty });
+
+      }
+
+      if (append || removedIds.length) {
+        const billings = new Set<string>();
+        for (const line of order.lines) {
+          if (removedIds.includes(line.id)) continue;
+          const originalBilling = lineBillingType(line, order, order.customer);
+          billings.add(originalBilling);
+          if (line.billingTypeAtLine == null) {
+            await tx.salesOrderLine.update({
+              where: { id: line.id },
+              data: { billingTypeAtLine: originalBilling },
+            });
+          }
+        }
+        if (typeof billingType === "string") billings.add(billingType);
+        const billingTypeAtOrder = billings.size > 1
+          ? "mixed"
+          : [...billings][0] ?? order.customer.billingType;
+        await tx.salesOrder.update({ where: { id: order.id }, data: { billingTypeAtOrder } });
+        orderForTotals = { ...order, billingTypeAtOrder };
+      }
+
+      if (!order.customer.allowPrepaidOverdraft &&
+          (append || order.lines.some((line) => appendedIds.has(line.id.toString())))) {
+        const lines = await tx.salesOrderLine.findMany({
+          where: { salesOrderId: order.id },
+          include: { product: true },
+        });
+        const quantities = new Map(parsed.lines.map((item) => [item.lineId, item.qtyDelivered]));
+        const topups = sumPrepaidTopupByProduct(lines.map((item) => ({ ...item, qty: item.qtyOrdered })));
+        const needs = new Map<bigint, number>();
+        for (const item of lines) {
+          if ((item.linePurpose ?? "delivery") !== "delivery" || !item.product.consumesPrepaidBarrel ||
+              lineBillingType(item, order, order.customer) !== "prepaid") continue;
+          needs.set(item.productId, (needs.get(item.productId) ?? 0) + (quantities.get(item.id) ?? 0));
+        }
+        const balances = await tx.customerPrepaidProductBalance.findMany({
+          where: { customerId: order.customerId, productId: { in: [...needs.keys()] } },
+        });
+        const available = new Map(balances.map((item) => [item.productId, item.balanceBarrels]));
+        for (const [id, need] of needs) {
+          if (need > (available.get(id) ?? 0) + (topups.get(id) ?? 0)) {
+            throw new Error("REPORT_APPEND_PREPAID_INSUFFICIENT");
+          }
+        }
+      }
+
+      await applyLineDeliveriesAtReport(tx, orderForTotals, parsed.lines);
 
       const orderAfter = await tx.salesOrder.findUniqueOrThrow({
         where: { id: order.id },
@@ -10313,14 +10461,14 @@ app.post("/api/driver/confirm-line-deliveries", async (req, res) => {
         Object.keys(assignmentPatch).length > 0
           ? (
               await tx.deliveryAssignment.updateMany({
-                where: { id: assignmentId, status: assignment.status },
+                where: { id: assignmentId, status: assignment.status, updatedAt: assignment.updatedAt },
                 data: assignmentPatch,
               })
             ).count
           : (
               await tx.$queryRaw<Array<{ id: bigint }>>`
                 SELECT id FROM delivery_assignments
-                WHERE id = ${assignmentId} AND status = ${assignment.status}
+                WHERE id = ${assignmentId} AND status = ${assignment.status} AND updated_at = ${assignment.updatedAt}
                 FOR UPDATE`
             ).length;
       if (claimed !== 1) throw new Error("任務狀態已變更，請重新整理後再操作");
@@ -10331,6 +10479,8 @@ app.post("/api/driver/confirm-line-deliveries", async (req, res) => {
           eventType: "line_delivery_confirm",
           payloadJson: {
             orderNo: order.orderNo,
+            ...(appendedLineId && productId && typeof billingType === "string" ? { appendedLineId, productId: productId.toString(), billingType, qty } : {}),
+            removedAppendedLineIds: removedIds.map(String),
             lineDeliveries: parsed.lines.map((l) => ({
               lineId: l.lineId.toString(),
               qtyDelivered: l.qtyDelivered,
@@ -10416,6 +10566,14 @@ app.post("/api/driver/confirm-line-deliveries", async (req, res) => {
       },
     });
   } catch (e) {
+    if (e instanceof Error && e.message === "REPORT_APPEND_PRODUCT_INVALID") {
+      res.status(400).json({ ok: false, message: "該商品已停用、售價無效或不適用預付扣桶。" });
+      return;
+    }
+    if (e instanceof Error && e.message === "REPORT_APPEND_PREPAID_INSUFFICIENT") {
+      res.status(400).json({ ok: false, message: "本單逐商品預付桶餘額不足，請確認商品及實送數量。" });
+      return;
+    }
     if (e instanceof Error && e.message === "AR_ALREADY_ALLOCATED") {
       res.status(400).json({ ok: false, message: "訂單應收已沖帳，無法變更配送數量" });
       return;
@@ -10432,6 +10590,7 @@ app.post("/api/driver/complete", async (req, res) => {
   try {
     const body = req.body as {
       assignmentId?: unknown;
+      orderVersion?: unknown;
       delivered?: unknown;
       failureReason?: unknown;
       emptyBarrelsReturned?: unknown;
@@ -10592,6 +10751,14 @@ app.post("/api/driver/complete", async (req, res) => {
         : null;
 
     const result = await prisma.$transaction(async (tx) => {
+      if (body.orderVersion !== undefined && body.orderVersion !== order.lockVersion) {
+        throw new Error("任務狀態已變更，請重新整理後再操作");
+      }
+      const versionClaim = await tx.salesOrder.updateMany({
+        where: { id: order.id, lockVersion: order.lockVersion, status: order.status },
+        data: { lockVersion: { increment: 1 } },
+      });
+      if (versionClaim.count !== 1) throw new Error("任務狀態已變更，請重新整理後再操作");
       let cashDue = new Prisma.Decimal(0);
       if (!delivered) {
         await clearCustomerFloorFeeLines(tx, {
@@ -10613,7 +10780,7 @@ app.post("/api/driver/complete", async (req, res) => {
 
       if (!delivered) {
         const reportClaim = await tx.deliveryAssignment.updateMany({
-          where: { id: assignmentId, status: assignment.status },
+          where: { id: assignmentId, status: assignment.status, updatedAt: assignment.updatedAt },
           data: {
             status: "pending_settlement",
             ...(!isAmendPending ? { driverReportedAt: now } : {}),
@@ -10734,7 +10901,7 @@ app.post("/api/driver/complete", async (req, res) => {
       }
 
       const reportClaim = await tx.deliveryAssignment.updateMany({
-        where: { id: assignmentId, status: assignment.status },
+        where: { id: assignmentId, status: assignment.status, updatedAt: assignment.updatedAt },
         data: {
           status: "pending_settlement",
           ...(!isAmendPending ? { driverReportedAt: now } : {}),
@@ -10834,6 +11001,10 @@ app.post("/api/driver/complete", async (req, res) => {
 
     res.json({ ok: true, data: result });
   } catch (e) {
+    if (e instanceof Error && e.message === "任務狀態已變更，請重新整理後再操作") {
+      res.status(409).json({ ok: false, message: e.message });
+      return;
+    }
     if (e instanceof Error && e.message === "AR_ALREADY_ALLOCATED") {
       res.status(400).json({
         ok: false,

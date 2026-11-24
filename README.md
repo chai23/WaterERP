@@ -1,77 +1,72 @@
-# 超好企業進銷存系統 — 桶裝水進銷存
+# WaterERP — 桶裝水進銷存系統
 
-## 技術棧
+npm workspaces 專案，涵蓋客戶、商品、訂單、派單、司機回報、收款核銷、應收帳款、發票、費用、舊系統交接與 LINE LIFF 客戶入口。
 
-- **MySQL 8**：手動建庫後執行 [`database/schema.sql`](database/schema.sql)
-- **後端**：`apps/api` — Node.js + Express + TypeScript + Prisma
-- **前端**：`apps/web-admin`（後台）、`apps/web-driver`（司機端）— React + Vite + TypeScript
+## 專案結構
 
-## 快速開始
+| 目錄 | 用途 | 開發網址 |
+| --- | --- | --- |
+| `apps/api` | Express、TypeScript、Prisma、MySQL API | http://localhost:3000/api/health |
+| `apps/web-admin` | React 19 + Vite 管理後台 | http://localhost:5173 |
+| `apps/web-driver` | React 19 + Vite 司機端 | http://localhost:5174/driver/ |
+| `apps/web-liff` | React 19 + LINE LIFF 客戶端 | http://localhost:5175/liff/ |
+| `database` | 完整 schema、版本遷移、人工維護 SQL | — |
+| `deploy` | Windows 部署腳本與 Nginx 範本 | — |
+| `tools` | Windows WinForms、macOS Swift 啟動器 | — |
+| `docs` | 操作、架構、交接與設計文件 | — |
 
-### 1. 資料庫（手動）
+## 本機開發
 
-1. 在 MySQL 建立資料庫，例如：`CREATE DATABASE water_erp CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`
-2. 執行 `database/schema.sql`（可於 Workbench / CLI：`mysql -u... -p water_erp < database/schema.sql`）
-3. **新伺服器請用這份完整 schema 建庫**；之後若要幫已在跑的庫加欄位，再往 `database/migrations/` 加 `002_*.sql`。
-4. **若為舊庫升級**（原本 `users.phone` 為登入帳號）：請先備份後執行 [`database/migrate_users_employee_code.sql`](database/migrate_users_employee_code.sql)，將登入改為 `employee_code`（員編）、`phone` 改為聯絡手機。
+需要 Node.js（專案宣告 `>=18`，建議 Node.js 22）、npm 與 MySQL 8。以下 PowerShell 指令從根目錄執行：
 
-### 2. 安裝依賴（專案根目錄）
-
-```bash
-npm install
+```powershell
+npm ci
+Copy-Item apps/api/.env.example apps/api/.env
+Copy-Item apps/web-liff/.env.example apps/web-liff/.env
 ```
 
-### 3. API
+僅首次設定時複製，避免覆蓋既有環境檔。編輯 API 的 `DATABASE_URL`、`JWT_SECRET`；使用 LIFF 時另外設定 LINE 參數及 `VITE_LIFF_ID`。參考 [API 環境範本](apps/api/.env.example)、[LIFF 環境範本](apps/web-liff/.env.example)。
 
-```bash
-cd apps/api
-copy .env.example .env
-REM 編輯 .env 填入正確的 DATABASE_URL、JWT_SECRET
-npm run prisma:generate
-npm run dev
+先在 MySQL 建立空資料庫：
+
+```sql
+CREATE DATABASE water_erp CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 ```
 
-預設：<http://localhost:3000>，健康檢查：`GET /api/health`
+透過 MySQL Workbench 或 CLI 將 [database/schema.sql](database/schema.sql) 匯入新建的空庫，再執行：
 
-### 4. 前端（另開終端機，仍在專案根目錄）
-
-```bash
-npm install
-npm run dev:admin    # http://localhost:5173
-npm run dev:driver   # http://localhost:5174
+```powershell
+npm run db:generate
+npm run db:schema-status
+npm run db:schema-apply
+npm run ensure-admin -w apps/api
 ```
 
-根目錄 `npm install` 會安裝所有 workspace 依賴。
+`ensure-admin` 在帳號不存在時建立 `admin / admin123`，建立後立即登入修改密碼。既有庫升級請先備份，再檢查並套用 migrations，不要重新匯入完整建庫 SQL。舊版使用 `users.phone` 登入的資料庫，另見 [員編遷移 SQL](database/migrate_users_employee_code.sql)。
 
-## 目錄說明
+各開一個終端機啟動需要的服務：
 
-| 路徑 | 說明 |
-|------|------|
-| `database/schema.sql` | MySQL 建表與索引（手動執行） |
-| `database/migrate_users_employee_code.sql` | 舊庫：`users` 改為員編登入 + 獨立聯絡手機 |
-| `apps/api` | REST API、Prisma Client |
-| `apps/web-admin` | 後台 React |
-| `apps/web-driver` | 司機端 React |
+```powershell
+npm run dev:api
+npm run dev:admin
+npm run dev:driver
+npm run dev:liff
+```
 
-## 文件
+前端將 `/api` 代理到本機 3000。LIFF 正式登入仍需 LINE 平台設定。
 
-| 路徑 | 說明 |
-|------|------|
-| [`docs/BILLING.md`](docs/BILLING.md) | 三種結帳、流水帳、核銷規則（技術向） |
-| [`docs/USER_GUIDE_CASH_AND_SETTLEMENT.md`](docs/USER_GUIDE_CASH_AND_SETTLEMENT.md) | **現金往來／司機收款／櫃台沖帳**操作教學 |
-| [`tools/WaterErpLauncher/README.md`](tools/WaterErpLauncher/README.md) | Windows 正式機啟動器、服務管理與建置說明 |
-| [`docs/NEW_SERVER_DOMAIN_CUTOVER.md`](docs/NEW_SERVER_DOMAIN_CUTOVER.md) | **把現有網域切到新伺服器**（固定 IP、舊庫轉換、改 DNS） |
+## 建置與部署
 
-## Windows 正式機啟動器
+```powershell
+npm run build
+```
 
-`tools/WaterErpLauncher` 提供分頁式 WinForms 管理介面，每 3 秒監控 MySQL、API、Nginx，
-以及後台、司機端與 LIFF 網站端點。正式機固定使用 API `dist` 與 Nginx 靜態網站，不啟動
-Vite 開發伺服器。
+依序編譯四個 app，輸出至各自的 `dist`。正式機使用 Node.js API 與 Nginx 靜態服務，詳見 [部署指南](deploy/DEPLOY.md)。啟動器建置指令為 `npm run win:launcher` 與 `npm run mac:launcher`。
 
-MySQL 預設以 Windows Service **`MySQL80`** 管理，可在啟動器「設定」分頁修改服務名稱。
-啟停 Windows Service 通常需要以系統管理員身分執行啟動器。「停止應用」只停止 API 與
-Nginx，不會停止 MySQL；資料維護與一鍵部署因此可持續使用資料庫。
+## 文件入口
 
-## Prisma 與手動 SQL
+- [完整文件索引](docs/README.md)
+- [專案架構](docs/ARCHITECTURE.md)
+- [腳本與維護指南](docs/SCRIPTS.md)
 
-`schema.sql` 與 `apps/api/prisma/schema.prisma` 欄位應保持一致。若你**只改資料庫**而不改 Prisma，請同步修改 `schema.prisma` 後執行 `npm run prisma:generate -w apps/api`。
+資料模型變更須同步檢查 `database/schema.sql`、`database/migrations/` 與 `apps/api/prisma/schema.prisma`，再重新產生 Prisma Client。資料清空、重建、舊庫匯入不是一般啟動步驟。
