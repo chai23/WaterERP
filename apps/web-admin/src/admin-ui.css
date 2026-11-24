@@ -2056,6 +2056,7 @@ button.report-flow__step:hover {
 }
 
 .order-lines__row select,
+.order-lines__row input[data-money-input],
 .order-lines__row input[type="number"] {
   width: 100%;
   margin: 0;
