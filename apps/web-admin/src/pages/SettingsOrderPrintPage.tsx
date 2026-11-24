@@ -13,6 +13,7 @@ import {
 } from "../orderPrint";
 import type { FieldPos, LineColumnPos, OrderPrintLayoutV1 } from "../orderPrint";
 import { DesktopOnlyNotice } from "../components/DesktopOnlyNotice";
+import { loadPrintStation, savePrintStation } from "../orderPrint/printOrder";
 
 /** 設定頁預覽縮放（僅螢幕；列印仍 1:1）。0.9 為螢幕略縮小預覽；1 為與版面 mm 同比例。 */
 const ORDER_PRINT_PREVIEW_SCALE = 0.9;
@@ -108,6 +109,22 @@ export default function SettingsOrderPrintPage() {
   const [errMsg, setErrMsg] = useState("");
   const [dragStatus, setDragStatus] = useState("點選欄位後也可用方向鍵微調，按住 Shift 可加快移動。");
   const [previewHtml, setPreviewHtml] = useState("");
+  const [stationCode, setStationCode] = useState(loadPrintStation);
+  const [savingStation, setSavingStation] = useState(false);
+
+  const pairStation = async () => {
+    setSavingStation(true);
+    setErrMsg("");
+    setSavedMsg("");
+    try {
+      await savePrintStation(stationCode);
+      setSavedMsg(stationCode.trim() ? "已儲存列印助手配對。" : "已切換為瀏覽器列印。");
+    } catch (error) {
+      setErrMsg(error instanceof Error ? error.message : "無法儲存列印設定。");
+    } finally {
+      setSavingStation(false);
+    }
+  };
 
   const previewSlip = useMemo(() => ({ ...SAMPLE_ORDER_SLIP }), []);
 
@@ -172,6 +189,21 @@ export default function SettingsOrderPrintPage() {
     })();
   };
 
+  const downloadPrintAgentTest = () => {
+    const job = {
+      version: 1,
+      pageWidthMm: layout.pageWidthMm,
+      pageHeightMm: layout.pageHeightMm,
+      html: buildOrderSlipHtml(previewSlip, layout),
+    };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(job)], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "watererp-print-test.json";
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
   const resetDefault = () => {
     if (!window.confirm("確定重設為系統預設版面？（會一併重設自動列印開關為關）")) return;
     const next = sanitizeOrderPrintLayout({ ...DEFAULT_ORDER_PRINT_LAYOUT });
@@ -227,6 +259,16 @@ export default function SettingsOrderPrintPage() {
           （每台電腦／瀏覽器獨立），可匯出 JSON 複製到其他電腦。建立訂單成功後可選<strong>自動開啟列印</strong>（仍須在系統列印對話框確認）。
           「公告」欄位的文字內容請至<strong>系統設定 → 訂單公告</strong>維護（全站與特定期間）；本頁僅調整公告在紙上的位置與字型。
         </p>
+        <label>
+          Windows 列印助手配對碼
+          <input type="password" autoComplete="off" value={stationCode}
+            onChange={event => setStationCode(event.target.value)} />
+        </label>
+        <button type="button" className="btn btn--secondary" disabled={savingStation}
+          onClick={() => void pairStation()}>
+          儲存列印方式
+        </button>
+        <p className="card__hint">貼上助手產生的配對碼，或留空使用瀏覽器列印。</p>
         {savedMsg ? <p className="feedback feedback--ok">{savedMsg}</p> : null}
         {errMsg ? <p className="feedback feedback--err">{errMsg}</p> : null}
       </section>
@@ -296,6 +338,9 @@ export default function SettingsOrderPrintPage() {
           </button>
           <button type="button" className="btn btn--secondary" onClick={testPrint}>
             測試列印（假資料）
+          </button>
+          <button type="button" className="btn btn--secondary" onClick={downloadPrintAgentTest}>
+            下載列印助手測試檔
           </button>
           <button type="button" className="btn btn--secondary" onClick={exportJson}>
             匯出 JSON

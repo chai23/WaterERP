@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { fmtLocalYmd, moneyText, orderStatusBadgeClass, orderStatusLabel } from "../adminUtils";
 import { OrderDetailModal, type OrderRecord } from "../components/OrderDetailModal";
 import { useDashboard } from "../DashboardContext";
-import { openOrderPrintWindow, slipFromDashboardOrderWithAnnouncement } from "../orderPrint";
+import { slipFromDashboardOrderWithAnnouncement } from "../orderPrint";
+import { printOrderSlip } from "../orderPrint/printOrder";
 import { breakdownCashTaxInvoicePreview } from "../taxDisplay";
 import { useMediaQuery } from "../useMediaQuery";
 
@@ -80,6 +81,7 @@ export default function OrderQueryPage() {
   const [q, setQ] = useState("");
   const [searchRows, setSearchRows] = useState<OrderRecord[]>([]);
   const [searchError, setSearchError] = useState("");
+  const [printMessage, setPrintMessage] = useState("");
   const [sourceFilter, setSourceFilter] = useState<"all" | "liff" | "admin">("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [visibleCount, setVisibleCount] = useState(MOBILE_PAGE_SIZE);
@@ -174,14 +176,14 @@ export default function OrderQueryPage() {
   const printOrder = (order: OrderRecord) => {
     void (async () => {
       const slip = await slipFromDashboardOrderWithAnnouncement(order as unknown as Record<string, unknown>);
-      const ok = openOrderPrintWindow(slip);
-      if (!ok) window.alert("無法開啟列印視窗，請允許此網站的彈出視窗後再試。");
+      await printOrderSlip(slip, message => setPrintMessage(`${slip.shortOrderNo || slip.orderNo}：${message}`));
     })();
   };
 
   return (
     <>
       {searchError ? <p className="feedback feedback--err" role="alert">{searchError}</p> : null}
+      {printMessage ? <p className="card__hint" role="status">{printMessage}</p> : null}
       {isMobile ? (
         <div className="oq-mobile">
           <div className="oq-mobile__toolbar">

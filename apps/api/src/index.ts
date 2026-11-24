@@ -45,6 +45,7 @@ import { returnAssignmentToPool } from "./returnAssignmentToPool.js";
 import { registerDeliveryPlanningRoutes } from "./modules/delivery-planning/routes.js";
 import { isDeliveryPlanningEnabled } from "./modules/delivery-planning/flag.js";
 import { registerLegacyHistoryRoutes } from "./modules/legacy-history/routes.js";
+import { registerOrderPrintRoutes, registerPrintAgentRoutes } from "./modules/printing/routes.js";
 import { pendingCutoverMonthly, claimCutoverMonthly, handoverOrderBlock } from "./modules/legacy-history/handover.js";
 import {
   generalEffectiveLatest,
@@ -2038,6 +2039,7 @@ const corsOrigin = corsOriginList && corsOriginList.length > 0 ? corsOriginList 
 
 app.use(cors({ origin: corsOrigin }));
 app.use("/api/legacy-cutover", express.json({ limit: "20mb" }));
+app.use("/api/order-print", express.json({ limit: "512kb" }));
 app.use(
   express.json({
     verify: (req, _res, buf) => {
@@ -2048,6 +2050,7 @@ app.use(
   }),
 );
 app.set("json replacer", (_key: string, value: unknown) => (typeof value === "bigint" ? value.toString() : value));
+registerPrintAgentRoutes(app, prisma);
 
 app.use(async (req, res, next) => {
   // LIFF／LINE webhook：會員憑證由 /api/liff/* 路由自行驗證，不走員工 JWT
@@ -2180,6 +2183,7 @@ app.get("/api/health", async (_req, res) => {
   }
 });
 
+registerOrderPrintRoutes(app, prisma, req => getAuthUser(req)?.id);
 registerDeliveryPlanningRoutes({
   app,
   prisma,

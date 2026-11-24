@@ -19,7 +19,8 @@ import TaxInvoiceRegisterModal from "./TaxInvoiceRegisterModal";
 import { breakdownCashTaxInvoicePreview, cashInvoiceModeLabel } from "../taxDisplay";
 import type { TaxInvoiceRecord } from "../taxInvoiceUtils";
 import { taxInvoiceStatusLabel } from "../taxInvoiceUtils";
-import { openOrderPrintWindow, slipFromDashboardOrderWithAnnouncement } from "../orderPrint";
+import { slipFromDashboardOrderWithAnnouncement } from "../orderPrint";
+import { printOrderSlip } from "../orderPrint/printOrder";
 import { useMediaQuery } from "../useMediaQuery";
 
 function fmtDateTimeShort(value: unknown): string {
@@ -184,6 +185,7 @@ export function OrderDetailModal({ order, onClose }: { order: OrderRecord; onClo
   );
   const [registerTarget, setRegisterTarget] = useState<TaxInvoiceRecord | null>(null);
   const [showInvoiceHistory, setShowInvoiceHistory] = useState(false);
+  const [printMessage, setPrintMessage] = useState("");
   const activeTaxInvoices = useMemo(
     () => taxInvoices.filter((ti) => String(ti.status ?? "planned") !== "voided"),
     [taxInvoices],
@@ -560,6 +562,7 @@ export function OrderDetailModal({ order, onClose }: { order: OrderRecord; onClo
         </div>
 
         <footer className="modal-dialog__footer">
+          {printMessage ? <span className="card__hint" role="status">{printMessage}</span> : null}
           {isMobile ? null : (
             <button
               type="button"
@@ -567,8 +570,7 @@ export function OrderDetailModal({ order, onClose }: { order: OrderRecord; onClo
               onClick={() => {
                 void (async () => {
                   const slip = await slipFromDashboardOrderWithAnnouncement(order as unknown as Record<string, unknown>);
-                  const ok = openOrderPrintWindow(slip);
-                  if (!ok) window.alert("無法開啟列印視窗，請允許此網站的彈出視窗後再試。");
+                  await printOrderSlip(slip, setPrintMessage);
                 })();
               }}
             >

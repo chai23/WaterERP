@@ -64,6 +64,8 @@ export function apiPermissions(method: string, path: string, query: Record<strin
   if (p.startsWith("/api/drivers")) return read && !query.includeInactive ? masterReads : ["data.drivers", "orders.floor-bonus"];
   if (p.startsWith("/api/print-slogans")) return read ? ["settings.print-slogans", ...orders] : ["settings.print-slogans"];
   if (p.startsWith("/api/order-announcements")) return read ? ["settings.order-announcements", ...orders] : ["settings.order-announcements"];
+  if (p === "/api/order-print/station") return ["settings.order-print"];
+  if (p.startsWith("/api/order-print/jobs")) return [...orders, ...reports, "reports.billing-ar"];
   if (p.startsWith("/api/promotion-")) return read || p.endsWith("/preview") ? ["settings.promotions", "orders.new"] : ["settings.promotions"];
   if (p.startsWith("/api/sales-orders")) {
     if (p.endsWith("/assignment-queue")) return ["orders.assign"];

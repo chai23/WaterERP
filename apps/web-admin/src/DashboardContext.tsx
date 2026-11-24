@@ -2,7 +2,8 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import type { Customer, CustomerMasterOption, Driver, Product, Vehicle } from "./adminUtils";
 import { driverEmployeeCode, todayLocalYmd } from "./adminUtils";
 import type { OrderSlipSource } from "./orderPrint";
-import { loadOrderPrintLayout, openOrderPrintWindow, slipFromDashboardOrderWithAnnouncement } from "./orderPrint";
+import { loadOrderPrintLayout, slipFromDashboardOrderWithAnnouncement } from "./orderPrint";
+import { printOrderSlip } from "./orderPrint/printOrder";
 
 type SummaryState = {
   range: string;
@@ -714,12 +715,12 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       setFormMessage(`建立成功：${payload.data.shortOrderNo || payload.data.orderNo}`);
       const layout = loadOrderPrintLayout();
       if (layout.autoPrintAfterCreate) {
-        const ok = openOrderPrintWindow(slip, layout);
-        if (!ok) {
-          setFormMessage(
-            `建立成功：${payload.data.shortOrderNo || payload.data.orderNo}（瀏覽器阻擋列印視窗，請允許彈出視窗後點「列印上一筆訂單」補印）`,
-          );
-        }
+        const createdMessage = `建立成功：${payload.data.shortOrderNo || payload.data.orderNo}`;
+        void printOrderSlip(slip, message => {
+          setFormMessage(current => current === createdMessage || current.startsWith(`${createdMessage}（`)
+            ? `${createdMessage}（${message}）`
+            : current);
+        }, layout);
       }
       setForm((prev) => ({
         ...prev,

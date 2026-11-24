@@ -25,3 +25,5 @@ apps/api/prisma/*.db-journal
 tools/WaterErpLauncher/bin/
 tools/WaterErpLauncher/obj/
 tools/WaterErpLauncher/publish/
+tools/WaterErpPrintAgent/bin/
+tools/WaterErpPrintAgent/obj/
