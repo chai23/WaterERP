@@ -1550,7 +1550,17 @@ internal sealed class MainForm : Form
 
     private int GetHttpPort() => PortHelper.ParsePortFromUrl(_apiBaseUrl.Text.Trim(), 80);
 
-    private string GetNginxProbeUrl() => $"http://localhost:{GetHttpPort()}/";
+    private string GetNginxProbeUrl()
+    {
+        var url = _apiBaseUrl.Text.Trim();
+        if (!url.Contains("://", StringComparison.Ordinal))
+            url = "http://" + url;
+
+        if (Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps)
+            return uri.GetLeftPart(UriPartial.Authority) + "/";
+
+        return $"http://localhost:{GetHttpPort()}/";
+    }
 
     private string? GetNginxExePath()
     {

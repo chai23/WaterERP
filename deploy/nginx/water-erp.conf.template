@@ -4,7 +4,7 @@
 
 server {
     listen 80;
-    server_name aoshyhcake.com.tw www.aoshyhcake.com.tw;
+    server_name purewater-system.com.tw;
 
     location ^~ /.well-known/acme-challenge/ {
         root {{PROJECT_ROOT}}/deploy/acme-www;
@@ -12,16 +12,16 @@ server {
     }
 
     location / {
-        return 301 https://aoshyhcake.com.tw$request_uri;
+        return 301 https://purewater-system.com.tw$request_uri;
     }
 }
 
 server {
     listen 443 ssl;
-    server_name aoshyhcake.com.tw www.aoshyhcake.com.tw;
+    server_name purewater-system.com.tw;
 
-    ssl_certificate     {{PROJECT_ROOT}}/deploy/certs/aoshyhcake.com.tw-chain.pem;
-    ssl_certificate_key {{PROJECT_ROOT}}/deploy/certs/aoshyhcake.com.tw-key.pem;
+    ssl_certificate     {{PROJECT_ROOT}}/deploy/certs/purewater-system.com.tw-chain.pem;
+    ssl_certificate_key {{PROJECT_ROOT}}/deploy/certs/purewater-system.com.tw-key.pem;
     ssl_session_cache   shared:SSL:10m;
     ssl_session_timeout 10m;
     ssl_protocols       TLSv1.2 TLSv1.3;
