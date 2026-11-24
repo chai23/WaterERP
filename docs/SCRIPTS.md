@@ -51,10 +51,15 @@ npm 指令從根目錄執行；完整定義以根目錄及 `apps/api/package.jso
 npm run build
 npm run test:short-orders -w apps/api
 npm run test:permissions -w apps/api
+npm run test:report-append -w apps/api
 npm run test:cutover -w apps/api
 ```
 
-三個 npm 測試入口需要本機 MySQL 與建立隔離測試庫的權限。其他測試未必具有相同隔離機制，執行前先讀腳本。文件及未引用檔案整理先以建置和引用檢查驗證，無需執行資料寫入測試。
+上述 npm 測試入口需要本機 MySQL 與建立隔離測試庫的權限。其他測試未必具有相同隔離機制，執行前先讀腳本。文件及未引用檔案整理先以建置和引用檢查驗證，無需執行資料寫入測試。
+
+`test:report-append` 自動建立 `watererp_append_<時間戳>_test` 隔離庫、匯入 schema、啟動獨立連接埠的 API，再執行 `e2e-report-append.mjs` 與 `e2e-report-topup.mjs`。涵蓋追加現金／月結／預付扣桶、追加儲值與贈桶、修改／撤銷、同單扣桶、款項不足回滾、並行寫入／核銷，以及核銷前後補款。結束時關閉 API，保留測試庫供檢查，不寫入設定中的業務庫。單獨執行兩支 `.mjs` 必須自行提供相同隔離庫的 `DATABASE_URL` 和 `REPORT_TEST_API`。
+
+兩個前端開發伺服器皆支援 `VITE_API_PROXY_TARGET`，測試時可指向隔離 API；未設定時仍使用 `http://localhost:3000`。
 
 `test:permissions` 檢查後台角色與選單的權限映射；略過 `/api/print-agent/` 路由，因為列印助手使用 `X-Print-Station` 工作站憑證，不使用後台角色選單授權。這只調整測試範圍，不停用 API 本身的憑證驗證；`/api/order-print/` 後台列印管理路由仍在檢查範圍內。
 

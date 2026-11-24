@@ -4,6 +4,7 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
+    "test:report-append": "tsx scripts/test-report-append.ts",
     "test:short-orders": "tsx scripts/test-short-order-numbers.ts",
     "test:permissions": "tsx scripts/test-permissions.ts",
     "test:cutover": "tsx scripts/test-cutover-handover.ts",

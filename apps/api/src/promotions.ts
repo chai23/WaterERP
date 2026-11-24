@@ -171,7 +171,7 @@ function applyDispenserPurchaseGifts(
   return { giftLines, messages };
 }
 
-export async function loadPromotionContext(prisma: PrismaClient) {
+export async function loadPromotionContext(prisma: PrismaClient | Prisma.TransactionClient) {
   const [prepaidRule, dispenserMaster, dispenserRules, products] = await Promise.all([
     prisma.promotionRule.findUnique({ where: { ruleKey: PROMOTION_RULE_PREPAID_TOPUP_BONUS } }),
     prisma.promotionRule.findUnique({ where: { ruleKey: PROMOTION_RULE_DISPENSER_PURCHASE_GIFT } }),
@@ -187,7 +187,7 @@ export async function loadPromotionContext(prisma: PrismaClient) {
 }
 
 export async function applyPromotions(
-  prisma: PrismaClient,
+  prisma: PrismaClient | Prisma.TransactionClient,
   lines: DraftOrderLine[],
 ): Promise<{ lines: DraftOrderLine[]; messages: PromotionPreviewMessage[] }> {
   const baseLines = lines.filter(isPaidLine);

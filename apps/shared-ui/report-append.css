@@ -1,0 +1,41 @@
+.report-append, .report-topups {
+  --ra-border: var(--border, #dbe3ed);
+  --ra-bg: var(--bg-soft, #f2f5f7);
+  --ra-input: var(--bg-card, white);
+  --ra-text: var(--text, #203e67);
+  --ra-muted: var(--text-secondary, #64748b);
+  box-sizing: border-box;
+  flex: 0 0 100%;
+  min-width: 0;
+  width: 100%;
+  margin: 0;
+  padding: .85rem;
+  border: 1px solid var(--ra-border);
+  border-radius: 6px;
+  color: var(--ra-text);
+  background: var(--ra-bg);
+}
+.report-append--driver {
+  --ra-border: var(--d-border-strong, #dbe3ed);
+  --ra-bg: var(--d-bg, #f2f5f7);
+  --ra-input: var(--d-surface, white);
+  --ra-text: var(--d-text, #203e67);
+  --ra-muted: var(--d-muted, #64748b);
+}
+.report-append > legend { padding: 0 .35rem; font-size: .9rem; font-weight: 700; }
+.report-append__fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: .75rem; }
+.report-append__fields label { display: flex; flex-direction: column; min-width: 0; gap: .35rem; font-size: .85rem; font-weight: 700; }
+.report-append__fields input, .report-append__fields select, .report-topups input {
+  box-sizing: border-box; width: 100%; min-width: 0; min-height: 2.35rem; margin: 0;
+  border: 1px solid var(--ra-border); border-radius: 6px; padding: .45rem .6rem;
+  background: var(--ra-input); color: var(--ra-text); font: inherit;
+}
+.report-append__fields :is(input, select):focus-visible, .report-topups input:focus-visible { outline: 2px solid var(--brand, #315b8c); outline-offset: 2px; }
+.report-append__fields :disabled, .report-topups input:disabled { opacity: .65; cursor: not-allowed; }
+.report-append__footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .5rem; margin-top: .75rem; }
+.report-append__footer p { flex: 1 1 16rem; }
+.report-append__footer p, .report-topups p { margin: .3rem 0; color: var(--ra-muted); font-size: .8rem; line-height: 1.6; }
+.report-topups { margin: .65rem 0; }
+.report-topups__row { display: grid; grid-template-columns: minmax(0, 1fr) 5.5rem auto; align-items: center; gap: .5rem; padding: .5rem 0; }
+.report-topups__row small { display: block; color: var(--ra-muted); }
+@media (max-width: 640px) { .report-append__fields { grid-template-columns: minmax(0, 1fr); } }

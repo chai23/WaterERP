@@ -1375,6 +1375,7 @@ async function adjustCustomerPrepaidProductBalance(
  * 若同單有同商品之預付出貨，與儲值一併以淨額入帳（避免先扣後補造成暫時負餘額）。
  */
 async function tryFulfillPendingPrepaidTopup(tx: Prisma.TransactionClient, salesOrderId: bigint): Promise<void> {
+  await tx.$queryRaw`SELECT id FROM sales_orders WHERE id = ${salesOrderId} FOR UPDATE`;
   const order = await tx.salesOrder.findUnique({
     where: { id: salesOrderId },
     include: {
@@ -1383,6 +1384,12 @@ async function tryFulfillPendingPrepaidTopup(tx: Prisma.TransactionClient, sales
     },
   });
   if (!order || order.pendingPrepaidTopupBarrels <= 0) return;
+  // Delivery topups are posted only by/after office settlement, never by a payment before delivery.
+  const delivery = await tx.deliveryAssignment.findFirst({
+    where: { salesOrderId }, select: { id: true },
+  });
+  if (delivery && order.status !== "completed") return;
+  await tx.$queryRaw`SELECT id FROM customers WHERE id = ${order.customerId} FOR UPDATE`;
 
   const cashOpens = await tx.arOpenItem.findMany({
     where: {
@@ -1397,6 +1404,11 @@ async function tryFulfillPendingPrepaidTopup(tx: Prisma.TransactionClient, sales
   }
 
   const barrels = order.pendingPrepaidTopupBarrels;
+  const claim = await tx.salesOrder.updateMany({
+    where: { id: salesOrderId, pendingPrepaidTopupBarrels: barrels },
+    data: { pendingPrepaidTopupBarrels: 0 },
+  });
+  if (claim.count !== 1) return;
   const topupByProduct = new Map<bigint, number>();
   const topupParts: string[] = [];
   for (const l of order.lines) {
@@ -1421,10 +1433,19 @@ async function tryFulfillPendingPrepaidTopup(tx: Prisma.TransactionClient, sales
   const netBarrels = barrels - deferredConsumeTotal;
   const cust = await tx.customer.findUnique({ where: { id: order.customerId } });
   if (!cust) return;
+  if (!cust.allowPrepaidOverdraft) {
+    for (const [productId, need] of deferredConsumeByProduct) {
+      const [balance] = await tx.$queryRaw<Array<{ balance_barrels: number }>>`
+        SELECT balance_barrels FROM customer_prepaid_product_balances
+        WHERE customer_id = ${order.customerId} AND product_id = ${productId} FOR UPDATE`;
+      const available = (balance?.balance_barrels ?? 0) + (topupByProduct.get(productId) ?? 0);
+      if (need > available) throw new Error(`PREPAID_INSUFFICIENT:${productId}:${need}:${available}`);
+    }
+  }
 
   await tx.customer.update({
     where: { id: order.customerId },
-    data: { prepaidBarrelBalance: cust.prepaidBarrelBalance + netBarrels },
+    data: { prepaidBarrelBalance: { increment: netBarrels } },
   });
   await tx.customerLedgerEntry.create({
     data: {
@@ -1458,10 +1479,6 @@ async function tryFulfillPendingPrepaidTopup(tx: Prisma.TransactionClient, sales
     const net = (topupByProduct.get(productId) ?? 0) - (deferredConsumeByProduct.get(productId) ?? 0);
     await adjustCustomerPrepaidProductBalance(tx, order.customerId, productId, net);
   }
-  await tx.salesOrder.update({
-    where: { id: salesOrderId },
-    data: { pendingPrepaidTopupBarrels: 0 },
-  });
 }
 
 /** 現金列發票：依模式由「現金列未稅合計」拆解未稅／稅額／含稅（與 tax_invoices 寫入一致） */
@@ -7079,16 +7096,16 @@ async function runOfficeSettlementApprove(
 
       const customerId = assignment.salesOrder.customerId;
       const deliveryAddressId = assignment.salesOrder.deliveryAddressId;
+      await tx.$queryRaw`SELECT id FROM customers WHERE id = ${customerId} FOR UPDATE`;
       const emptyReturned = Math.max(0, Math.floor(Number(assignment.emptyBarrelsReturned)));
       const barrelNet = barrelsDeliveredAll - emptyReturned;
       const cust = await tx.customer.findUnique({ where: { id: customerId } });
       if (cust) {
         if (!cust.allowPrepaidOverdraft && immediatePrepaidConsumeByProduct.size > 0) {
-          const pids = [...immediatePrepaidConsumeByProduct.keys()];
-          const balRows = await tx.customerPrepaidProductBalance.findMany({
-            where: { customerId, productId: { in: pids } },
-          });
-          const balMap = new Map(balRows.map((r) => [r.productId, r.balanceBarrels]));
+          const balRows = await tx.$queryRaw<Array<{ product_id: bigint; balance_barrels: number }>>`
+            SELECT product_id, balance_barrels FROM customer_prepaid_product_balances
+            WHERE customer_id = ${customerId} FOR UPDATE`;
+          const balMap = new Map(balRows.map((r) => [r.product_id, r.balance_barrels]));
           for (const [pid, need] of immediatePrepaidConsumeByProduct) {
             const avail = balMap.get(pid) ?? 0;
             if (need > avail) {
@@ -7098,10 +7115,6 @@ async function runOfficeSettlementApprove(
             }
           }
         }
-        const prepaidBarrelBalance =
-          barrelsPrepaidImmediate > 0
-            ? cust.prepaidBarrelBalance - barrelsPrepaidImmediate
-            : cust.prepaidBarrelBalance;
         if (emptyReturned > 0 || barrelsDeliveredAll > 0) {
           const addr = await tx.deliveryAddress.findFirst({
             where: { id: deliveryAddressId, customerId },
@@ -7140,7 +7153,7 @@ async function runOfficeSettlementApprove(
         if (barrelsPrepaidImmediate > 0) {
           await tx.customer.update({
             where: { id: customerId },
-            data: { prepaidBarrelBalance },
+            data: { prepaidBarrelBalance: { decrement: barrelsPrepaidImmediate } },
           });
         }
       }
@@ -7188,6 +7201,13 @@ async function runOfficeSettlementApprove(
           settledAt,
           orderNo: order.orderNo,
         });
+      }
+
+      await tryFulfillPendingPrepaidTopup(tx, assignment.salesOrderId);
+      const topupState = await tx.salesOrder.findUniqueOrThrow({ where: { id: assignment.salesOrderId } });
+      if (topupState.pendingPrepaidTopupBarrels > 0 &&
+          [...prepaidConsumeByProduct.keys()].some(pid => (prepaidTopupByProduct.get(pid) ?? 0) > 0)) {
+        throw new Error("REPORT_TOPUP_UNPAID");
       }
 
       /** 月結應收改於「結帳批次」立帳（R2），此處不再逐單寫 monthly_accrual */
@@ -7286,7 +7306,10 @@ async function runOfficeSettlementApprove(
       },
     };
   } catch (e) {
-    const msg = String(e);
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg === "REPORT_TOPUP_UNPAID") {
+      return { ok: false, httpStatus: 400, message: "本單預付儲值尚未收足，無法核銷同商品的預付扣桶；請補齊本單現金應收後再核銷。" };
+    }
     if (msg === "任務狀態已變更，請重新整理後再操作") {
       return { ok: false as const, httpStatus: 409, message: msg };
     }
@@ -10236,13 +10259,13 @@ app.get("/api/driver/report-products", async (_req, res) => {
 
 app.post("/api/driver/confirm-line-deliveries", async (req, res) => {
   try {
-    const body = req.body as { assignmentId?: unknown; lines?: unknown; append?: unknown; orderVersion?: unknown };
+    const body = req.body as { assignmentId?: unknown; lines?: unknown; append?: unknown; topups?: unknown; orderVersion?: unknown };
     const assignmentId = toBigInt(body.assignmentId);
     if (!assignmentId) {
       res.status(400).json({ ok: false, message: "參數錯誤：assignmentId 必填" });
       return;
     }
-    if (!Array.isArray(body.lines) || body.lines.length === 0) {
+    if (!Array.isArray(body.lines)) {
       res.status(400).json({ ok: false, message: "請傳入 lines（各品項實際配送桶數）" });
       return;
     }
@@ -10251,7 +10274,7 @@ app.post("/api/driver/confirm-line-deliveries", async (req, res) => {
       where: { id: assignmentId },
       include: {
         events: { where: { eventType: "line_delivery_confirm" }, select: { payloadJson: true } },
-      salesOrder: {
+        salesOrder: {
           include: { lines: true, customer: true },
         },
       },
@@ -10274,13 +10297,16 @@ app.post("/api/driver/confirm-line-deliveries", async (req, res) => {
       return;
     }
 
-    const append = body.append as { productId?: unknown; qty?: unknown; billingType?: unknown } | undefined;
+    const append = body.append as { productId?: unknown; qty?: unknown; billingType?: unknown; linePurpose?: unknown } | undefined;
+    const linePurpose = append?.linePurpose ?? "delivery";
     const productId = toBigInt(append?.productId);
     const qty = Number(append?.qty);
     const billingType = append?.billingType;
     if (append !== undefined && (
       !productId || !Number.isSafeInteger(qty) || qty < 1 || qty > 2147483647 ||
       (billingType !== "cash" && billingType !== "monthly" && billingType !== "prepaid") ||
+      (linePurpose !== "delivery" && linePurpose !== "prepaid_barrel_topup") ||
+      (linePurpose === "prepaid_barrel_topup" && billingType !== "cash") ||
       !Number.isInteger(body.orderVersion)
     )) {
       res.status(400).json({ ok: false, message: "請選擇商品、結帳方式及有效數量，並重新載入最新訂單。" });
@@ -10292,6 +10318,9 @@ app.post("/api/driver/confirm-line-deliveries", async (req, res) => {
     }
 
     const order = assignment.salesOrder;
+    if (body.lines.length === 0 && order.lines.some(l => l.linePurpose === "delivery")) {
+      res.status(400).json({ ok: false, message: "請傳入各配送品項的實際數量" }); return;
+    }
     const parsed = parseLineDeliveriesFromBody(body.lines, order.lines);
     if (!parsed.ok) {
       res.status(400).json({ ok: false, message: parsed.message });
@@ -10302,6 +10331,29 @@ app.post("/api/driver/confirm-line-deliveries", async (req, res) => {
           typeof payloadJson.appendedLineId === "string") return [payloadJson.appendedLineId];
       return [];
     }));
+    const topupChanges: Array<{ lineId: bigint; qty: number }> = [];
+    if (body.topups !== undefined) {
+      if (!Array.isArray(body.topups)) {
+        res.status(400).json({ ok: false, message: "儲值明細格式錯誤" }); return;
+      }
+      const seen = new Set<string>();
+      for (const raw of body.topups) {
+        const id = toBigInt(raw?.lineId);
+        const nextQty = Number(raw?.qty);
+        const line = order.lines.find(l => l.id === id);
+        if (!line || !appendedIds.has(String(id)) || line.linePurpose !== "prepaid_barrel_topup" ||
+            line.isPromotionGift || seen.has(String(id)) || typeof raw?.qty !== "number" || !Number.isSafeInteger(nextQty) || nextQty < 0 || nextQty > 2147483647) {
+          res.status(400).json({ ok: false, message: "只能修改本次回報追加的儲值明細，桶數須為非負整數" }); return;
+        }
+        seen.add(String(id));
+        if (nextQty !== line.qtyOrdered) topupChanges.push({ lineId: line.id, qty: nextQty });
+      }
+    }
+    if (topupChanges.length && (!Number.isInteger(body.orderVersion) ||
+        !["assigned", "delivering"].includes(assignment.status))) {
+      res.status(409).json({ ok: false, message: "請在首次回報前修改儲值，並重新載入最新訂單" }); return;
+    }
+    const topupChanged = (append && linePurpose === "prepaid_barrel_topup") || topupChanges.length > 0;
     const removedIds = parsed.lines
       .filter((line) => line.qtyDelivered === 0 && appendedIds.has(line.lineId.toString()))
       .map((line) => line.lineId);
@@ -10349,6 +10401,19 @@ app.post("/api/driver/confirm-line-deliveries", async (req, res) => {
 
       let orderForTotals = order;
       let appendedLineId: string | undefined;
+      if (topupChanged) {
+        const posted = await tx.customerLedgerEntry.findFirst({ where: { salesOrderId: order.id, entryType: "prepaid_topup" } });
+        if (posted) throw new Error("AR_ALREADY_ALLOCATED");
+        for (const change of topupChanges) {
+          if (change.qty === 0) removedIds.push(change.lineId);
+          else {
+            const original = order.lines.find(l => l.id === change.lineId)!;
+            await tx.salesOrderLine.update({ where: { id: change.lineId }, data: {
+              qtyOrdered: change.qty, lineAmount: original.unitPrice.mul(change.qty),
+            } });
+          }
+        }
+      }
       if (removedIds.length) {
         await tx.salesOrderLine.deleteMany({ where: { salesOrderId: order.id, id: { in: removedIds } } });
         parsed.lines = parsed.lines.filter((line) => !removedIds.includes(line.lineId));
@@ -10356,7 +10421,7 @@ app.post("/api/driver/confirm-line-deliveries", async (req, res) => {
       if (productId && typeof billingType === "string") {
         const product = await tx.product.findUnique({ where: { id: productId } });
         if (!product?.isActive || ["201", "202"].includes(product.productCode ?? "") || product.salePrice.lessThanOrEqualTo(0) ||
-            (billingType === "prepaid" && !product.consumesPrepaidBarrel)) {
+            ((billingType === "prepaid" || linePurpose === "prepaid_barrel_topup") && !product.consumesPrepaidBarrel)) {
           throw new Error("REPORT_APPEND_PRODUCT_INVALID");
         }
         const line = await tx.salesOrderLine.create({
@@ -10364,22 +10429,51 @@ app.post("/api/driver/confirm-line-deliveries", async (req, res) => {
             salesOrderId: order.id,
             productId,
             qtyOrdered: qty,
-            qtyDelivered: qty,
+            qtyDelivered: linePurpose === "prepaid_barrel_topup" ? 0 : qty,
             unitPrice: product.salePrice,
             lineAmount: product.salePrice.mul(qty),
             billingTypeAtLine: billingType,
-            linePurpose: "delivery",
+            linePurpose: linePurpose as "delivery" | "prepaid_barrel_topup",
             invoiceMode: billingType === "cash" ? normalizeLineInvoiceMode(order.cashInvoiceMode) : null,
           },
         });
         appendedLineId = line.id.toString();
-        parsed.lines.push({ lineId: line.id, qtyDelivered: qty });
+        if (linePurpose === "delivery") parsed.lines.push({ lineId: line.id, qtyDelivered: qty });
 
       }
 
-      if (append || removedIds.length) {
+      if (topupChanged) {
+        await tx.salesOrderLine.deleteMany({ where: {
+          salesOrderId: order.id, linePurpose: "prepaid_barrel_topup", isPromotionGift: true,
+          promotionRuleKey: "prepaid_topup_bonus",
+        } });
+        const paid = await tx.salesOrderLine.findMany({ where: {
+          salesOrderId: order.id, linePurpose: "prepaid_barrel_topup", isPromotionGift: false,
+        } });
+        const promoted = await applyPromotions(tx, paid.map(l => ({
+          productId: l.productId, qty: l.qtyOrdered, unitPrice: l.unitPrice, billingType: "cash",
+          linePurpose: "prepaid_barrel_topup", invoiceMode: l.invoiceMode,
+        })));
+        for (const gift of promoted.lines.filter(l => l.isPromotionGift)) {
+          if (!Number.isSafeInteger(gift.qty) || gift.qty > 2147483647) throw new Error("REPORT_APPEND_PRODUCT_INVALID");
+          await tx.salesOrderLine.create({ data: {
+            salesOrderId: order.id, productId: gift.productId, qtyOrdered: gift.qty, qtyDelivered: 0,
+            unitPrice: 0, lineAmount: 0, billingTypeAtLine: "cash", linePurpose: "prepaid_barrel_topup",
+            isPromotionGift: true, promotionRuleKey: gift.promotionRuleKey, promotionNote: gift.promotionNote,
+          } });
+        }
+        const topups = await tx.salesOrderLine.aggregate({
+          where: { salesOrderId: order.id, linePurpose: "prepaid_barrel_topup" }, _sum: { qtyOrdered: true },
+        });
+        const pending = topups._sum.qtyOrdered ?? 0;
+        if (pending > 2147483647) throw new Error("REPORT_APPEND_PRODUCT_INVALID");
+        await tx.salesOrder.update({ where: { id: order.id }, data: { pendingPrepaidTopupBarrels: pending } });
+      }
+
+      if (append || removedIds.length || topupChanged) {
         const billings = new Set<string>();
-        for (const line of order.lines) {
+        const remainingLines = await tx.salesOrderLine.findMany({ where: { salesOrderId: order.id } });
+        for (const line of remainingLines) {
           if (removedIds.includes(line.id)) continue;
           const originalBilling = lineBillingType(line, order, order.customer);
           billings.add(originalBilling);
@@ -10399,7 +10493,7 @@ app.post("/api/driver/confirm-line-deliveries", async (req, res) => {
       }
 
       if (!order.customer.allowPrepaidOverdraft &&
-          (append || order.lines.some((line) => appendedIds.has(line.id.toString())))) {
+          (append || topupChanged || order.lines.some((line) => appendedIds.has(line.id.toString())))) {
         const lines = await tx.salesOrderLine.findMany({
           where: { salesOrderId: order.id },
           include: { product: true },
@@ -10479,7 +10573,8 @@ app.post("/api/driver/confirm-line-deliveries", async (req, res) => {
           eventType: "line_delivery_confirm",
           payloadJson: {
             orderNo: order.orderNo,
-            ...(appendedLineId && productId && typeof billingType === "string" ? { appendedLineId, productId: productId.toString(), billingType, qty } : {}),
+            ...(appendedLineId && productId && typeof billingType === "string" ? { appendedLineId, productId: productId.toString(), billingType, qty, linePurpose } : {}),
+            topupChanges: topupChanges.map(l => ({ lineId: String(l.lineId), qty: l.qty })),
             removedAppendedLineIds: removedIds.map(String),
             lineDeliveries: parsed.lines.map((l) => ({
               lineId: l.lineId.toString(),
@@ -10523,6 +10618,7 @@ app.post("/api/driver/confirm-line-deliveries", async (req, res) => {
         where: { id: assignmentId },
         include: {
           salesOrder: { include: { lines: { include: { product: true } }, customer: true } },
+          events: { orderBy: { id: "asc" } },
         },
       });
     });

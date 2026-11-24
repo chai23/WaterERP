@@ -1,3 +1,4 @@
+import { ReportAppend, ReportTopups, reportTopupEdits, type ReportAppendDraft } from "../../shared-ui/ReportAppend";
 import { MoneyInput } from "../../shared-ui/MoneyInput";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
@@ -283,6 +284,9 @@ function buildLineQtyFromJob(job: DriverJob): Record<string, number> {
       map[id] = 0;
     }
   }
+  for (const line of job.salesOrder?.lines ?? []) {
+    if (line.linePurpose === "prepaid_barrel_topup") map[String(line.id)] = line.qtyOrdered ?? 0;
+  }
   return map;
 }
 
@@ -334,7 +338,7 @@ export default function App() {
     id: string; name: string; unit: string; salePrice: string; consumesPrepaidBarrel: boolean;
   }> | null>(null);
   const [appendByJob, setAppendByJob] = useState<Record<string, {
-    productId: string; qty: number; billingType: string;
+    productId: string; qty: number; billingType: string; linePurpose: ReportAppendDraft["linePurpose"];
   } | undefined>>({});
   const [jobs, setJobs] = useState<any[]>([]);
   const [error, setError] = useState<string>("");
@@ -481,7 +485,7 @@ export default function App() {
   const startAppend = async (assignmentId: string) => {
     setLineQtyConfirmedByJob((prev) => ({ ...prev, [assignmentId]: false }));
     setAppendByJob((prev) => ({
-      ...prev, [assignmentId]: { productId: "", qty: 1, billingType: "cash" },
+      ...prev, [assignmentId]: { productId: "", qty: 1, billingType: "cash", linePurpose: "delivery" },
     }));
     if (reportProducts) return;
     try {
@@ -498,9 +502,10 @@ export default function App() {
     const jobBefore = jobs.find((j) => String(j.id) === assignmentId) as DriverJob | undefined;
     const form = formByJob[assignmentId] ?? defaultJobForm(jobBefore);
     const deliveryLines = jobBefore ? deliveryLinesFromJob(jobBefore) : [];
-    if (deliveryLines.length === 0) {
-      setLineQtyConfirmedByJob((prev) => ({ ...prev, [assignmentId]: true }));
-      return;
+
+    const topups = reportTopupEdits(jobBefore, form.lineQtyDelivered);
+    if (topups.some(line => !Number.isSafeInteger(line.qty) || line.qty < 0 || line.qty > 2147483647)) {
+      setMessage("儲值桶數請填寫非負整數"); return;
     }
     setMessage("");
     setConfirmingLineId(assignmentId);
@@ -511,6 +516,7 @@ export default function App() {
         body: JSON.stringify({
           assignmentId,
           append: appendByJob[assignmentId],
+          topups,
           orderVersion: jobBefore?.salesOrder?.lockVersion,
           lines: deliveryLines.map((l) => ({
             lineId: String(l.id),
@@ -542,7 +548,7 @@ export default function App() {
     const form = formByJob[assignmentId] ?? defaultJobForm(jobBefore);
     const isAmendPending = jobBefore?.status === "pending_settlement";
     const deliveryLines = jobBefore ? deliveryLinesFromJob(jobBefore) : [];
-    if (form.delivered && deliveryLines.length > 0 && !lineQtyConfirmedByJob[assignmentId]) {
+    if (form.delivered && (deliveryLines.length > 0 || reportTopupEdits(jobBefore, form.lineQtyDelivered).length > 0) && !lineQtyConfirmedByJob[assignmentId]) {
       setMessage("請先按「確認配送數量」，再提交配送回報。");
       return;
     }
@@ -948,7 +954,7 @@ export default function App() {
                     </div>
                   ) : (
                     <>
-                      {deliveryLinesFromJob(job as DriverJob).length > 0 ? (
+                      {job.salesOrder ? (
                         <div style={{ marginBottom: "0.65rem" }}>
                           <div style={{ fontSize: "0.84rem", marginBottom: "0.35rem" }}>
                             <strong>實際配送桶數</strong>
@@ -987,51 +993,20 @@ export default function App() {
                               </label>
                             );
                           })}
-                          <div style={{ marginTop: "0.45rem", display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+                          <ReportTopups lines={job.salesOrder?.lines ?? []}
+                                    editableIds={reportTopupEdits(job, {}).map(line => line.lineId)}
+                                    quantities={form.lineQtyDelivered} driver
+                                    disabled={confirmingLineId === id || savingId === id || !["assigned", "delivering"].includes(job.status ?? "")}
+                                    onChange={(lineId, qty) => updateForm(id, { lineQtyDelivered: { ...form.lineQtyDelivered, [lineId]: qty } })} />
+                                  <div style={{ marginTop: "0.45rem", display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
                             {["assigned", "delivering"].includes(job.status ?? "") && (
                               appendByJob[id] ? (
-                                <fieldset disabled={confirmingLineId === id || savingId === id}>
-                                  <legend>追加商品</legend>
-                                  <label>
-                                    商品
-                                    <select value={appendByJob[id]?.productId} onChange={(e) => {
-                                      const productId = e.target.value;
-                                      setAppendByJob((prev) => prev[id] ? {
-                                        ...prev, [id]: { ...prev[id], productId, billingType: "cash" },
-                                      } : prev);
-                                    }}>
-                                      <option value="">{reportProducts ? "請選擇商品" : "載入商品中…"}</option>
-                                      {reportProducts?.map((product) => (
-                                        <option key={product.id} value={product.id}>{product.name} · ${product.salePrice}／{product.unit}</option>
-                                      ))}
-                                    </select>
-                                  </label>
-                                  <label>
-                                    實送數量
-                                    <input type="number" min={1} step={1} value={appendByJob[id]?.qty} onChange={(e) => {
-                                      const qty = Number(e.target.value);
-                                      setAppendByJob((prev) => prev[id] ? { ...prev, [id]: { ...prev[id], qty } } : prev);
-                                    }} />
-                                  </label>
-                                  <label>
-                                    結帳方式
-                                    <select value={appendByJob[id]?.billingType} onChange={(e) => {
-                                      const billingType = e.target.value;
-                                      setAppendByJob((prev) => prev[id] ? { ...prev, [id]: { ...prev[id], billingType } } : prev);
-                                    }}>
-                                      <option value="cash">現金</option>
-                                      <option value="monthly">月結</option>
-                                      {reportProducts?.find((product) => product.id === appendByJob[id]?.productId)?.consumesPrepaidBarrel && (
-                                        <option value="prepaid">預付扣桶</option>
-                                      )}
-                                    </select>
-                                  </label>
-                                  <button type="button" onClick={() => setAppendByJob((prev) => ({ ...prev, [id]: undefined }))}>
-                                    取消追加
-                                  </button>
-                                </fieldset>
+                                <ReportAppend draft={appendByJob[id]!} products={reportProducts}
+                                          disabled={confirmingLineId === id || savingId === id} driver
+                                          onChange={draft => setAppendByJob(prev => ({ ...prev, [id]: draft }))}
+                                          onCancel={() => setAppendByJob(prev => ({ ...prev, [id]: undefined }))} />
                               ) : (
-                                <button type="button" disabled={confirmingLineId === id || savingId === id} onClick={() => void startAppend(id)}>
+                                <button type="button" className="d-btn d-btn--ghost" disabled={confirmingLineId === id || savingId === id} onClick={() => void startAppend(id)}>
                                   追加商品
                                 </button>
                               )
@@ -1209,7 +1184,7 @@ export default function App() {
                       lockedAfterOffice ||
                       (!form.delivered && !form.failureReason.trim()) ||
                       (form.delivered &&
-                        deliveryLinesFromJob(job as DriverJob).length > 0 &&
+                        (deliveryLinesFromJob(job as DriverJob).length > 0 || reportTopupEdits(job, form.lineQtyDelivered).length > 0) &&
                         !lineQtyConfirmedByJob[id])
                     }
                   >

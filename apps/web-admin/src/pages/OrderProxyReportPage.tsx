@@ -1,3 +1,4 @@
+import { ReportAppend, ReportTopups, reportTopupEdits, type ReportAppendDraft } from "../../../shared-ui/ReportAppend";
 import { MoneyInput } from "../../../shared-ui/MoneyInput";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
@@ -231,6 +232,9 @@ function buildLineQtyFromJob(job: AssignmentJob): Record<string, number> {
       map[id] = 0;
     }
   }
+  for (const line of job.salesOrder?.lines ?? []) {
+    if (line.linePurpose === "prepaid_barrel_topup") map[String(line.id)] = line.qtyOrdered ?? 0;
+  }
   return map;
 }
 
@@ -304,7 +308,7 @@ export default function OrderProxyReportPage() {
     id: string; name: string; unit: string; salePrice: string; consumesPrepaidBarrel: boolean;
   }> | null>(null);
   const [appendByJob, setAppendByJob] = useState<Record<string, {
-    productId: string; qty: number; billingType: string;
+    productId: string; qty: number; billingType: string; linePurpose: ReportAppendDraft["linePurpose"];
   } | undefined>>({});
   const [jobs, setJobs] = useState<AssignmentJob[]>([]);
   const [loading, setLoading] = useState(false);
@@ -432,7 +436,7 @@ export default function OrderProxyReportPage() {
   const startAppend = async (assignmentId: string) => {
     setLineQtyConfirmedByJob((prev) => ({ ...prev, [assignmentId]: false }));
     setAppendByJob((prev) => ({
-      ...prev, [assignmentId]: { productId: "", qty: 1, billingType: "cash" },
+      ...prev, [assignmentId]: { productId: "", qty: 1, billingType: "cash", linePurpose: "delivery" },
     }));
     if (reportProducts) return;
     try {
@@ -452,11 +456,7 @@ export default function OrderProxyReportPage() {
     const setNote = (ok: boolean, text: string) => {
       setQtyConfirmNote((prev) => ({ ...prev, [assignmentId]: { ok, text } }));
     };
-    if (deliveryLines.length === 0) {
-      setLineQtyConfirmedByJob((prev) => ({ ...prev, [assignmentId]: true }));
-      setNote(true, "此單無配送品項，可直接填收款並提交");
-      return;
-    }
+
     const hasTbdQty = deliveryLines.some((l) => (l.qtyOrdered ?? 0) === 0);
     if (hasTbdQty) {
       const missing = deliveryLines.filter(
@@ -469,6 +469,10 @@ export default function OrderProxyReportPage() {
         return;
       }
     }
+    const topups = reportTopupEdits(jobBefore, form.lineQtyDelivered);
+    if (topups.some(line => !Number.isSafeInteger(line.qty) || line.qty < 0 || line.qty > 2147483647)) {
+      setMessage("儲值桶數請填寫非負整數"); return;
+    }
     setMessage("");
     setConfirmingLineId(assignmentId);
     try {
@@ -478,6 +482,7 @@ export default function OrderProxyReportPage() {
         body: JSON.stringify({
           assignmentId,
           append: appendByJob[assignmentId],
+          topups,
           orderVersion: jobBefore?.salesOrder?.lockVersion,
           lines: deliveryLines.map((l) => ({
             lineId: String(l.id),
@@ -534,7 +539,7 @@ export default function OrderProxyReportPage() {
       return;
     }
     const deliveryLines = jobBefore ? deliveryLinesFromJob(jobBefore) : [];
-    if (form.delivered && deliveryLines.length > 0 && !lineQtyConfirmedByJob[assignmentId]) {
+    if (form.delivered && (deliveryLines.length > 0 || reportTopupEdits(jobBefore, form.lineQtyDelivered).length > 0) && !lineQtyConfirmedByJob[assignmentId]) {
       setMessage("請先按「確認配送數量」，再提交代登回報。");
       return;
     }
@@ -705,7 +710,7 @@ export default function OrderProxyReportPage() {
               const expanded = expandedJobId === id;
               const deliveryLines = deliveryLinesFromJob(job);
               const floorBonusLines = floorBonusLinesFromJob(job);
-              const hasDeliveryLines = deliveryLines.length > 0;
+              const hasDeliveryLines = deliveryLines.length > 0 || reportTopupEdits(job, {}).length > 0;
               const hasFloorBonus = floorBonusLines.length > 0;
               const stepQty = 2;
               const stepFloor = 3;
@@ -925,7 +930,7 @@ export default function OrderProxyReportPage() {
                                   </p>
                                 </div>
                               </header>
-                              {hasDeliveryLines ? (
+                              {job.salesOrder ? (
                                 <>
                                   <div className="proxy-report-qty">
                                     <div className="proxy-report-qty__head" aria-hidden="true">
@@ -974,52 +979,21 @@ export default function OrderProxyReportPage() {
                                       );
                                     })}
                                   </div>
+                                  <ReportTopups lines={job.salesOrder?.lines ?? []}
+                                    editableIds={reportTopupEdits(job, {}).map(line => line.lineId)}
+                                    quantities={form.lineQtyDelivered}
+                                    disabled={confirmingLineId === id || savingId === id || !["assigned", "delivering"].includes(job.status ?? "")}
+                                    onChange={(lineId, qty) => updateForm(id, { lineQtyDelivered: { ...form.lineQtyDelivered, [lineId]: qty } })} />
                                   <div className="proxy-report-qty__actions">
                                     {["assigned", "delivering"].includes(job.status ?? "") && (
                                       appendByJob[id] ? (
-                                        <fieldset disabled={confirmingLineId === id || savingId === id}>
-                                          <legend>追加商品</legend>
-                                          <label>
-                                            商品
-                                            <select value={appendByJob[id]?.productId} onChange={(e) => {
-                                              const productId = e.target.value;
-                                              setAppendByJob((prev) => prev[id] ? {
-                                                ...prev, [id]: { ...prev[id], productId, billingType: "cash" },
-                                              } : prev);
-                                            }}>
-                                              <option value="">{reportProducts ? "請選擇商品" : "載入商品中…"}</option>
-                                              {reportProducts?.map((product) => (
-                                                <option key={product.id} value={product.id}>{product.name} · ${product.salePrice}／{product.unit}</option>
-                                              ))}
-                                            </select>
-                                          </label>
-                                          <label>
-                                            實送數量
-                                            <input type="number" min={1} step={1} value={appendByJob[id]?.qty} onChange={(e) => {
-                                              const qty = Number(e.target.value);
-                                              setAppendByJob((prev) => prev[id] ? { ...prev, [id]: { ...prev[id], qty } } : prev);
-                                            }} />
-                                          </label>
-                                          <label>
-                                            結帳方式
-                                            <select value={appendByJob[id]?.billingType} onChange={(e) => {
-                                              const billingType = e.target.value;
-                                              setAppendByJob((prev) => prev[id] ? { ...prev, [id]: { ...prev[id], billingType } } : prev);
-                                            }}>
-                                              <option value="cash">現金</option>
-                                              <option value="monthly">月結</option>
-                                              {reportProducts?.find((product) => product.id === appendByJob[id]?.productId)?.consumesPrepaidBarrel && (
-                                                <option value="prepaid">預付扣桶</option>
-                                              )}
-                                            </select>
-                                          </label>
-                                          <button type="button" onClick={() => setAppendByJob((prev) => ({ ...prev, [id]: undefined }))}>
-                                            取消追加
-                                          </button>
-                                        </fieldset>
+                                        <ReportAppend draft={appendByJob[id]!} products={reportProducts}
+                                          disabled={confirmingLineId === id || savingId === id}
+                                          onChange={draft => setAppendByJob(prev => ({ ...prev, [id]: draft }))}
+                                          onCancel={() => setAppendByJob(prev => ({ ...prev, [id]: undefined }))} />
                                       ) : (
-                                        <button type="button" disabled={confirmingLineId === id || savingId === id} onClick={() => void startAppend(id)}>
-                                          追加商品
+                                        <button type="button" className="btn btn--secondary btn--sm" disabled={confirmingLineId === id || savingId === id} onClick={() => void startAppend(id)}>
+                                          ＋ 追加商品
                                         </button>
                                       )
                                     )}
