@@ -18,11 +18,24 @@ export function passwordPolicyError(password: string): string | null {
   return null;
 }
 
+function isLoopback(addr: string | undefined): boolean {
+  if (!addr) return false;
+  return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
+}
+
+/**
+ * 取得真實來源 IP。
+ * 只有在連線來自本機反向代理（Nginx）時才信任 X-Real-IP（Nginx 一律以 $remote_addr 覆寫）；
+ * 不採用 X-Forwarded-For，因為其內容可由客戶端偽造。
+ */
 export function clientIp(req: Request): string {
-  const forwarded = req.headers["x-forwarded-for"];
-  const raw = Array.isArray(forwarded) ? forwarded[0] : forwarded;
-  const first = raw?.split(",")[0]?.trim();
-  return first || req.ip || req.socket?.remoteAddress || "unknown";
+  const peer = req.socket?.remoteAddress;
+  if (isLoopback(peer)) {
+    const realIp = req.headers["x-real-ip"];
+    const real = (Array.isArray(realIp) ? realIp[0] : realIp)?.trim();
+    if (real) return real;
+  }
+  return peer || "unknown";
 }
 
 type LoginGate = { fails: number; windowStart: number; lockedUntil: number };
@@ -75,3 +88,24 @@ export function allowLiffDevBypass(): boolean {
   const v = process.env.LIFF_DEV_BYPASS?.trim();
   return v === "1" || v === "true";
 }
+
+type RateBucket = { count: number; windowStart: number };
+const rateBuckets = new Map<string, RateBucket>();
+
+/** 簡易固定視窗限流（單機記憶體）。回傳 false 表示已超過上限。 */
+export function hitRateLimit(key: string, max: number, windowMs: number): boolean {
+  const now = Date.now();
+  const prev = rateBuckets.get(key);
+  if (!prev || now - prev.windowStart >= windowMs) {
+    rateBuckets.set(key, { count: 1, windowStart: now });
+    return true;
+  }
+  prev.count += 1;
+  return prev.count <= max;
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of rateBuckets) if (now - v.windowStart > 60 * 60 * 1000) rateBuckets.delete(k);
+  for (const [k, v] of loginGates) if (v.lockedUntil < now && now - v.windowStart > LOGIN_WINDOW_MS) loginGates.delete(k);
+}, 10 * 60 * 1000).unref();

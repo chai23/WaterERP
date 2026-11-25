@@ -64,9 +64,41 @@ export async function verifyLineBindCode(
   const expected = Buffer.from(row.codeHash, "utf8");
   const actual = Buffer.from(hashBindCode(code, args.customerId), "utf8");
   if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
-    return { ok: false, message: "綁定碼錯誤" };
+    const exhausted = await recordBindFailure(prisma, row.id);
+    return {
+      ok: false,
+      message: exhausted ? "錯誤次數過多，此綁定碼已作廢，請聯繫客服重新核發" : "客戶編號或綁定碼錯誤",
+    };
   }
+  bindFailures.delete(row.id.toString());
   return { ok: true, challengeId: row.id };
+}
+
+const MAX_BIND_FAILURES = 5;
+const bindFailures = new Map<string, number>();
+
+/** 記錄綁定碼錯誤次數；達上限即作廢該綁定碼。回傳是否已作廢。 */
+async function recordBindFailure(prisma: PrismaClient, challengeId: bigint): Promise<boolean> {
+  const key = challengeId.toString();
+  const n = (bindFailures.get(key) ?? 0) + 1;
+  bindFailures.set(key, n);
+  if (n < MAX_BIND_FAILURES) return false;
+  bindFailures.delete(key);
+  await prisma.lineBindChallenge.updateMany({
+    where: { id: challengeId, consumedAt: null },
+    data: { consumedAt: new Date() },
+  });
+  return true;
+}
+
+/** 客戶編號不符時也計入該客戶目前綁定碼的錯誤次數，避免逐一猜測客戶編號 */
+export async function noteBindMismatch(prisma: PrismaClient, customerId: bigint): Promise<void> {
+  const row = await prisma.lineBindChallenge.findFirst({
+    where: { customerId, consumedAt: null, expiresAt: { gt: new Date() } },
+    orderBy: { id: "desc" },
+    select: { id: true },
+  });
+  if (row) await recordBindFailure(prisma, row.id);
 }
 
 export async function consumeLineBindCode(prisma: PrismaClient, challengeId: bigint): Promise<void> {

@@ -145,7 +145,7 @@ type OrderRow = {
     estimatedDeliverySlot?: string | null;
     assignmentDate?: string | null;
     status?: string;
-    driver?: { user?: { displayName?: string | null } | null } | null;
+    driver?: { user?: { name?: string | null } | null } | null;
   }>;
 };
 
@@ -1756,7 +1756,7 @@ export default function App() {
             const id = String(o.id);
             const open = expandedOrderId === id;
             const latest = o.assignments?.[0];
-            const driverName = latest?.driver?.user?.displayName;
+            const driverName = latest?.driver?.user?.name;
             const addr = o.deliveryAddress;
             return (
               <div className="order-card" key={id}>

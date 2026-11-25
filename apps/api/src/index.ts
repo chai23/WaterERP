@@ -4,7 +4,8 @@ import "dotenv/config";
 import bcrypt from "bcryptjs";
 import cors from "cors";
 import express from "express";
-import { randomBytes } from "crypto";
+import { createHash, randomBytes } from "crypto";
+import { AsyncLocalStorage } from "async_hooks";
 import jwt, { type JwtPayload, type Secret, type SignOptions } from "jsonwebtoken";
 import { Prisma, PrismaClient } from "@prisma/client";
 import {
@@ -53,14 +54,25 @@ import {
 } from "./modules/delivery-planning/shiftSla.js";
 import { loadPlanningSettings, slaConfigFromSettings } from "./modules/delivery-planning/settings.js";
 
-const prisma = new PrismaClient();
+// passwordHash 預設不從任何查詢回傳，避免透過 include: { user: true } 外洩到前端；
+// 需要比對密碼的查詢請明確加上 omit: { passwordHash: false }。
+const prisma = new PrismaClient({ omit: { user: { passwordHash: true } } }) as unknown as PrismaClient;
 const app = express();
 const port = Number(process.env.PORT) || 3000;
 const host = process.env.HOST ?? "127.0.0.1";
 const DEFAULT_CREATOR_USER_ID = 1n;
+
+/** 目前請求的操作者（員工登入後由驗證中介層設定），用於 createdBy / recordedBy 等稽核欄位 */
+const actorStore = new AsyncLocalStorage<{ userId: bigint }>();
+/** 取得目前操作者 id；非員工請求（LINE 會員、排程）時退回系統預設帳號 */
+const currentActorId = (): bigint => actorStore.getStore()?.userId ?? DEFAULT_CREATOR_USER_ID;
 const JWT_SECRET: Secret = process.env.JWT_SECRET ?? "change-me";
 const JWT_SIGN_OPTIONS = { expiresIn: process.env.JWT_EXPIRES_IN ?? "7d", algorithm: "HS256" } as SignOptions;
 assertJwtSecret(String(JWT_SECRET));
+
+/** 密碼版本指紋：寫入 JWT，密碼變更後舊 token 即失效 */
+const passwordVersion = (passwordHash: string): string =>
+  createHash("sha256").update(`pwv:${passwordHash}`).digest("hex").slice(0, 16);
 
 type AuthUser = {
   permissions?: string[];
@@ -76,6 +88,7 @@ type AuthPayload = JwtPayload & {
   role?: string;
   employeeCode?: string;
   typ?: string;
+  pwv?: string;
 };
 
 const publicApiPaths = new Set([
@@ -146,6 +159,18 @@ async function writeOperationAuditLog(
 }
 
 const hashPassword = (plain: string) => bcrypt.hash(plain, 10);
+
+const DRIVER_REPORT_MAX_BACK_DAYS = 7;
+/** 司機自行回報的時間不可為未來，也不可早於 7 天前（代登回報不受此限） */
+function driverReportedAtRangeError(at: Date): string | null {
+  const now = Date.now();
+  if (at.getTime() > now + 10 * 60 * 1000) return "回報日期不可晚於今天";
+  const earliest = new Date();
+  earliest.setHours(0, 0, 0, 0);
+  earliest.setDate(earliest.getDate() - DRIVER_REPORT_MAX_BACK_DAYS);
+  if (at.getTime() < earliest.getTime()) return `司機回報日期最多只能補登 ${DRIVER_REPORT_MAX_BACK_DAYS} 天內，更早請由辦公室代登`;
+  return null;
+}
 
 const toBigInt = (value: unknown): bigint | null => {
   try {
@@ -717,10 +742,18 @@ async function voidArForCancelledSalesOrder(tx: Prisma.TransactionClient, salesO
   });
 }
 
+/**
+ * 取得並鎖定客戶預收錢包（SELECT ... FOR UPDATE），同一客戶的儲值／扣抵會依序執行，
+ * 避免「讀餘額 → 加減 → 寫回」被並行請求覆蓋。必須在交易內呼叫。
+ */
 async function ensurePrepaymentWallet(tx: Prisma.TransactionClient, customerId: bigint) {
-  const existing = await tx.customerPrepaymentWallet.findUnique({ where: { customerId } });
-  if (existing) return existing;
-  return tx.customerPrepaymentWallet.create({ data: { customerId, balanceAmount: new Prisma.Decimal(0) } });
+  await tx.$executeRaw`INSERT IGNORE INTO customer_prepayment_wallets (customer_id, balance_amount, created_at, updated_at) VALUES (${customerId}, 0, NOW(3), NOW(3))`;
+  // 鎖定讀取會取得最新已提交的值（不受交易快照影響），因此直接使用這次查詢的結果
+  const rows = await tx.$queryRaw<Array<{ id: bigint; balance_amount: Prisma.Decimal | string | number }>>`
+    SELECT id, balance_amount FROM customer_prepayment_wallets WHERE customer_id = ${customerId} FOR UPDATE`;
+  const row = rows[0];
+  if (!row) throw new Error("PREPAYMENT_WALLET_NOT_FOUND");
+  return { id: BigInt(row.id), customerId, balanceAmount: new Prisma.Decimal(String(row.balance_amount)) };
 }
 
 /**
@@ -768,7 +801,7 @@ async function autoApplyPrepaymentToLatestOpenAr(
       unappliedAmount: new Prisma.Decimal(0),
       status: "applied",
       note: args.note ?? "自動預收抵扣未清 AR",
-      createdByUserId: DEFAULT_CREATOR_USER_ID,
+      createdByUserId: currentActorId(),
     },
   });
   await applyAllocations(tx, { voucherId: voucher.id, openItemAmounts: allocRows });
@@ -1138,7 +1171,7 @@ async function applyLineDeliveriesAtReport(
     cashSubtotal: totals.cashSubtotal,
     monthlySubtotal: totals.monthlySubtotal,
     monthlySettlementDay: order.customer.monthlySettlementDay ?? null,
-    createdByUserId: DEFAULT_CREATOR_USER_ID,
+    createdByUserId: currentActorId(),
     cashInvoiceMode: order.cashInvoiceMode,
   });
 }
@@ -1265,28 +1298,38 @@ async function applyAllocations(
     allocatedAt?: Date;
   },
 ) {
-  let allocatedAt = args.allocatedAt;
-  if (!allocatedAt) {
-    const voucher = await tx.receiptVoucher.findUnique({
-      where: { id: args.voucherId },
-      select: { paidAt: true },
-    });
-    allocatedAt = voucher?.paidAt ?? new Date();
-  }
+  const voucher = await tx.receiptVoucher.findUnique({
+    where: { id: args.voucherId },
+    select: { paidAt: true, customerId: true, totalAmount: true },
+  });
+  if (!voucher) throw new Error("RECEIPT_VOUCHER_NOT_FOUND");
+  const allocatedAt = args.allocatedAt ?? voucher.paidAt ?? new Date();
+  // 沖帳總額不得超過收款單金額（扣除此收款單已沖部分）
+  const alreadyAllocated = await tx.arAllocationMap.aggregate({
+    where: { receiptVoucherId: args.voucherId },
+    _sum: { allocatedAmount: true },
+  });
+  let budget = new Prisma.Decimal(voucher.totalAmount).minus(
+    new Prisma.Decimal(alreadyAllocated._sum.allocatedAmount ?? 0),
+  );
   const cashSalesOrdersToCheck = new Set<bigint>();
   const touchedOpenItemsForStmt: bigint[] = [];
   for (const item of args.openItemAmounts) {
     if (item.amount.lessThanOrEqualTo(0)) continue;
+    if (budget.lessThanOrEqualTo(0)) break;
     const open = await tx.arOpenItem.findUnique({
       where: { id: item.openItemId },
       include: { arDocument: true },
     });
     if (!open) continue;
+    // 只能沖收款單同一客戶的應收
+    if (open.customerId !== voucher.customerId) continue;
     if (open.salesOrderId && open.arDocument.billingType === "cash") {
       cashSalesOrdersToCheck.add(open.salesOrderId);
     }
-    const allocAmount = decMin(item.amount, new Prisma.Decimal(open.outstandingAmount));
+    const allocAmount = decMin(decMin(item.amount, new Prisma.Decimal(open.outstandingAmount)), budget);
     if (allocAmount.lessThanOrEqualTo(0)) continue;
+    budget = budget.minus(allocAmount);
     touchedOpenItemsForStmt.push(open.id);
     const allocatedAmount = new Prisma.Decimal(open.allocatedAmount).plus(allocAmount);
     const outstandingAmount = decMax(new Prisma.Decimal(open.outstandingAmount).minus(allocAmount), new Prisma.Decimal(0));
@@ -1458,7 +1501,7 @@ async function tryFulfillPendingPrepaidTopup(tx: Prisma.TransactionClient, sales
         topupParts.length > 0
           ? `預付桶儲值 ${barrels}（訂單 ${order.orderNo}，現金應收已沖清）：${topupParts.join("；")}`
           : `預付桶儲值 ${barrels}（訂單 ${order.orderNo}，現金應收已沖清）`,
-      createdByUserId: DEFAULT_CREATOR_USER_ID,
+      createdByUserId: currentActorId(),
     },
   });
   if (deferredConsumeTotal > 0) {
@@ -1470,7 +1513,7 @@ async function tryFulfillPendingPrepaidTopup(tx: Prisma.TransactionClient, sales
         barrelDelta: -deferredConsumeTotal,
         salesOrderId,
         note: `預付扣桶 ${deferredConsumeTotal}（訂單 ${order.orderNo}，與本單儲值一併淨額入帳）`,
-        createdByUserId: DEFAULT_CREATOR_USER_ID,
+        createdByUserId: currentActorId(),
       },
     });
   }
@@ -1773,7 +1816,7 @@ async function postSettlementReceiptByMethod(
       status: "posted",
       paidAt: args.settledAt,
       note: args.paymentNote,
-      createdByUserId: DEFAULT_CREATOR_USER_ID,
+      createdByUserId: currentActorId(),
       createdAt: args.settledAt,
     },
   });
@@ -1784,7 +1827,7 @@ async function postSettlementReceiptByMethod(
       amount: args.amount,
       paymentMethod: args.paymentMethod,
       note: args.paymentNote,
-      recordedByUserId: DEFAULT_CREATOR_USER_ID,
+      recordedByUserId: currentActorId(),
       paidAt: args.settledAt,
       createdAt: args.settledAt,
       receiptVoucherId: voucher.id,
@@ -2070,12 +2113,14 @@ app.set("json replacer", (_key: string, value: unknown) => (typeof value === "bi
 registerPrintAgentRoutes(app, prisma);
 
 app.use(async (req, res, next) => {
+  // Express 路由不分大小寫，判斷也必須用小寫路徑，否則 /API/... 會繞過驗證
+  const lowerPath = req.path.toLowerCase();
   // LIFF／LINE webhook：會員憑證由 /api/liff/* 路由自行驗證，不走員工 JWT
   if (
-    !req.path.startsWith("/api/") ||
+    !(lowerPath === "/api" || lowerPath.startsWith("/api/")) ||
     req.method === "OPTIONS" ||
-    publicApiPaths.has(req.path) ||
-    isLiffApiPath(req.path)
+    publicApiPaths.has(lowerPath) ||
+    isLiffApiPath(lowerPath)
   ) {
     next();
     return;
@@ -2103,9 +2148,17 @@ app.use(async (req, res, next) => {
       res.status(401).json({ ok: false, message: "登入已失效，請重新登入" });
       return;
     }
-    const user = await prisma.user.findUnique({ where: { id: userId }, include: { driver: true } });
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      include: { driver: true },
+      omit: { passwordHash: false },
+    });
     if (!user || !user.isActive) {
       res.status(401).json({ ok: false, message: "帳號已停用或不存在" });
+      return;
+    }
+    if (payload.pwv !== passwordVersion(user.passwordHash)) {
+      res.status(401).json({ ok: false, message: "密碼已變更，請重新登入" });
       return;
     }
     const authUser: AuthUser = {
@@ -2117,15 +2170,15 @@ app.use(async (req, res, next) => {
     };
     if (
       authUser.role === "driver" &&
-      !req.path.startsWith("/api/driver/") &&
-      req.path !== "/api/auth/me" &&
-      req.path !== "/api/auth/password"
+      !lowerPath.startsWith("/api/driver/") &&
+      lowerPath !== "/api/auth/me" &&
+      lowerPath !== "/api/auth/password"
     ) {
       res.status(403).json({ ok: false, message: "司機帳號不可使用後台 API" });
       return;
     }
     (req as express.Request & { authUser?: AuthUser }).authUser = authUser;
-    next();
+    actorStore.run({ userId: authUser.id }, () => next());
   } catch {
     res.status(401).json({ ok: false, message: "登入已失效，請重新登入" });
   }
@@ -2137,7 +2190,7 @@ app.use(async (req, res, next) => {
   try {
     const policy = await readPermissions(prisma);
     user.permissions = catalog.filter(m => allowed(policy.matrix, user.role, m.key)).map(m => m.key);
-    const required = apiPermissions(req.method, req.path, req.query);
+    const required = apiPermissions(req.method, req.path.toLowerCase(), req.query);
     if (required !== null && user.role !== "admin" && !required.some(key => user.permissions!.includes(key))) {
       res.status(403).json({ ok: false, message: "沒有此功能的使用權限，請聯絡管理員" }); return;
     }
@@ -2958,7 +3011,7 @@ async function applyCustomerFloorFeesFromRecords(
     cashSubtotal: totals.cashSubtotal,
     monthlySubtotal: totals.monthlySubtotal,
     monthlySettlementDay: opts.order.customer.monthlySettlementDay ?? null,
-    createdByUserId: DEFAULT_CREATOR_USER_ID,
+    createdByUserId: currentActorId(),
     cashInvoiceMode: opts.order.cashInvoiceMode,
   });
 
@@ -3011,7 +3064,7 @@ async function clearCustomerFloorFeeLines(
     cashSubtotal: totals.cashSubtotal,
     monthlySubtotal: totals.monthlySubtotal,
     monthlySettlementDay: opts.order.customer.monthlySettlementDay ?? null,
-    createdByUserId: DEFAULT_CREATOR_USER_ID,
+    createdByUserId: currentActorId(),
     cashInvoiceMode: opts.order.cashInvoiceMode,
   });
 }
@@ -4026,7 +4079,7 @@ app.post("/api/customers/:customerId/churn", async (req, res) => {
           effectiveAt: effectiveDb,
           churnReasonId,
           note: note || null,
-          recordedByUserId: DEFAULT_CREATOR_USER_ID,
+          recordedByUserId: currentActorId(),
         },
       });
       return tx.customer.findUnique({
@@ -4094,7 +4147,7 @@ app.post("/api/customers/:customerId/reactivate", async (req, res) => {
           eventType: "reactivated",
           effectiveAt: effectiveDb,
           note: note || null,
-          recordedByUserId: DEFAULT_CREATOR_USER_ID,
+          recordedByUserId: currentActorId(),
         },
       });
       return tx.customer.findUnique({
@@ -4771,7 +4824,7 @@ app.post("/api/customers/:customerId/prepaid-topup", async (req, res) => {
           amount: new Prisma.Decimal(0),
           barrelDelta: barrels,
           note: note ?? `預付儲值 +${barrels} 桶`,
-          createdByUserId: DEFAULT_CREATOR_USER_ID,
+          createdByUserId: currentActorId(),
         },
       });
       return updated;
@@ -5034,7 +5087,7 @@ app.post("/api/customers", async (req, res) => {
             customerId: row.id,
             eventType: "created",
             effectiveAt: effectiveDb,
-            recordedByUserId: DEFAULT_CREATOR_USER_ID,
+            recordedByUserId: currentActorId(),
           },
         });
       }
@@ -5686,7 +5739,7 @@ app.post("/api/products", async (req, res) => {
             refType: "manual",
             refId: p.id,
             note: "建立商品初始庫存",
-            createdByUserId: DEFAULT_CREATOR_USER_ID,
+            createdByUserId: currentActorId(),
           },
         });
       }
@@ -5859,7 +5912,7 @@ app.post("/api/products/:productId/inventory-adjust", async (req, res) => {
           refType: "manual",
           refId: productId,
           note: typeof note === "string" && note.trim() ? note.trim().slice(0, 500) : (delta > 0 ? "手動入庫" : "手動調整"),
-          createdByUserId: DEFAULT_CREATOR_USER_ID,
+          createdByUserId: currentActorId(),
         },
       });
       return tx.inventoryBalance.findUnique({ where: { productId } });
@@ -5948,6 +6001,7 @@ app.post("/api/auth/login", async (req, res) => {
     const user = await prisma.user.findUnique({
       where: { employeeCode },
       include: { driver: true },
+      omit: { passwordHash: false },
     });
 
     if (!user || !user.isActive) {
@@ -5970,6 +6024,7 @@ app.post("/api/auth/login", async (req, res) => {
         sub: user.id.toString(),
         role: user.role,
         employeeCode: user.employeeCode,
+        pwv: passwordVersion(user.passwordHash),
       },
       JWT_SECRET,
       JWT_SIGN_OPTIONS,
@@ -6016,18 +6071,25 @@ app.post("/api/auth/bootstrap", async (req, res) => {
       res.status(400).json({ ok: false, message: passwordErr });
       return;
     }
+    const bootstrapHash = await hashPassword(password);
     const user = await prisma.user.create({
       data: {
         name,
         employeeCode,
         phone: phoneRaw || null,
-        passwordHash: await hashPassword(password),
+        passwordHash: bootstrapHash,
         role: "admin",
       },
       include: { driver: true },
     });
     const token = jwt.sign(
-      { typ: "employee", sub: user.id.toString(), role: user.role, employeeCode: user.employeeCode },
+      {
+        typ: "employee",
+        sub: user.id.toString(),
+        role: user.role,
+        employeeCode: user.employeeCode,
+        pwv: passwordVersion(bootstrapHash),
+      },
       JWT_SECRET,
       JWT_SIGN_OPTIONS,
     );
@@ -6066,7 +6128,8 @@ app.get("/api/users", async (req, res) => {
 });
 
 app.post("/api/users", async (req, res) => {
-  if (!requireRole(req, res, ["admin"])) return;
+  const actor = requireRole(req, res, ["admin"]);
+  if (!actor) return;
   try {
     const body = req.body as { name?: unknown; employeeCode?: unknown; phone?: unknown; password?: unknown; role?: unknown };
     const name = typeof body.name === "string" ? body.name.trim() : "";
@@ -6075,6 +6138,11 @@ app.post("/api/users", async (req, res) => {
     const password = typeof body.password === "string" ? body.password : "";
     const roleRaw = typeof body.role === "string" ? body.role.trim() : "dispatcher";
     const role = ["admin", "dispatcher", "warehouse", "accounting"].includes(roleRaw) ? roleRaw : "dispatcher";
+    // 被授權「使用者資料」的非管理員不可建立管理員帳號（避免自行提權）
+    if (role === "admin" && actor.role !== "admin") {
+      res.status(403).json({ ok: false, message: "僅管理員可建立管理員帳號" });
+      return;
+    }
     if (!name || !employeeCode || !password) {
       res.status(400).json({ ok: false, message: "姓名、帳號、密碼為必填" });
       return;
@@ -6124,6 +6192,11 @@ app.patch("/api/users/:userId", async (req, res) => {
       return;
     }
     const body = req.body as { name?: unknown; phone?: unknown; role?: unknown; isActive?: unknown; password?: unknown };
+    // 非管理員（經權限表授權使用者資料）不可修改管理員帳號，也不可將任何人升為管理員
+    if (auth.role !== "admin" && (existing.role === "admin" || body.role === "admin")) {
+      res.status(403).json({ ok: false, message: "僅管理員可修改或指派管理員帳號" });
+      return;
+    }
     const data: Prisma.UserUpdateInput = {};
     if (typeof body.name === "string" && body.name.trim()) data.name = body.name.trim();
     if (body.phone !== undefined) data.phone = typeof body.phone === "string" && body.phone.trim() ? body.phone.trim() : null;
@@ -6155,6 +6228,10 @@ app.patch("/api/users/:userId", async (req, res) => {
     });
     res.json({ ok: true, data: toPublicUser(row) });
   } catch (e) {
+    if (e instanceof Error && e.message === "至少須保留一位啟用中的管理員") {
+      res.status(400).json({ ok: false, message: e.message });
+      return;
+    }
     res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
@@ -6178,13 +6255,20 @@ app.patch("/api/auth/password", async (req, res) => {
       res.status(400).json({ ok: false, message: passwordErr });
       return;
     }
-    const user = await prisma.user.findUnique({ where: { id: auth.id } });
+    const user = await prisma.user.findUnique({ where: { id: auth.id }, omit: { passwordHash: false } });
     if (!user || !(await bcrypt.compare(oldPassword, user.passwordHash))) {
       res.status(401).json({ ok: false, message: "原密碼錯誤" });
       return;
     }
-    await prisma.user.update({ where: { id: auth.id }, data: { passwordHash: await hashPassword(newPassword) } });
-    res.json({ ok: true });
+    const newHash = await hashPassword(newPassword);
+    await prisma.user.update({ where: { id: auth.id }, data: { passwordHash: newHash } });
+    // 舊 token 會因密碼版本不同而失效，回傳新 token 讓目前裝置維持登入
+    const token = jwt.sign(
+      { typ: "employee", sub: user.id.toString(), role: user.role, employeeCode: user.employeeCode, pwv: passwordVersion(newHash) },
+      JWT_SECRET,
+      JWT_SIGN_OPTIONS,
+    );
+    res.json({ ok: true, token });
   } catch (e) {
     res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
@@ -6832,7 +6916,7 @@ type OfficeSettlementApproveResult =
 async function runOfficeSettlementApprove(
   assignmentId: bigint,
   settledAt: Date,
-  actorUserId: bigint = DEFAULT_CREATOR_USER_ID,
+  actorUserId: bigint = currentActorId(),
 ): Promise<OfficeSettlementApproveResult> {
   try {
     const assignment = await prisma.deliveryAssignment.findUnique({
@@ -7082,7 +7166,7 @@ async function runOfficeSettlementApprove(
             refType: "sales_order",
             refId: assignment.salesOrderId,
             note: `銷單出庫 ${assignment.salesOrder.orderNo}`,
-            createdByUserId: DEFAULT_CREATOR_USER_ID,
+            createdByUserId: currentActorId(),
             createdAt: settledAt,
           },
         });
@@ -7146,7 +7230,7 @@ async function runOfficeSettlementApprove(
               salesOrderId: assignment.salesOrderId,
               deliveryAssignmentId: assignmentId,
               note: assignment.settlementNote,
-              createdByUserId: DEFAULT_CREATOR_USER_ID,
+              createdByUserId: currentActorId(),
             });
           }
         }
@@ -7221,7 +7305,7 @@ async function runOfficeSettlementApprove(
             barrelDelta: -barrelsPrepaidImmediate,
             salesOrderId: assignment.salesOrderId,
             note: `預付扣桶 ${barrelsPrepaidImmediate}（訂單 ${order.orderNo}）`,
-            createdByUserId: DEFAULT_CREATOR_USER_ID,
+            createdByUserId: currentActorId(),
             createdAt: settledAt,
           },
         });
@@ -7414,7 +7498,7 @@ app.post("/api/settlements/approve", async (req, res) => {
       return;
     }
 
-    const actorUserId = getAuthUser(req)?.id ?? DEFAULT_CREATOR_USER_ID;
+    const actorUserId = getAuthUser(req)?.id ?? currentActorId();
     const result = await runOfficeSettlementApprove(assignmentId, settledAt, actorUserId);
     if (!result.ok) {
       res.status(result.httpStatus).json({ ok: false, message: result.message });
@@ -7459,7 +7543,7 @@ app.post("/api/settlements/batch-complete", async (req, res) => {
       return;
     }
 
-    const actorUserId = getAuthUser(req)?.id ?? DEFAULT_CREATOR_USER_ID;
+    const actorUserId = getAuthUser(req)?.id ?? currentActorId();
     const succeeded: string[] = [];
     const skipped: Array<{ id: string; reason: string }> = [];
 
@@ -9234,14 +9318,14 @@ app.post("/api/delivery-assignments", async (req, res) => {
         ? body.assignmentDate.trim().slice(0, 10)
         : assignmentDate.toISOString().slice(0, 10);
 
-    // 行為等價：仍使用 DEFAULT_CREATOR_USER_ID（與重構前相同）
+    // 指派人取目前登入的操作者
     const result = await createDeliveryAssignment(prisma, {
       salesOrderId,
       driverId,
       vehicleId,
       assignmentDate,
       assignmentDateLabel,
-      assignedByUserId: DEFAULT_CREATOR_USER_ID,
+      assignedByUserId: currentActorId(),
       estimatedDeliverySlot,
       estimatedDeliveryAt,
       checkStock: true,
@@ -9320,7 +9404,7 @@ app.post("/api/orders/batch-assign", async (req, res) => {
       }
     }
 
-    const actorUserId = getAuthUser(req)?.id ?? DEFAULT_CREATOR_USER_ID;
+    const actorUserId = getAuthUser(req)?.id ?? currentActorId();
     const assignmentDateLabel =
       typeof body.assignmentDate === "string" && body.assignmentDate.trim()
         ? body.assignmentDate.trim().slice(0, 10)
@@ -9395,8 +9479,8 @@ async function createConfirmedSalesOrder(
 ): Promise<CreateSalesOrderResult> {
   try {
     const orderSource = opts.source === "liff" ? "liff" : "admin";
-    const creatorUserId = opts.createdByUserId === null ? null : (opts.createdByUserId ?? DEFAULT_CREATOR_USER_ID);
-    const arCreatorUserId = creatorUserId ?? DEFAULT_CREATOR_USER_ID;
+    const creatorUserId = opts.createdByUserId === null ? null : (opts.createdByUserId ?? currentActorId());
+    const arCreatorUserId = creatorUserId ?? currentActorId();
     const initialStatus = opts.initialStatus === "pending_review" ? "pending_review" : "confirmed";
     const allowTestFlags = opts.allowTestFlags === true && orderSource === "admin";
     const isTest = allowTestFlags && (body.isTest === true || body.isTest === 1 || body.isTest === "1" || body.isTest === "true");
@@ -9897,9 +9981,9 @@ app.post("/api/sales-orders", async (req, res) => {
   const auth = getAuthUser(req);
   const result = await createConfirmedSalesOrder(req.body ?? {}, {
     source: "admin",
-    createdByUserId: auth?.id ?? DEFAULT_CREATOR_USER_ID,
+    createdByUserId: auth?.id ?? currentActorId(),
     allowTestFlags: !auth || auth.role === "admin",
-    actorUserId: auth?.id ?? DEFAULT_CREATOR_USER_ID,
+    actorUserId: auth?.id ?? currentActorId(),
   });
   res.status(result.status).json(result.payload);
 });
@@ -10151,7 +10235,7 @@ app.post("/api/sales-orders/generate-patrol", async (req, res) => {
             },
           ],
         },
-        { source: "admin", createdByUserId: DEFAULT_CREATOR_USER_ID },
+        { source: "admin", createdByUserId: currentActorId() },
       );
       if (result.status >= 400 || !result.payload.ok) {
         errors.push({
@@ -10798,6 +10882,13 @@ app.post("/api/driver/complete", async (req, res) => {
         driverReportedAt = parsed.start;
       }
     }
+    if (auth?.role === "driver") {
+      const rangeErr = driverReportedAtRangeError(driverReportedAt);
+      if (rangeErr) {
+        res.status(400).json({ ok: false, message: rangeErr });
+        return;
+      }
+    }
 
     const now = driverReportedAt;
     const order = assignment.salesOrder;
@@ -11392,7 +11483,7 @@ app.post("/api/ar/receipt-vouchers", async (req, res) => {
           status: "posted",
           paidAt,
           note: typeof body.note === "string" ? body.note.trim() || null : null,
-          createdByUserId: DEFAULT_CREATOR_USER_ID,
+          createdByUserId: currentActorId(),
           createdAt: paidAt,
         },
       });
@@ -11404,7 +11495,7 @@ app.post("/api/ar/receipt-vouchers", async (req, res) => {
           amount,
           paymentMethod: voucher.paymentMethod,
           note: voucher.note,
-          recordedByUserId: DEFAULT_CREATOR_USER_ID,
+          recordedByUserId: currentActorId(),
           paidAt,
           createdAt: paidAt,
           receiptVoucherId: voucher.id,
@@ -11449,6 +11540,12 @@ app.post("/api/ar/receipt-vouchers", async (req, res) => {
               return { openItemId, amount: a };
             })
             .filter((x): x is { openItemId: bigint; amount: Prisma.Decimal } => Boolean(x));
+          const allocTotal = allocRows.reduce((s, a) => s.plus(a.amount), new Prisma.Decimal(0));
+          if (allocTotal.greaterThan(amount)) throw new Error("ALLOCATION_EXCEEDS_AMOUNT");
+          const foreign = await tx.arOpenItem.count({
+            where: { id: { in: allocRows.map((a) => a.openItemId) }, customerId: { not: customerId } },
+          });
+          if (foreign > 0) throw new Error("ALLOCATION_CUSTOMER_MISMATCH");
         } else {
           let remain = amount;
           const opens = await tx.arOpenItem.findMany({
@@ -11513,6 +11610,15 @@ app.post("/api/ar/receipt-vouchers", async (req, res) => {
 
     res.status(201).json({ ok: true, data: result });
   } catch (e) {
+    const msg = e instanceof Error ? e.message : "";
+    if (msg === "ALLOCATION_EXCEEDS_AMOUNT") {
+      res.status(400).json({ ok: false, message: "沖帳金額合計不可超過收款金額" });
+      return;
+    }
+    if (msg === "ALLOCATION_CUSTOMER_MISMATCH") {
+      res.status(400).json({ ok: false, message: "只能沖銷同一客戶的應收帳款" });
+      return;
+    }
     res.status(500).json({ ok: false, message: publicErrorMessage(e) });
   }
 });
@@ -11568,7 +11674,7 @@ app.post("/api/customers/:customerId/prepayment-topup-money", async (req, res) =
           status: "applied",
           paidAt,
           note: note || "預收款儲值",
-          createdByUserId: DEFAULT_CREATOR_USER_ID,
+          createdByUserId: currentActorId(),
           createdAt: paidAt,
         },
       });
@@ -11579,7 +11685,7 @@ app.post("/api/customers/:customerId/prepayment-topup-money", async (req, res) =
           amount,
           paymentMethod: "transfer",
           note: note || "預收款儲值",
-          recordedByUserId: DEFAULT_CREATOR_USER_ID,
+          recordedByUserId: currentActorId(),
           paidAt,
           createdAt: paidAt,
           receiptVoucherId: voucher.id,
@@ -11674,7 +11780,7 @@ app.post("/api/ar/prepayment-apply", async (req, res) => {
           unappliedAmount: new Prisma.Decimal(0),
           status: "applied",
           note: "預收款扣抵應收",
-          createdByUserId: DEFAULT_CREATOR_USER_ID,
+          createdByUserId: currentActorId(),
         },
       });
       await applyAllocations(tx, { voucherId: voucher.id, openItemAmounts: [{ openItemId, amount: take }] });
@@ -11727,7 +11833,7 @@ app.post("/api/ar/credit-notes", async (req, res) => {
           amount,
           reason: reason || null,
           status: "approved",
-          createdByUserId: DEFAULT_CREATOR_USER_ID,
+          createdByUserId: currentActorId(),
         },
       });
       let remain = amount;
@@ -11787,7 +11893,7 @@ app.post("/api/ar/credit-notes", async (req, res) => {
           amount: amount.negated(),
           salesOrderId: salesOrderId ?? null,
           note: reason || "折讓沖銷",
-          createdByUserId: DEFAULT_CREATOR_USER_ID,
+          createdByUserId: currentActorId(),
           sourceType: "credit_note",
           sourceId: cn.id,
         },
@@ -12685,7 +12791,7 @@ app.post("/api/billing/statements/post", async (req, res) => {
           dueDate,
           status: "open",
           postedAt: new Date(),
-          createdByUserId: DEFAULT_CREATOR_USER_ID,
+          createdByUserId: currentActorId(),
         },
       });
       await tx.arOpenItem.create({
@@ -12712,7 +12818,7 @@ app.post("/api/billing/statements/post", async (req, res) => {
           sourceType: "billing_statement",
           sourceId: stmt.id,
           note: `月結批次立帳 ${stmt.statementNo}（應收 ${arAmount.toString()}／未稅合計 ${invoiceUntaxed.toString()}）：${orderNos}`.slice(0, 500),
-          createdByUserId: DEFAULT_CREATOR_USER_ID,
+          createdByUserId: currentActorId(),
         },
       });
 
@@ -13599,7 +13705,7 @@ app.post("/api/service-tickets/:ticketId/accept", async (req, res) => {
       res.status(400).json({ ok: false, message: `目前狀態「${serviceTicketStatusLabel(existing.status)}」無法受理` });
       return;
     }
-    const userId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
+    const userId = auth?.id ?? currentActorId();
     const updated = await prisma.$transaction(async (tx) => {
       const row = await tx.serviceTicket.update({
         where: { id: ticketId },
@@ -13687,7 +13793,7 @@ app.post("/api/service-tickets/:ticketId/assign-assess", async (req, res) => {
       }
     }
 
-    const userId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
+    const userId = auth?.id ?? currentActorId();
     const now = new Date();
     const updated = await prisma.$transaction(async (tx) => {
       await tx.serviceTicket.update({
@@ -13780,7 +13886,7 @@ app.post("/api/service-tickets/:ticketId/admin-onsite-complete", async (req, res
       });
       return;
     }
-    const userId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
+    const userId = auth?.id ?? currentActorId();
     const now = new Date();
 
     const nextStatus =
@@ -13936,7 +14042,7 @@ app.post("/api/service-tickets/:ticketId/mark-loaner", async (req, res) => {
       }
     }
 
-    const userId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
+    const userId = auth?.id ?? currentActorId();
     const now = new Date();
     const updated = await prisma.$transaction(async (tx) => {
       await tx.serviceTicket.update({
@@ -14011,7 +14117,7 @@ app.post("/api/service-tickets/:ticketId/confirm-workshop-received", async (req,
       });
       return;
     }
-    const userId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
+    const userId = auth?.id ?? currentActorId();
     const now = new Date();
     const updated = await prisma.$transaction(async (tx) => {
       await tx.serviceTicket.update({
@@ -14095,7 +14201,7 @@ app.post("/api/service-tickets/:ticketId/workshop-progress", async (req, res) =>
       });
       return;
     }
-    const userId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
+    const userId = auth?.id ?? currentActorId();
     const now = new Date();
     const nextTicketStatus =
       workshopStatus === "done_pending_return" && existing.status === "quote_accepted"
@@ -14168,7 +14274,7 @@ app.post("/api/service-tickets/:ticketId/quote", async (req, res) => {
       });
       return;
     }
-    const userId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
+    const userId = auth?.id ?? currentActorId();
     const now = new Date();
     const amount = new Prisma.Decimal(String(n));
     const updated = await prisma.$transaction(async (tx) => {
@@ -14225,7 +14331,7 @@ app.post("/api/service-tickets/:ticketId/quote-respond", async (req, res) => {
       res.status(400).json({ ok: false, message: "目前沒有待確認的報價" });
       return;
     }
-    const userId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
+    const userId = auth?.id ?? currentActorId();
     const now = new Date();
     const nextStatus = accept ? "quote_accepted" : "quote_rejected";
     const updated = await prisma.$transaction(async (tx) => {
@@ -14291,7 +14397,7 @@ app.post("/api/service-tickets/:ticketId/assign-return", async (req, res) => {
       res.status(400).json({ ok: false, message: "找不到有效司機" });
       return;
     }
-    const userId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
+    const userId = auth?.id ?? currentActorId();
     const now = new Date();
     const updated = await prisma.$transaction(async (tx) => {
       await tx.serviceTicket.update({
@@ -14378,7 +14484,7 @@ app.post("/api/service-tickets/:ticketId/close", async (req, res) => {
     const collectedCash = cashCollectedNow ? (collectedCashRaw ?? (charge ? Number(charge) : 0)) : 0;
     const collectedCheck = cashCollectedNow ? (collectedCheckRaw ?? 0) : 0;
 
-    const userId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
+    const userId = auth?.id ?? currentActorId();
     const now = new Date();
     const collectionMeta = resolveServiceTicketCollectionMeta(existing, now);
     if (billingType === "cash" && charge != null && charge.greaterThan(0) && !collectionMeta.collectorDriverId) {
@@ -14520,7 +14626,7 @@ app.post("/api/service-tickets/:ticketId/ensure-billing", async (req, res) => {
     const collectedCheck = cashCollectedNow
       ? Number(req.body?.collectedCheck != null && req.body.collectedCheck !== "" ? req.body.collectedCheck : 0)
       : Number(existing.driverCheckReceived ?? 0);
-    const userId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
+    const userId = auth?.id ?? currentActorId();
     const settledAt = existing.closedAt ?? new Date();
     const collectionMeta = resolveServiceTicketCollectionMeta(existing, settledAt);
     const updated = await prisma.$transaction(async (tx) => {
@@ -14651,7 +14757,7 @@ app.post("/api/barrel-pickups", async (req, res) => {
       }
     }
 
-    const creatorId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
+    const creatorId = auth?.id ?? currentActorId();
     const result = await prisma.$transaction(async (tx) => {
       const pickupNo = await allocatePickupNo(tx, parsedDate);
       const row = await tx.barrelPickup.create({
@@ -14892,7 +14998,7 @@ app.post("/api/barrel-pickups/:pickupId/approve", async (req, res) => {
       return;
     }
 
-    const settlerId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
+    const settlerId = auth?.id ?? currentActorId();
     const result = await prisma.$transaction(async (tx) => {
       const newOnSite = Math.max(0, onSite - barrelsReturned);
       await tx.deliveryAddress.update({
@@ -15339,6 +15445,13 @@ app.post("/api/driver/barrel-pickups/:pickupId/report", async (req, res) => {
           return;
         }
         driverReportedAt = parsed.start;
+      }
+    }
+    if (auth?.role === "driver") {
+      const rangeErr = driverReportedAtRangeError(driverReportedAt);
+      if (rangeErr) {
+        res.status(400).json({ ok: false, message: rangeErr });
+        return;
       }
     }
 
@@ -16082,7 +16195,7 @@ app.post("/api/expense-vouchers", async (req, res) => {
       return;
     }
 
-    const creatorId = auth?.id ?? DEFAULT_CREATOR_USER_ID;
+    const creatorId = auth?.id ?? currentActorId();
     const result = await prisma.$transaction(async (tx) => {
       const voucherNo = await allocateExpenseVoucherNo(tx, expenseDate);
       const voucher = await tx.expenseVoucher.create({

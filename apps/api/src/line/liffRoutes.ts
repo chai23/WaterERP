@@ -12,12 +12,13 @@ import {
 import {
   consumeLineBindCode,
   issueLineBindCode,
+  noteBindMismatch,
   normalizeCustomerCode,
   normalizeMobile,
   verifyLineBindCode,
   verifyLineWebhookSignature,
 } from "./otp.js";
-import { isProductionRuntime, publicErrorMessage } from "../security.js";
+import { clientIp, hitRateLimit, isProductionRuntime, publicErrorMessage } from "../security.js";
 import {
   createServiceTicket,
   isServiceType,
@@ -657,9 +658,19 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
           ? Number(req.body.deliveryFloor)
           : null;
 
+      const ip = clientIp(req);
+      if (!hitRateLimit(`liff-bind-ip:${ip}`, 30, 10 * 60 * 1000)) {
+        res.status(429).json({ ok: false, message: "嘗試次數過多，請稍後再試" });
+        return;
+      }
+
       const verified = await verifyLiffIdToken(idToken);
       if (!verified.ok) {
         res.status(401).json({ ok: false, message: verified.message });
+        return;
+      }
+      if (!hitRateLimit(`liff-bind-line:${verified.lineUserId}`, 10, 10 * 60 * 1000)) {
+        res.status(429).json({ ok: false, message: "嘗試次數過多，請稍後再試" });
         return;
       }
 
@@ -731,7 +742,9 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
           return;
         }
         if (!customer.customerCode || customer.customerCode !== customerCode) {
-          res.status(400).json({ ok: false, message: "客戶編號不符，請向客服確認" });
+          await noteBindMismatch(prisma, customer.id);
+          // 與綁定碼錯誤使用相同訊息，避免被用來猜測客戶編號
+          res.status(400).json({ ok: false, message: "客戶編號或綁定碼錯誤", needExistingBind: true });
           return;
         }
         const bind = await verifyLineBindCode(prisma, { customerId: customer.id, code: bindCodeRaw });
@@ -888,7 +901,8 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
           assignments: {
             orderBy: { id: "desc" },
             take: 3,
-            include: { driver: { include: { user: true } } },
+            // 只回傳司機姓名給會員，不含員編、電話、薪資等內部資料
+            include: { driver: { select: { user: { select: { name: true } } } } },
           },
           billingStatementOrder: { select: { id: true } },
         },
@@ -916,7 +930,8 @@ export function registerLiffRoutes(app: Express, deps: LiffRouteDeps): void {
           lines: { include: { product: true } },
           assignments: {
             orderBy: { id: "desc" },
-            include: { driver: { include: { user: true } } },
+            // 只回傳司機姓名給會員，不含員編、電話、薪資等內部資料
+            include: { driver: { select: { user: { select: { name: true } } } } },
           },
           billingStatementOrder: { select: { id: true } },
         },
