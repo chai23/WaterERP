@@ -1,4 +1,9 @@
-import { DEFAULT_ORDER_PRINT_LAYOUT } from "./defaultLayout";
+import {
+  DEFAULT_ORDER_PRINT_LAYOUT,
+  SCHEDULED_DATE_PART_WIDTH_MM,
+  SCHEDULED_DAY_OFFSET_MM,
+  SCHEDULED_MONTH_OFFSET_MM,
+} from "./defaultLayout";
 import type { FieldPos, LineColumnPos, OrderPrintLayoutV1 } from "./layoutTypes";
 import { coercePrintVisibility } from "./printVisibility";
 
@@ -88,6 +93,42 @@ function coerceLineCol(src: unknown, def: LineColumnPos): LineColumnPos {
   return out;
 }
 
+/**
+ * 年／月／日欄位。舊版只存整串 scheduledDate 時，年沿用舊位置，
+ * 月、日依預設位移排在右側，升級後列印位置與原本相近。
+ */
+function coerceScheduledDateParts(
+  f: Record<string, unknown>,
+  base: OrderPrintLayoutV1,
+  baseFontPt: number,
+): Pick<OrderPrintLayoutV1["fields"], "scheduledYear" | "scheduledMonth" | "scheduledDay"> {
+  const hasParts = isRecord(f.scheduledYear) || isRecord(f.scheduledMonth) || isRecord(f.scheduledDay);
+  if (hasParts || !isRecord(f.scheduledDate)) {
+    return {
+      scheduledYear: coerceFieldPos(f.scheduledYear, base.fields.scheduledYear),
+      scheduledMonth: coerceFieldPos(f.scheduledMonth, base.fields.scheduledMonth),
+      scheduledDay: coerceFieldPos(f.scheduledDay, base.fields.scheduledDay),
+    };
+  }
+  const legacy = coerceFieldPos(f.scheduledDate, base.fields.scheduledYear);
+  /** 預設位移以 10pt 計，舊版字級較大／較小時等比例調整，避免年月日重疊 */
+  const scale = (legacy.fontSizePt ?? baseFontPt) / 10;
+  const at = (offsetMm: number, widthMm: number): FieldPos => {
+    const out: FieldPos = {
+      leftMm: Math.round((legacy.leftMm + offsetMm * scale) * 100) / 100,
+      topMm: legacy.topMm,
+      maxWidthMm: Math.round(widthMm * scale * 100) / 100,
+    };
+    if (legacy.fontSizePt != null) out.fontSizePt = legacy.fontSizePt;
+    return out;
+  };
+  return {
+    scheduledYear: at(0, SCHEDULED_DATE_PART_WIDTH_MM.year),
+    scheduledMonth: at(SCHEDULED_MONTH_OFFSET_MM, SCHEDULED_DATE_PART_WIDTH_MM.month),
+    scheduledDay: at(SCHEDULED_DAY_OFFSET_MM, SCHEDULED_DATE_PART_WIDTH_MM.day),
+  };
+}
+
 function coerceLayout(raw: unknown): OrderPrintLayoutV1 {
   const base = DEFAULT_ORDER_PRINT_LAYOUT;
   if (!isRecord(raw) || raw.version !== 1) return sanitizeOrderPrintLayout({ ...base });
@@ -144,7 +185,7 @@ function coerceLayout(raw: unknown): OrderPrintLayoutV1 {
       addressLabel: coerceFieldPos(f.addressLabel, base.fields.addressLabel),
       addressLine: coerceFieldPos(f.addressLine, base.fields.addressLine),
       addressPhone: coerceFieldPos(f.addressPhone, base.fields.addressPhone),
-      scheduledDate: coerceFieldPos(f.scheduledDate, base.fields.scheduledDate),
+      ...coerceScheduledDateParts(f, base, num(raw.baseFontPt, base.baseFontPt)),
       remark: coerceFieldPos(f.remark, base.fields.remark),
       productRemark: coerceFieldPos(f.productRemark, base.fields.productRemark),
       totalAmount: coerceFieldPos(f.totalAmount, base.fields.totalAmount),

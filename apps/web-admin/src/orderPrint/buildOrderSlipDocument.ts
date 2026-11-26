@@ -130,7 +130,13 @@ export function buildOrderSlipHtml(order: OrderSlipSource, layout: OrderPrintLay
   absField("addressLine", escHtml(addr?.addressLine ?? "—"), fields.addressLine);
   /** 送貨點電話＝客戶手機（主檔無地址聯絡電話可填） */
   absIf("addressPhone", cust?.mobile ?? addr?.contactPhone, fields.addressPhone);
-  absField("scheduledDate", escHtml(sched === "—" ? "" : sched), fields.scheduledDate);
+  {
+    /** 配送日期拆成年／月／日分別定位（例：2026、02、06） */
+    const [y = "", m = "", d = ""] = /^\d{4}-\d{2}-\d{2}$/.test(sched) ? sched.split("-") : [];
+    absField("scheduledYear", escHtml(y), fields.scheduledYear);
+    absField("scheduledMonth", escHtml(m), fields.scheduledMonth);
+    absField("scheduledDay", escHtml(d), fields.scheduledDay);
+  }
   absField(
     "remark",
     escHtml(cust?.standingRemark ?? ""),

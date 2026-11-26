@@ -23,7 +23,9 @@ export const ORDER_PRINT_FIELD_KEYS: OrderPrintFieldKey[] = [
   "businessTaxId",
   "customerPhone",
   "orderNo",
-  "scheduledDate",
+  "scheduledYear",
+  "scheduledMonth",
+  "scheduledDay",
   "lastBottleQty",
   "addressLabel",
   "addressPhone",
@@ -79,6 +81,10 @@ export function coercePrintVisibility(raw: unknown, legacyBarcodeEnabled?: boole
 
   const rf = isRecord(raw.fields) ? raw.fields : {};
   const fields = { ...def.fields };
+  /** 舊版整串日期的列印開關，套用到拆開後的年／月／日 */
+  if (typeof rf.scheduledDate === "boolean") {
+    fields.scheduledYear = fields.scheduledMonth = fields.scheduledDay = rf.scheduledDate;
+  }
   for (const k of ORDER_PRINT_FIELD_KEYS) {
     if (typeof rf[k] === "boolean") fields[k] = rf[k];
   }

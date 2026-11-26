@@ -55,7 +55,10 @@ export type OrderPrintLayoutV1 = {
     addressLabel: FieldPos;
     addressLine: FieldPos;
     addressPhone: FieldPos;
-    scheduledDate: FieldPos;
+    /** 配送日期拆成年／月／日，可各自定位（取代舊版整串 scheduledDate） */
+    scheduledYear: FieldPos;
+    scheduledMonth: FieldPos;
+    scheduledDay: FieldPos;
     /** 客戶常態備註（主檔 standingRemark；套印「客戶常態備註」） */
     remark: FieldPos;
     /** 紙上商品／訂單備註（開單備註／sales_orders.remark；舊版 Product_remark） */

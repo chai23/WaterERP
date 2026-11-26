@@ -7,6 +7,14 @@ import { defaultPrintVisibility } from "./printVisibility";
  */
 const P = (px: number) => Math.round((px * 25.4) / 96 * 100) / 100;
 
+/**
+ * 年／月／日拆開後，月與日相對「年」左緣的預設位移（mm）。
+ * 約等於舊版整串「2026-02-06」在 10pt 下各段的位置，舊版面升級時也用此位移。
+ */
+export const SCHEDULED_MONTH_OFFSET_MM = 12.5;
+export const SCHEDULED_DAY_OFFSET_MM = 19.5;
+export const SCHEDULED_DATE_PART_WIDTH_MM = { year: 12, month: 7, day: 7 } as const;
+
 /** 241mm 寬連續紙；高度依最底列 (y=436) 換算並留邊 */
 export const DEFAULT_ORDER_PRINT_LAYOUT: OrderPrintLayoutV1 = {
   version: 1,
@@ -32,7 +40,19 @@ export const DEFAULT_ORDER_PRINT_LAYOUT: OrderPrintLayoutV1 = {
     businessTaxId: { leftMm: P(514), topMm: P(120), maxWidthMm: 55 },
     customerPhone: { leftMm: P(514), topMm: P(138), maxWidthMm: 55 },
     orderNo: { leftMm: P(514), topMm: P(156), maxWidthMm: 70, fontSizePt: 10 },
-    scheduledDate: { leftMm: P(648), topMm: P(155), maxWidthMm: 45, fontSizePt: 10 },
+    scheduledYear: { leftMm: P(648), topMm: P(155), maxWidthMm: SCHEDULED_DATE_PART_WIDTH_MM.year, fontSizePt: 10 },
+    scheduledMonth: {
+      leftMm: Math.round((P(648) + SCHEDULED_MONTH_OFFSET_MM) * 100) / 100,
+      topMm: P(155),
+      maxWidthMm: SCHEDULED_DATE_PART_WIDTH_MM.month,
+      fontSizePt: 10,
+    },
+    scheduledDay: {
+      leftMm: Math.round((P(648) + SCHEDULED_DAY_OFFSET_MM) * 100) / 100,
+      topMm: P(155),
+      maxWidthMm: SCHEDULED_DATE_PART_WIDTH_MM.day,
+      fontSizePt: 10,
+    },
     lastBottleQty: { leftMm: P(750), topMm: P(80), maxWidthMm: 55, fontSizePt: 10 },
     /** 舊版無獨立欄位；置於左上 y=80 列以利對位 */
     addressLabel: { leftMm: P(40), topMm: P(80), maxWidthMm: 45, fontSizePt: 10 },
