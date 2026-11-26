@@ -72,8 +72,12 @@ sealed partial class PrintTestForm : Form
             core.Settings.AreBrowserAcceleratorKeysEnabled = false;
             core.NavigationStarting += (_, args) =>
             {
-                args.Cancel = args.Uri != "about:blank";
-                if (!args.Cancel && navigation is not null)
+                // NavigateToString 在新版 WebView2 會以 data:text/html 網址導覽，舊版則是 about:blank。
+                // 只放行助手自己發起、尚未取得 ID 的那一次導覽，其餘一律取消。
+                var own = navigation is not null && navigationId is null &&
+                    (args.Uri == "about:blank" || args.Uri.StartsWith("data:text/html", StringComparison.Ordinal));
+                args.Cancel = !own;
+                if (own)
                     navigationId = args.NavigationId;
             };
             core.FrameNavigationStarting += (_, args) => args.Cancel = true;
